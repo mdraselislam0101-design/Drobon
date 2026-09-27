@@ -148,6 +148,21 @@ export function conflict(message: string): AppError {
   return new AppError({ code: 'CONFLICT', statusCode: 409, message });
 }
 
+/**
+ * Scan creation against an ARCHIVED project (Pump 7): archived projects
+ * cannot start new scans (their historical scans stay readable). Distinct
+ * stable code so clients can render "unarchive first" instead of a
+ * generic conflict. Reveals nothing about other accounts — the caller
+ * already owns the project at this point (the uniform 403 comes first).
+ */
+export function projectArchived(): AppError {
+  return new AppError({
+    code: 'PROJECT_ARCHIVED',
+    statusCode: 409,
+    message: 'Archived projects cannot start new scans. Unarchive the project first.',
+  });
+}
+
 export function timeoutError(message = 'The operation timed out.'): AppError {
   return new AppError({ code: 'TIMEOUT', statusCode: 504, message });
 }

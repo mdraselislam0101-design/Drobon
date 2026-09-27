@@ -14,6 +14,13 @@ import {
   createJsonFileProjectStore,
   type ProjectStore,
 } from '../src/projects/store.js';
+import {
+  createJsonFileScanStore,
+  createMemoryScanStore,
+  type ScanStore,
+} from '../src/scans/store.js';
+import type { ScanEngine } from '../src/scans/engines.js';
+import type { ScanProcessor } from '../src/scans/processor.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -33,6 +40,18 @@ export interface TestServer {
    * Tests that need to inspect/seed projects inject their own.
    */
   projects?: ProjectStore;
+  /**
+   * The scan-job store backing this server (Pump 7) — always resolved
+   * to ONE shared instance (injected or created), so tests can inspect
+   * durable scan state directly.
+   */
+  scans: ScanStore;
+  /**
+   * The scan processor (Pump 7). Auto-start is DISABLED in tests:
+   * suites drive drain() explicitly for deterministic lifecycle
+   * assertions.
+   */
+  scanProcessor: ScanProcessor;
   resetRateLimit: () => void;
   stop: () => Promise<void>;
 }
@@ -53,6 +72,18 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   projectStoreDir?: string;
   /** Inject a project store directly (defaults: memory or projectStoreDir). */
   projectStore?: ProjectStore;
+  /** Use a real JSON scan store at a temp path instead of memory (Pump 7). */
+  scanStoreDir?: string;
+  /** Inject a scan store directly (defaults: memory or scanStoreDir). */
+  scanStore?: ScanStore;
+  /**
+   * Inject synthetic scanner engines (Pump 7). NONE by default — the
+   * honest production state (every scan fails
+   * SCAN_ENGINE_NOT_IMPLEMENTED).
+   */
+  scanEngines?: readonly ScanEngine[];
+  /** Scan processor sweep interval (rarely needed in tests). */
+  scanProcessorIntervalMs?: number;
 };
 
 /**
@@ -76,6 +107,10 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageNow,
     projectStoreDir,
     projectStore,
+    scanStoreDir,
+    scanStore,
+    scanEngines,
+    scanProcessorIntervalMs,
     ...configOverrides
   } = overrides;
   const config: ApiConfig = {
@@ -98,6 +133,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageStorePath: ':memory:',
     usageConsumeRoutes: true,
     projectStorePath: ':memory:',
+    scanStorePath: ':memory:',
     ...configOverrides,
   };
   const effectiveStorePath =
@@ -106,14 +142,20 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageStoreDir === undefined ? config.usageStorePath : join(usageStoreDir, 'usage.json');
   const effectiveProjectStorePath =
     projectStoreDir === undefined ? config.projectStorePath : join(projectStoreDir, 'projects.json');
+  const effectiveScanStorePath =
+    scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
   const configWithStore: ApiConfig =
-    authStoreDir === undefined && usageStoreDir === undefined && projectStoreDir === undefined
+    authStoreDir === undefined &&
+    usageStoreDir === undefined &&
+    projectStoreDir === undefined &&
+    scanStoreDir === undefined
       ? config
       : {
           ...config,
           ...(authStoreDir === undefined ? {} : { authStorePath: effectiveStorePath }),
           ...(usageStoreDir === undefined ? {} : { usageStorePath: effectiveUsageStorePath }),
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
+          ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
         };
   // A single resolved project-store instance: the app AND the returned
   // TestServer must share it (inject-or-default, never two stores).
@@ -122,6 +164,14 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     (projectStoreDir === undefined
       ? undefined
       : createJsonFileProjectStore(effectiveProjectStorePath));
+  // Same rule for the scan store (Pump 7): exactly ONE instance shared
+  // by the app and the test — always resolved and injected (memory by
+  // default, so the test can inspect durable scan state directly).
+  const resolvedScanStore =
+    scanStore ??
+    (scanStoreDir === undefined
+      ? createMemoryScanStore()
+      : createJsonFileScanStore(effectiveScanStorePath));
   const resolvedUsers =
     users ??
     (authStoreDir === undefined
@@ -147,6 +197,12 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
+    scanStore: resolvedScanStore,
+    ...(scanEngines === undefined ? {} : { scanEngines }),
+    ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),
+    // Deterministic tests: no background processing unless a suite
+    // starts the processor itself.
+    scanProcessorAutoStart: false,
     ...(extraRoutes === undefined ? {} : { extraRoutes }),
   });
   return {
@@ -157,6 +213,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sessions: resolvedSessions,
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(resolvedProjectStore === undefined ? {} : { projects: resolvedProjectStore }),
+    scans: resolvedScanStore,
+    scanProcessor: started.app.scanProcessor,
     resetRateLimit: started.resetRateLimit,
     stop: started.stop,
   };

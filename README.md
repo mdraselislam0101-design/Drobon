@@ -77,12 +77,13 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/SUBSCRIPTIONS.md` — plans, subscription states, entitlement authority
 - `docs/USAGE.md` — usage quota, UTC periods, device policy, consume boundary
 - `docs/PROJECTS.md` — project model, ownership, CRUD, lifecycle, scan boundary
+- `docs/SCANS.md` — scan jobs, quota atomicity, idempotency, processor, engine boundary
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 6, cumulative)
+## Scope (Pump 7, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -114,8 +115,23 @@ web experience (list/create/edit/lifecycle, protected routes,
 fail-closed states). Project CRUD never consumes a scan. See
 `docs/PROJECTS.md`.
 
-**NOT included:** the scan engine itself (SAST/SCA/DAST, jobs calling
-this quota boundary arrive in later pumps), the broader database phase,
+**PLUS Pump 7 (Secure scan-job foundation)**: the orchestration boundary
+future scanner engines plug into — durable scan jobs (`scan_` UUID ids,
+server-authoritative QUEUED→RUNNING→COMPLETED/FAILED lifecycle, no
+client mutation path), quota consumed EXACTLY once per created scan and
+atomically with the durable append (FREE 3/month + shared-device pool
+enforced under 10-way concurrency; PRO exempt), idempotency keys scoped
+per account for retry safety, a durable worker loop with
+claim-once/finish-once semantics, crash recovery (interrupted scans →
+FAILED/SCAN_INTERRUPTED), the empty-by-design scanner-engine registry
+(every scan honestly fails SCAN_ENGINE_NOT_IMPLEMENTED — never a fake
+result; NO vulnerability datasets, the dataset lock holds), archived
+projects reject new scans while history stays readable, and the web
+scan experience inside the project page. See `docs/SCANS.md`.
+
+**NOT included:** the scan engines themselves (SAST/SCA/DAST execution —
+the boundary exists, the engines arrive in later pumps), vulnerability
+datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
 UI), plan mutation workflow (`plan:manage` is granted to no one), usage
 analytics/history, operator quota adjustments, device-management UI,
@@ -127,7 +143,8 @@ UserType-specific product features. See the NOT_IMPLEMENTED sections in
 
 ## Status
 
-Pump 6 — foundation + authentication + authorization + plans/
+Pump 7 — foundation + authentication + authorization + plans/
 subscriptions/entitlements + usage quota & device anti-abuse +
-projects foundation. See `docs/BUILD_VERIFICATION.md` for the latest
+projects + secure scan-job foundation. See `docs/BUILD_VERIFICATION.md`
+for the latest
 verification evidence and `git log` for history.

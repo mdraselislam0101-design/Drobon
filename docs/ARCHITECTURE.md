@@ -2,8 +2,9 @@
 
 Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
 (authorization), Pump 4 (plans/subscriptions/entitlements), Pump 5
-(usage quota + device anti-abuse foundation) and Pump 6 (projects
-foundation): an npm-workspaces monorepo with three runtime components
+(usage quota + device anti-abuse foundation), Pump 6 (projects
+foundation) and Pump 7 (secure scan-job foundation): an
+npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -45,6 +46,11 @@ browser bundle and the servers can all consume it:
   guards — including cross-field invariants the server always maintains
   (exempt views carry no numbers; counts never exceed the limit). No
   device identifiers exist in this contract.
+- `scans.ts` — scan-job contracts (Pump 7): the four supported job
+  types (SAST/SCA/SECRETS/DAST), the server-authoritative status and
+  failure-code vocabularies, `scan_` UUID id + idempotency-key
+  patterns, the owner-free public `Scan` shape with state-machine
+  invariants, response guards and the documented ordering comparator.
 - `projects.ts` — project contracts (Pump 6): the closed status
   vocabulary (ACTIVE/ARCHIVED), the `prj_` UUID id pattern, bounded
   name/description lengths, the public `Project` shape (deliberately
@@ -112,6 +118,17 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   fail-closed normalization of persisted subscription data,
   `resolveSubscription`, `deriveEntitlements`; reads only the account's
   subscription, never role/userType/client input).
+- `scans/` — the secure scan-job foundation (Pump 7): `store.ts` is
+  the durable orchestration store (one JSON document with scans +
+  bounded idempotency entries; THE atomic `createScanWithQuota`
+  operation linearizes idempotency lookup, quota consumption via the
+  UsageService and the durable append; claim-once `claimNextQueued`,
+  finish-once `completeScan`/`failScan`, boot recovery
+  `failAllRunning`); `engines.ts` is the scanner-engine boundary
+  (server-side registry — EMPTY in Pump 7, so scans fail honestly with
+  SCAN_ENGINE_NOT_IMPLEMENTED); `processor.ts` is the durable worker
+  loop (claim → engine → finish, 30s engine bound, startup recovery +
+  periodic sweep). See docs/SCANS.md.
 - `projects/` — the Projects foundation store (Pump 6):
   `store.ts` is the minimum persistence boundary (one JSON document,
   serialized mutation queue, atomic temp+rename writes, fail-fast load
@@ -144,7 +161,13 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   plus Pump 6's project routes: `POST/GET /api/v1/projects`,
   `GET/PATCH /api/v1/projects/:projectId` and the explicit lifecycle
   operations `POST …/archive` / `…/unarchive` — all self-only, uniform
-  403 for unknown/foreign/malformed ids (see docs/PROJECTS.md).
+  403 for unknown/foreign/malformed ids (see docs/PROJECTS.md) — and
+  Pump 7's scan routes: `POST /api/v1/projects/:projectId/scans`
+  (atomic quota + creation, optional Idempotency-Key, archived → 409
+  PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
+  `GET …/scans/:scanId` (uniform 404 inside the caller's own project).
+  No scan mutation endpoint exists — the processor owns every
+  transition (see docs/SCANS.md).
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original
@@ -201,6 +224,11 @@ NOT_IMPLEMENTED).
 - `pages/LoginPage/RegisterPage` — accessible forms (labels, `aria-invalid`,
   `role=alert` errors, busy buttons), shared policy validation with the API,
   server-safe error rendering.
+- `pages/ProjectDetailPage.tsx` also carries the Security scans
+  section (Pump 7): scan-type selector + request button (ACTIVE
+  projects only), the server-ordered scan list with honest status
+  pills and verbatim failure rendering (never a fake completion), the
+  quota hint from the server's usage view, fail-closed errors.
 - `pages/ProjectsPage.tsx` / `pages/ProjectDetailPage.tsx` — the
   Projects experience (Pump 6): server-scoped list in the server's
   order with honest empty/loading/error states, a create form

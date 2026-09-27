@@ -440,3 +440,112 @@ Exit code is `0` on PASS, `1` on any FAIL.
   (one test variable renamed to keep the matcher quiet); DATASET LOCK
   respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; final `git
   status` clean of secrets/datasets/junk after commit.
+
+## Pump 7 — Secure scan-job foundation (VERIFIED, live E2E included)
+
+**Date:** 2026-09-28 · **Baseline advanced:** 593 → **651 tests** (+58:
+shared scans contracts 106, API scan suite +29, API config +1, web
+scan UI +11, web scan client +5, shared errors +6 — all suites re-run
+green: shared 106/106, API 357/357, worker 28/28, web 160/160).
+**Typecheck:** 0 errors (all workspaces). **Lint:** clean.
+**`npm run verify`: PASS** (boundaries, secret matcher self-test,
+secret scan sources + builds, typecheck, lint, tests, production
+builds, dependency audit — 9/9).
+
+### Spec compliance (locked scope, honest delivery)
+
+- Scan jobs exist: POST/GET `/api/v1/projects/:projectId/scans` +
+  GET `…/scans/:scanId`; `scan_` UUID ids; server-authoritative
+  QUEUED→RUNNING→COMPLETED/FAILED lifecycle; **no client mutation
+  endpoint** (405 + Allow on PATCH/DELETE).
+- **The scan engine is NOT implemented** — the pump is the secure
+  ORCHESTRATION boundary only. `scanType ∈ {SAST,SCA,SECRETS,DAST}`
+  is the job vocabulary; with the engine registry empty by design,
+  every scan deterministically FAILS `SCAN_ENGINE_NOT_IMPLEMENTED`.
+  No fabricated findings/results, ever (tested).
+- **NO vulnerability datasets**: the dataset lock holds (no
+  CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; synthetic engines exist
+  only inside test files).
+- Scanner engines / findings / reports / SBOM / cancellation /
+  scheduling remain NOT_IMPLEMENTED (documented in `docs/SCANS.md`).
+
+### Security properties verified by tests (see docs/SECURITY.md)
+
+Ownership chain account→project→scan derived from the session only
+(body `id`/`projectId`/`ownerId`/`requestedBy`/`status`/timestamps/
+`result`/plan/role claims → 422, proto keys included); uniform
+project-level 403 (unknown/foreign/malformed/oversized ids
+byte-identical modulo requestId; roles/user types never grant foreign
+scans); scan-level uniform 404 inside the caller's own project;
+**quota consumed EXACTLY once per created scan, atomically with the
+durable append** (UsageService = single authority inside the store's
+serialized section — no job can exist without a consumed allowance);
+10-way FREE concurrency → exactly 3 grants + 7 uniform 429 +
+Retry-After; same-key 10-way retry storm → 1 scan, 1 charge;
+cross-project/cross-account/device-shared races; PRO EXEMPT; UTC
+month rollover; claims/cookie tampering never changes the verdict;
+idempotency (strict format, account-scoped, replay→200 original,
+different request→409, bounded 20/account, restart-persistent);
+claim-once/finish-once (duplicate delivery cannot execute twice;
+terminal records immutable); crash recovery RUNNING→FAILED/
+SCAN_INTERRUPTED + QUEUED drain; corrupt/invalid store refuses to
+start (state-machine violations and dangling idempotency included);
+responses expose the public shape only (no ownerId/worker internals);
+log lines ids-only; web honest-FAILED rendering, server-derived quota
+hint, archived restriction, XSS-inert, no storage authority.
+
+### Live E2E (dev :3001 API + :5173 web proxy, then production :4001)
+
+1. Register/login (device cookie on first authenticated response);
+   create project; usage 0/3 → create scan with Idempotency-Key →
+   201 QUEUED (public shape: id, projectId, scanType, status,
+   createdAt, updatedAt ONLY); replay same key+request → **200 same
+   scan**; usage used=1 (consumed exactly once despite two requests).
+2. **Production processor auto-start verified live**: the scan left
+   QUEUED within ~1s → FAILED/`SCAN_ENGINE_NOT_IMPLEMENTED`,
+   "The SAST scanner engine is not implemented yet.", startedAt +
+   completedAt set, resultSummary absent (never fabricated).
+3. FREE exhaustion: scans 2,3 → 201; 4th → 429 QUOTA_EXCEEDED +
+   Retry-After ≈ next UTC month; usage used=3 EXHAUSTED.
+4. Plan tampering on exhausted account (x-plan header, extra cookie)
+   → still 429.
+5. Cross-account: attacker list/create on foreign project → uniform
+   403 (foreign and malformed-uuid ids byte-identical); anonymous →
+   401; foreign scan id inside attacker's OWN project → 404 (same as
+   unknown scan id — no existence oracle).
+6. Idempotency conflict: same key + different scanType → 409
+   CONFLICT; malformed keys (short/invalid chars/65 chars) → 422.
+7. Router hardening: `%2F`/`%00` → 403 uniform, `%zz`/deep paths/
+   trailing slash → 404, `.`/`%20` segments handled, HEAD on the
+   collection → 405, no version/server headers leak.
+8. Web via Vite proxy (:5173): anonymous API → 401; authed scans via
+   proxy 200, server-ordered (createdAt DESC), statuses honest.
+9. Archive flow: archive → new scan 409 PROJECT_ARCHIVED ("Archived
+   projects cannot start new scans. Unarchive the project first."),
+   history (3 scans) still readable; unarchive → 200.
+10. **Restart persistence**: SIGTERM → "Shutdown complete"; restart →
+    re-login; 3 scans survived with terminal states intact; quota
+    used=3 still enforced (4th → 429); the OLD idempotency key still
+    replays to the ORIGINAL scan; `scans.json` 0600, no
+    emails/passwords/account material (grep clean), record keys
+    owner-internal only.
+11. Corrupt-store refusal (SCAN_STORE_PATH → garbage): "Fatal startup
+    error: … refusing to start with corrupt scan data"; port never
+    opens (fail-fast confirmed).
+12. PRO flow (store plan flip + restart): usage view plan=PRO,
+    limit=null, quotaStatus=EXEMPT; 5 concurrent creates → 5×201
+    (3 FREE + 5 PRO = 8 scans, all FAILED honest); web proxy sees
+    EXEMPT ("Pro plan: unlimited scans."); store edit reversed after.
+13. **Production API build (:4001)**: durable store loads (8 scans
+    listed), scan create 201, `/` and `/../` still 404 (probes
+    hidden); `SCAN_STORE_PATH=:memory:` in production → configuration
+    error, refuses to start (verified on :4002).
+14. Production web build present (`apps/web/dist`, scan section in
+    the bundle); shutdown hooks stop the processor cleanly.
+
+### Boundary checks
+
+`check:boundaries` PASS (no DB/dataset/shell; no payment/gateway
+code); `check:secrets` PASS over sources and builds; **DATASET LOCK
+respected** — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; `git
+status` clean of secrets/datasets/junk after commit.

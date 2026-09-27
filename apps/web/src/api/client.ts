@@ -5,6 +5,8 @@ import {
   isLogoutResponse,
   isProjectResponse,
   isProjectsResponse,
+  isScanResponse,
+  isScansResponse,
   isSubscriptionResponse,
   isUsageResponse,
   parseApiResponse,
@@ -18,6 +20,9 @@ import {
   type LogoutResponse,
   type ProjectResponse,
   type ProjectsResponse,
+  type ScanResponse,
+  type ScansResponse,
+  type ScanType,
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
@@ -155,6 +160,24 @@ export interface ApiClient {
   archiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
   /** Unarchive a project (explicit lifecycle operation, owner only, idempotent). */
   unarchiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /**
+   * One project's scans (Pump 7), in the server's documented order.
+   * A missing/foreign/malformed project id fails with the server's
+   * uniform 403 — the honest error.
+   */
+  getScans(projectId: string, signal?: AbortSignal): Promise<ScansResponse>;
+  /**
+   * Request a scan (Pump 7). The client supplies ONLY the scan type and
+   * an idempotency key — ownership, quota, ids, status and timestamps
+   * are all server-authoritative. The key makes network retries safe:
+   * a retry returns the ORIGINAL scan instead of charging twice.
+   */
+  createScan(
+    projectId: string,
+    scanType: ScanType,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ScanResponse>;
 }
 
 /**
@@ -421,6 +444,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/projects/${encodeURIComponent(projectId)}/unarchive`,
         { method: 'POST', ...(signal === undefined ? {} : { signal }) },
         isProjectResponse,
+      ),
+    getScans: (projectId: string, signal?: AbortSignal): Promise<ScansResponse> =>
+      authRequest<ScansResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
+        signal === undefined ? {} : { signal },
+        isScansResponse,
+      ),
+    createScan: (
+      projectId: string,
+      scanType: ScanType,
+      idempotencyKey: string,
+      signal?: AbortSignal,
+    ): Promise<ScanResponse> =>
+      authRequest<ScanResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'idempotency-key': idempotencyKey,
+          },
+          body: JSON.stringify({ scanType }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isScanResponse,
       ),
   };
 }

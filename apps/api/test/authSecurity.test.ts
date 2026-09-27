@@ -239,6 +239,7 @@ describe('auth security controls', () => {
             usageStorePath: `${dir}/usage.json`,
             usageConsumeRoutes: true,
             projectStorePath: `${dir}/projects.json`,
+            scanStorePath: `${dir}/scans.json`,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

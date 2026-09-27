@@ -149,6 +149,17 @@ shell, no second client:
   the id itself; the server response is the only source of truth.
 - Navigation: a "Projects" link joins the auth-aware header nav.
 
+## Scans (Pump 7 — implemented foundation)
+
+Scan jobs now exist: `POST/GET /api/v1/projects/:projectId/scans` +
+`GET …/scans/:scanId`. Creating a scan consumes the account's scan
+allowance EXACTLY once, atomically with the durable job append (the
+Pump 5 UsageService stays the single quota authority); ACTIVE projects
+only (archived → 409 PROJECT_ARCHIVED, history stays readable); the
+client may supply only the scan type (+ an idempotency key). No engine
+exists yet, so scans fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED —
+never a fabricated result. See `docs/SCANS.md`.
+
 ## Future scan relationship (documented, not implemented)
 
 ```
@@ -169,8 +180,9 @@ server-validated reference.
 
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-The scan engine (SAST/SCA/DAST execution, scan jobs, the worker calling
-the quota boundary), findings, reports, SBOM generation, remediation
+The scan engines themselves (SAST/SCA/SECRETS/DAST execution — the
+Pump 7 orchestration boundary exists, the engines do not; see
+`docs/SCANS.md`), findings, reports, SBOM generation, remediation
 history, per-plan project limits, project sharing/collaboration,
 organization accounts, project deletion (hard delete is deliberately
 absent — ARCHIVED is the lifecycle end-state until an explicit,

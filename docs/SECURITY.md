@@ -3,12 +3,12 @@
 Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
 (authorization), Pump 4 extended (plans/subscriptions/entitlements),
 Pump 5 extended (usage quota + device anti-abuse), Pump 6 extended
-(projects foundation):
+(projects foundation), Pump 7 extended (secure scan-job foundation):
 security is a first-class, **tested** requirement. A control is listed as
 VERIFIED only if an automated test or an executed check proves it;
 anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz + subscription + usage + projects stage)
+## Threat model (foundation + auth + authz + subscription + usage + projects + scans stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
@@ -21,7 +21,11 @@ the FREE scan allowance, racing concurrent consumes, forging/altering the
 device cookie, tampering with usage counts or periods)**; **project
 ownership fraud (claiming another account's project via ownerId/headers/
 query, cross-account reads/writes, injecting lifecycle status,
-prototype-pollution payloads, XSS/HTML in project text)**; misconfiguration;
+prototype-pollution payloads, XSS/HTML in project text)**; **scan fraud
+(quota bypass via concurrency/retries/multiple projects/types, forging
+scan status or results, claiming another account's scans, replaying
+idempotency keys, resurrecting or double-executing jobs)**;
+misconfiguration;
 secret leakage into code, logs or the browser bundle; dependency risk;
 abuse/accidental overload of a single instance.
 
@@ -160,6 +164,27 @@ merged, so no prototype pollution occurred, but the documented
 `Object.prototype.hasOwnProperty.call(shape, key)` with a regression
 test in `apps/api/test/validate.test.ts`.
 
+### Scan jobs (Pump 7)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Ownership chain account→project→scan derived from the session ONLY; body `id`/`projectId`/`ownerId`/`requestedBy`/`status`/timestamps/`result`/plan/role claims are unknown properties → 422 | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Project-level uniform 403 (unknown/foreign/malformed/oversized ids byte-identical modulo requestId) on every scan route; AccountRole and UserType never grant foreign scans | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Scan-level uniform 404 inside the caller's own project — cross-account scan-id probing cannot distinguish existence | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Quota consumed EXACTLY once per created scan, atomically with the durable append (UsageService = single authority inside the store's serialized section); no job without a consumed allowance is constructible | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Concurrency: 10 simultaneous FREE creates → exactly 3 grants + 7 uniform 429+Retry-After; same-key 10-way retry storm → 1 scan, 1 consumption; cross-project/cross-account/device-shared races; PRO concurrent never denied | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Tampering (plan/role/entitlement headers, cookies, body claims) never changes the quota verdict | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Idempotency keys: strict format, account-scoped, replay returns the original scan without a second charge, different-request reuse → 409, bounded memory, restart-persistent | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Exactly ONE server-authoritative transition path; NO client mutation endpoint (405 + Allow); claim-once/finish-once — duplicate worker delivery cannot execute a job twice; terminal scans are immutable | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| No engine registered → deterministic FAILED/SCAN_ENGINE_NOT_IMPLEMENTED, never a fabricated completion or findings; crashed engines fail closed with generic messages (no internals leak) | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Startup recovery: interrupted RUNNING scans → FAILED/SCAN_INTERRUPTED; QUEUED scans drain; the process never boots with ambiguous scan state | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Archived projects reject new scans (409 PROJECT_ARCHIVED — reachable only for owned projects); history stays readable; no scan deletion exists | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Persistence: atomic temp+rename 0600 writes, serialized mutations, corrupt/invalid state refuses to start (incl. state-machine violations and dangling idempotency entries), restart persistence with quota/idempotency continuity | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Responses expose the public scan shape only — no ownerId, no worker internals, no filesystem paths, no stack traces | VERIFIED | `apps/api/test/scanApi.test.ts`, `packages/shared/test/scans.test.ts` |
+| Log hygiene: scan lines carry requestId/userId/projectId/scanId only — no emails, passwords or device material | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Web: honest FAILED rendering (never a fake completion), server-derived quota hint, archived restriction, XSS-inert scan text, no storage authority, fail-closed errors | VERIFIED | `apps/web/test/scanUi.test.tsx` |
+| Dataset lock: no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; synthetic engines exist only in tests | VERIFIED | `check:boundaries`, `check:secrets` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -207,6 +232,10 @@ in Pump 5 — see `docs/USAGE.md`), project deletion (hard delete is
 deliberately absent — ARCHIVED is the lifecycle end-state; the projects
 foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
 project sharing/collaboration, admin/operator project visibility,
+scan cancellation (deliberately absent until explicitly designed —
+the scan-job foundation itself is DONE in Pump 7 — see
+`docs/SCANS.md`), scan engines/findings/reports, admin/operator scan
+visibility,
 account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies

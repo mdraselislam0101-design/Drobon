@@ -520,3 +520,121 @@ describe('projects API client (Pump 6)', () => {
     }
   });
 });
+
+describe('scans API client (Pump 7)', () => {
+  const scanPayload = {
+    id: 'scan_00000000-0000-4000-8000-000000000001',
+    projectId: 'prj_00000000-0000-4000-8000-0000000000aa',
+    scanType: 'SAST',
+    status: 'QUEUED',
+    createdAt: '2026-09-28T10:00:00.000Z',
+    updatedAt: '2026-09-28T10:00:00.000Z',
+  };
+
+  test('getScans hits the project-scoped collection with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scans: [scanPayload] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getScans('prj_00000000-0000-4000-8000-0000000000aa');
+    expect(result.scans).toHaveLength(1);
+    expect(result.scans[0]?.status).toBe('QUEUED');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/scans');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('getScans encodes the project id', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scans: [] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.getScans('prj_ id%needs"encoding');
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${encodeURIComponent('prj_ id%needs"encoding')}/scans`);
+  });
+
+  test('createScan posts ONLY the scan type + idempotency key header', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scan: scanPayload }), 201),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.createScan(
+      'prj_00000000-0000-4000-8000-0000000000aa',
+      'DAST',
+      'retry-key-0001',
+    );
+    expect(result.scan.scanType).toBe('SAST');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/scans');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    // The body carries exactly { scanType } — never status, ownership,
+    // timestamps or results (those are all server-authoritative).
+    expect(JSON.parse(String(init.body))).toEqual({ scanType: 'DAST' });
+    const headers = init.headers as Record<string, string>;
+    expect(headers['idempotency-key']).toBe('retry-key-0001');
+    expect(headers['content-type']).toBe('application/json');
+  });
+
+  test('scan responses with forged/invalid payloads are rejected by guards', async () => {
+    // Owner field smuggled into a scan payload.
+    const withOwner = { scan: { ...scanPayload, ownerId: 'usr_1' } };
+    const ownerFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(withOwner)));
+    const ownerClient = createApiClient({ baseUrl: '', fetchImpl: ownerFetch });
+    await expect(
+      ownerClient.getScans('prj_00000000-0000-4000-8000-0000000000aa'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+
+    // State-machine forgery: QUEUED scan carrying a completedAt.
+    const forged = {
+      scans: [
+        { ...scanPayload, completedAt: '2026-09-28T10:01:00.000Z' },
+      ],
+    };
+    const forgedFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(forged)));
+    const forgedClient = createApiClient({ baseUrl: '', fetchImpl: forgedFetch });
+    await expect(
+      forgedClient.getScans('prj_00000000-0000-4000-8000-0000000000aa'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+
+    // Not an object at all.
+    const nullFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(null)));
+    const nullClient = createApiClient({ baseUrl: '', fetchImpl: nullFetch });
+    await expect(
+      nullClient.createScan('prj_00000000-0000-4000-8000-0000000000aa', 'SAST', 'retry-key-2'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+  });
+
+  test('401/403/429 scan failures map to typed ApiClientErrors', async () => {
+    const cases: Array<[number, string, string]> = [
+      [401, 'UNAUTHORIZED', 'Authentication required.'],
+      [403, 'FORBIDDEN', 'You do not have access to this resource.'],
+      [429, 'QUOTA_EXCEEDED', 'Monthly free scan limit reached.'],
+    ];
+    for (const [status, code, message] of cases) {
+      const fetchImpl: FetchImpl = vi.fn(async () =>
+        jsonResponse({ ok: false, error: { code, message }, meta: { requestId: 'r' } }, status),
+      );
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      const attempt = client.createScan(
+        'prj_00000000-0000-4000-8000-0000000000aa',
+        'SAST',
+        `retry-key-${status}`,
+      );
+      await expect(attempt).rejects.toMatchObject({
+        name: 'ApiClientError',
+        kind: 'http',
+        status,
+        code,
+      });
+    }
+  });
+});

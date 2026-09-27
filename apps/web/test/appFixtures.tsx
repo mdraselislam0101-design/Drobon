@@ -9,6 +9,8 @@ import type {
   LogoutResponse,
   ProjectResponse,
   ProjectsResponse,
+  ScanResponse,
+  ScansResponse,
   StatusResponse,
   SubscriptionResponse,
   UsageResponse,
@@ -133,6 +135,12 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       throw new Error('not stubbed');
     }),
     unarchiveProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    // Pump 7 defaults: no scans yet (the honest empty world); scan
+    // requests are not stubbed (suites that exercise them override).
+    getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+    createScan: vi.fn(async (): Promise<ScanResponse> => {
       throw new Error('not stubbed');
     }),
     ...overrides,

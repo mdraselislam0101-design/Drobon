@@ -72,6 +72,12 @@ export interface ApiConfig {
    * in production by {@link loadConfig} (projects must survive restarts).
    */
   projectStorePath: string;
+  /**
+   * Durable scan-job store path (Pump 7). `:memory:` is the explicitly
+   * ephemeral dev/test opt-in — rejected in production (scan state must
+   * survive restarts).
+   */
+  scanStorePath: string;
 }
 
 export class ConfigError extends Error {
@@ -245,6 +251,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     );
   }
 
+  // --- Scans (Pump 7) -------------------------------------------------------
+  const scanStorePath = (env['SCAN_STORE_PATH'] ?? '.data/scans.json').trim();
+  const scanMemoryStore = scanStorePath === ':memory:';
+  if (scanStorePath.length === 0) {
+    issues.push('SCAN_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (scanMemoryStore && environment === 'production') {
+    issues.push(
+      'SCAN_STORE_PATH=":memory:" is not allowed in production (scan jobs would not persist)',
+    );
+  }
+
   // --- Projects (Pump 6) ----------------------------------------------------
   const projectStorePath = (env['PROJECT_STORE_PATH'] ?? '.data/projects.json').trim();
   const projectMemoryStore = projectStorePath === ':memory:';
@@ -280,5 +297,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     usageStorePath,
     usageConsumeRoutes: environment !== 'production',
     projectStorePath,
+    scanStorePath,
   };
 }

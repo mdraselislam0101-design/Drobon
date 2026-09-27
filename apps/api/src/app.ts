@@ -40,6 +40,14 @@ import {
   createMemoryProjectStore,
   type ProjectStore,
 } from './projects/store.js';
+import {
+  createJsonFileScanStore,
+  createMemoryScanStore,
+  type ScanStore,
+} from './scans/store.js';
+import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
+import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
+import { createScanRoutes } from './routes/scans.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 
@@ -80,12 +88,40 @@ export interface AppDeps {
    * setups). Tests inject their own instance to control persistence.
    */
   projectStore?: ProjectStore;
+  /**
+   * Scan-job store (Pump 7). Defaults to the durable JSON store at
+   * `config.scanStorePath` (`:memory:` for explicitly ephemeral
+   * setups). Tests inject their own instance to control persistence.
+   */
+  scanStore?: ScanStore;
+  /**
+   * Scanner engines (Pump 7). The registry is EMPTY by default — no
+   * engine is implemented yet, so every scan deterministically fails
+   * with SCAN_ENGINE_NOT_IMPLEMENTED. Tests inject synthetic engines.
+   */
+  scanEngines?: readonly ScanEngine[];
+  /**
+   * Scan processor interval (Pump 7; default 5s, injectable for tests).
+   */
+  scanProcessorIntervalMs?: number;
+  /**
+   * Auto-start the scan processor (default true — the server runtime
+   * calls start() on boot: recover interrupted scans, drain QUEUED
+   * work, run the sweep). Tests disable it for deterministic control.
+   */
+  scanProcessorAutoStart?: boolean;
 }
 
 export interface App {
   handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   routes: Route[];
   resetRateLimit: () => void;
+  /**
+   * The scan processor (Pump 7): recovery + worker loop + periodic
+   * sweep. The server runtime starts it on boot; tests drive it
+   * explicitly.
+   */
+  scanProcessor: ScanProcessor;
 }
 
 /** Direct peer address only — proxy headers (`X-Forwarded-For`) are never trusted. */
@@ -139,6 +175,25 @@ export function createApp(deps: AppDeps): App {
     (config.projectStorePath === ':memory:'
       ? createMemoryProjectStore()
       : createJsonFileProjectStore(config.projectStorePath));
+  // Scan-job store (Pump 7): durable by default (fail-fast on a corrupt
+  // document — createApp throws, the process refuses to start). Tests
+  // inject their own store; `:memory:` is the ephemeral dev opt-in.
+  const scanStore: ScanStore =
+    deps.scanStore ??
+    (config.scanStorePath === ':memory:'
+      ? createMemoryScanStore()
+      : createJsonFileScanStore(config.scanStorePath));
+  // The engine registry is EMPTY by default (Pump 7 ships zero
+  // engines — see scans/engines.ts). Server-side composition only.
+  const scanEngines: ScanEngineRegistry = createEngineRegistry(deps.scanEngines ?? []);
+  const scanProcessor: ScanProcessor = createScanProcessor({
+    store: scanStore,
+    engines: scanEngines,
+    logger,
+    ...(deps.scanProcessorIntervalMs === undefined
+      ? {}
+      : { intervalMs: deps.scanProcessorIntervalMs }),
+  });
   const usage: UsageService = createUsageService({
     store: usageStore,
     ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
@@ -153,6 +208,14 @@ export function createApp(deps: AppDeps): App {
     ...createSubscriptionRoutes(),
     ...createUsageRoutes({ config, users, usage }),
     ...createProjectRoutes({ config, projects: projectStore }),
+    ...createScanRoutes({
+      config,
+      users,
+      projects: projectStore,
+      scans: scanStore,
+      usage,
+      processor: scanProcessor,
+    }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -341,9 +404,19 @@ export function createApp(deps: AppDeps): App {
     }
   };
 
+  // Pump 7: the server runtime starts the scan processor on boot
+  // (recovery + drain + sweep). Tests disable auto-start for
+  // deterministic control (they call scanProcessor.drain() explicitly).
+  if (deps.scanProcessorAutoStart !== false) {
+    void scanProcessor.start().catch((error: unknown) => {
+      logger.error('Scan processor failed to start', { err: error });
+    });
+  }
+
   return {
     handle,
     routes,
+    scanProcessor,
     resetRateLimit: (): void => {
       rateLimiter.reset();
       authRateLimiter.reset();
