@@ -1,6 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiConfig } from './config.js';
-import { badRequest, internal, isAppError, methodNotAllowed, notFound, unauthorized } from './errors.js';
+import {
+  badRequest,
+  forbidden,
+  internal,
+  isAppError,
+  methodNotAllowed,
+  notFound,
+  unauthorized,
+} from './errors.js';
 import type { Middleware, RequestContext, Route } from './http.js';
 import { createJsonFileUserRepository } from './auth/jsonFileUserRepository.js';
 import { createMemoryUserRepository } from './auth/memoryUserRepository.js';
@@ -14,7 +22,10 @@ import { requestIdMiddleware } from './middleware/requestId.js';
 import { securityHeadersMiddleware } from './middleware/securityHeaders.js';
 import { sessionMiddleware } from './middleware/session.js';
 import { sendFailure } from './respond.js';
+import { AUTHZ_DENIED_MESSAGE } from './auth/authorization.js';
+import { hasPermission, roleAtLeast } from '@drobon/shared';
 import { createAuthRoutes } from './routes/auth.js';
+import { createAuthzRoutes } from './routes/authz.js';
 import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
@@ -92,6 +103,7 @@ export function createApp(deps: AppDeps): App {
     ...createStatusRoutes({ config }),
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
+    ...createAuthzRoutes({ config, users }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -143,10 +155,29 @@ export function createApp(deps: AppDeps): App {
       (route) => route.method === ctx.method && route.path === ctx.pathname,
     );
     if (match !== undefined) {
-      if (match.requireAuth === true && ctx.user === undefined) {
-        // Authorization-ready boundary: one choke point for every
-        // protected route. Handlers behind it can trust `ctx.user`.
+      // Authentication first (401), then authorization (403) — one choke
+      // point for every protected route, in the pipeline's documented
+      // order. Handlers behind these flags can trust `ctx.user`/`ctx.authz`.
+      const needsAuth =
+        match.requireAuth === true ||
+        match.requireRole !== undefined ||
+        match.requirePermission !== undefined;
+      if (needsAuth && ctx.user === undefined) {
         throw unauthorized();
+      }
+      if (ctx.user !== undefined) {
+        if (
+          match.requirePermission !== undefined &&
+          !hasPermission(ctx.user.role, match.requirePermission)
+        ) {
+          throw forbidden(AUTHZ_DENIED_MESSAGE);
+        }
+        if (
+          match.requireRole !== undefined &&
+          !roleAtLeast(ctx.user.role, match.requireRole)
+        ) {
+          throw forbidden(AUTHZ_DENIED_MESSAGE);
+        }
       }
       await match.handler(req, res, ctx);
       return;

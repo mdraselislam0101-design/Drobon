@@ -7,9 +7,11 @@ import type {
 } from '@drobon/shared';
 import {
   EMAIL_MAX_LENGTH,
+  isUserType,
   isValidEmail,
   normalizeEmail,
   passwordPolicyIssue,
+  type UserType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
 import { conflict, invalidCredentials, unauthorized, validationError } from '../errors.js';
@@ -37,6 +39,18 @@ export interface AuthRouteDeps {
 const credentialsSchema = v.object({
   email: v.string({ maxLength: EMAIL_MAX_LENGTH, trim: true }),
   password: v.string({ maxLength: 128 }),
+});
+
+/**
+ * Registration accepts an OPTIONAL classification tag. `role` is NOT in
+ * any client schema — a `role` key in the payload is rejected as an
+ * unknown property (mass-assignment defense; the server always writes
+ * MEMBER and elevates roles only through operator/server actions).
+ */
+const registerSchema = v.object({
+  email: v.string({ maxLength: EMAIL_MAX_LENGTH, trim: true }),
+  password: v.string({ maxLength: 128 }),
+  userType: v.optional(v.string({ maxLength: 64, trim: true })),
 });
 
 type Credentials = { email: string; password: string };
@@ -76,13 +90,25 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       path: '/api/v1/auth/register',
       handler: async (req, res, ctx): Promise<void> => {
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
-        const parsed = credentialsSchema.parse(raw);
+        const parsed = registerSchema.parse(raw);
         if (!parsed.ok) {
           throw validationError(parsed.issues);
         }
         const issues = policyIssues(parsed.value);
         if (issues.length > 0) {
           throw validationError(issues);
+        }
+        // Optional classification tag — validated, and structurally
+        // incapable of influencing authorization (role is not readable
+        // from this payload at all).
+        let userType: UserType | null = null;
+        if (parsed.value.userType !== undefined) {
+          if (!isUserType(parsed.value.userType)) {
+            throw validationError([
+              { path: 'userType', message: 'Unsupported user type.' },
+            ]);
+          }
+          userType = parsed.value.userType;
         }
         const email = normalizeEmail(parsed.value.email);
         // Hash BEFORE the uniqueness check: the "email taken" path must
@@ -94,6 +120,9 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           email,
           passwordHash,
           createdAt: new Date().toISOString(),
+          // Server-assigned: every self-registration starts as MEMBER.
+          role: 'MEMBER',
+          userType,
         };
         const created = await users.create(record);
         if (!created) {

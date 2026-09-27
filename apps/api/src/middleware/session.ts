@@ -1,5 +1,6 @@
 import type { Middleware } from '../http.js';
 import { readSessionToken, clearSessionCookie } from '../auth/cookies.js';
+import { createAuthzContext } from '../auth/authorization.js';
 import { toAuthUser, type UserRepository } from '../auth/repositories.js';
 import type { SessionStore } from '../auth/sessions.js';
 
@@ -37,7 +38,10 @@ export function sessionMiddleware(options: SessionMiddlewareOptions): Middleware
           options.sessions.revoke(token);
           cleared = true;
         } else {
+          // Role/userType come from the live repository record on EVERY
+          // request — authorization never trusts cached or client state.
           ctx.user = toAuthUser(record);
+          ctx.authz = createAuthzContext(ctx.user);
         }
       } else {
         cleared = true;

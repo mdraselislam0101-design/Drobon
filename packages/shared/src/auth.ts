@@ -1,4 +1,5 @@
 import { isRecord } from './guards.js';
+import { isAccountRole, isUserType, type AccountRole, type UserType } from './authz.js';
 
 /**
  * Authentication contracts shared by the API and the Web client.
@@ -16,12 +17,26 @@ export interface AuthUser {
   email: string;
   /** Account creation time (ISO 8601). */
   createdAt: string;
+  /**
+   * Authorization role (server-assigned; NEVER accepted from clients).
+   * Required by the UI for role-aware rendering — enforcement happens on
+   * the API regardless.
+   */
+  role: AccountRole;
+  /**
+   * Classification/visibility tag. NOT an authorization input: it never
+   * grants access, bypasses roles, or substitutes for a permission.
+   * `null` when the account has not declared one.
+   */
+  userType: UserType | null;
 }
 
 /** `POST /api/v1/auth/register` request body. */
 export interface RegisterRequest {
   email: string;
   password: string;
+  /** Optional classification tag. `role` is NOT accepted, by design. */
+  userType?: UserType;
 }
 
 /** `POST /api/v1/auth/login` request body. */
@@ -104,7 +119,9 @@ export function isAuthUser(value: unknown): value is AuthUser {
     typeof value['email'] !== 'string' ||
     !isValidEmail(value['email']) ||
     typeof value['createdAt'] !== 'string' ||
-    Number.isNaN(Date.parse(value['createdAt']))
+    Number.isNaN(Date.parse(value['createdAt'])) ||
+    !isAccountRole(value['role']) ||
+    !(value['userType'] === null || isUserType(value['userType']))
   ) {
     return false;
   }

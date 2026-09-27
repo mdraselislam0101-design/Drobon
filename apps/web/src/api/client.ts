@@ -1,10 +1,13 @@
 import {
   isAuthResponse,
+  isCapabilityResponse,
   isCurrentUserResponse,
   isLogoutResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AuthResponse,
+  type AuthzCapability,
+  type CapabilityResponse,
   type EchoResponse,
   type HealthResponse,
   type CurrentUserResponse,
@@ -83,6 +86,20 @@ export interface ApiClient {
   postLogout(signal?: AbortSignal): Promise<LogoutResponse>;
   /** Current authenticated user — rejects with 401 when anonymous. */
   getMe(signal?: AbortSignal): Promise<CurrentUserResponse>;
+  /**
+   * Ask the API whether the capability is granted (Pump 3). 403 is an
+   * expected outcome the caller may render — the API decides, never the
+   * client's view of its own role.
+   */
+  getCapability(
+    level: AuthzCapability,
+    signal?: AbortSignal,
+  ): Promise<CapabilityResponse>;
+  /**
+   * Read a user record by id (ownership foundation). Self-read for every
+   * account; ADMIN+ for others; uniform 403 otherwise.
+   */
+  getUserById(id: string, signal?: AbortSignal): Promise<CurrentUserResponse>;
 }
 
 /**
@@ -267,6 +284,21 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     getMe: (signal?: AbortSignal): Promise<CurrentUserResponse> =>
       authRequest<CurrentUserResponse>(
         '/api/v1/me',
+        signal === undefined ? {} : { signal },
+        isCurrentUserResponse,
+      ),
+    getCapability: (
+      level: AuthzCapability,
+      signal?: AbortSignal,
+    ): Promise<CapabilityResponse> =>
+      authRequest<CapabilityResponse>(
+        `/api/v1/authz/capabilities/${level}`,
+        signal === undefined ? {} : { signal },
+        isCapabilityResponse,
+      ),
+    getUserById: (id: string, signal?: AbortSignal): Promise<CurrentUserResponse> =>
+      authRequest<CurrentUserResponse>(
+        `/api/v1/users?id=${encodeURIComponent(id)}`,
         signal === undefined ? {} : { signal },
         isCurrentUserResponse,
       ),

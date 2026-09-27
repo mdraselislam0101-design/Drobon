@@ -20,11 +20,15 @@ describe('POST /api/v1/auth/register', () => {
     expect(isAuthUser(user)).toBe(true);
     expect(user?.email).toBe('alice@example.test'); // normalized
     expect(user?.id).toMatch(/^usr_/);
-    // Exact public shape: nothing but the three allowed fields.
+    // Exact public shape: nothing but the allowed fields. Self-
+    // registration ALWAYS starts as MEMBER — never elevated, no matter
+    // what the client sent.
     expect(user).toEqual({
       id: expect.any(String),
       email: 'alice@example.test',
       createdAt: expect.any(String),
+      role: 'MEMBER',
+      userType: null,
     });
     expect(JSON.stringify(body)).not.toContain('scrypt$');
     expect(JSON.stringify(body)).not.toContain('password');

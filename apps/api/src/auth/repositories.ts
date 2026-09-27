@@ -1,7 +1,9 @@
-import type { AuthUser } from '@drobon/shared';
+import type { AccountRole, AuthUser, UserType } from '@drobon/shared';
 
 /**
- * The minimum persistence boundary required by authentication (Pump 2).
+ * The minimum persistence boundary required by authentication (Pump 2),
+ * extended by Pump 3 for authorization (role + user type live on the
+ * account record — nothing else was added to persistence).
  *
  * Everything account-related goes through this interface — the HTTP layer,
  * session middleware and tests only ever see `UserRepository`. The later
@@ -18,6 +20,13 @@ export interface UserRecord {
   /** scrypt hash produced by `auth/passwords.ts`. */
   passwordHash: string;
   createdAt: string;
+  /**
+   * Authorization role. Assigned server-side ONLY (registration always
+   * writes MEMBER; elevation is an operator/future-admin action).
+   */
+  role: AccountRole;
+  /** Classification/visibility tag — never used for access decisions. */
+  userType: UserType | null;
 }
 
 export interface UserRepository {
@@ -33,24 +42,76 @@ export interface UserRepository {
 
 /** Project the internal record to the ONLY user shape allowed to leave. */
 export function toAuthUser(record: UserRecord): AuthUser {
-  return { id: record.id, email: record.email, createdAt: record.createdAt };
+  return {
+    id: record.id,
+    email: record.email,
+    createdAt: record.createdAt,
+    role: record.role,
+    userType: record.userType,
+  };
+}
+
+/**
+ * Parse + normalize a record loaded from durable storage.
+ *
+ * Migration rule (Pump 3): Pump 2-era records without `role`/`userType`
+ * remain valid and are read as `MEMBER` / `null`. When the fields ARE
+ * present they are validated strictly — a corrupt authorization field
+ * refuses to load (fail fast, same posture as the rest of the store).
+ * Returns `undefined` when the record is structurally invalid.
+ */
+export function parseStoredUser(value: unknown): UserRecord | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record['id'] !== 'string' ||
+    record['id'].length === 0 ||
+    typeof record['email'] !== 'string' ||
+    record['email'].length === 0 ||
+    record['email'] !== record['email'].trim().toLowerCase() ||
+    typeof record['passwordHash'] !== 'string' ||
+    !record['passwordHash'].startsWith('scrypt$') ||
+    typeof record['createdAt'] !== 'string' ||
+    Number.isNaN(Date.parse(record['createdAt']))
+  ) {
+    return undefined;
+  }
+  const roleValue = record['role'];
+  const userTypeValue = record['userType'];
+  let role: AccountRole;
+  if (roleValue === undefined) {
+    role = 'MEMBER'; // Pump 2-era record: default, never elevated.
+  } else if (roleValue === 'MEMBER' || roleValue === 'ADMIN' || roleValue === 'ACCOUNT_OWNER') {
+    role = roleValue;
+  } else {
+    return undefined;
+  }
+  let userType: UserType | null;
+  if (userTypeValue === undefined || userTypeValue === null) {
+    userType = null;
+  } else if (
+    userTypeValue === 'DEVELOPER' ||
+    userTypeValue === 'STUDENT' ||
+    userTypeValue === 'SECURITY_PROFESSIONAL' ||
+    userTypeValue === 'PENTESTER'
+  ) {
+    userType = userTypeValue;
+  } else {
+    return undefined;
+  }
+  return {
+    id: record['id'],
+    email: record['email'],
+    passwordHash: record['passwordHash'],
+    createdAt: record['createdAt'],
+    role,
+    userType,
+  };
 }
 
 /** Structural validation for records loaded from durable storage. */
 export function isValidStoredUser(value: unknown): value is UserRecord {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record['id'] === 'string' &&
-    record['id'].length > 0 &&
-    typeof record['email'] === 'string' &&
-    record['email'].length > 0 &&
-    record['email'] === record['email'].trim().toLowerCase() &&
-    typeof record['passwordHash'] === 'string' &&
-    record['passwordHash'].startsWith('scrypt$') &&
-    typeof record['createdAt'] === 'string' &&
-    !Number.isNaN(Date.parse(record['createdAt']))
-  );
+  return parseStoredUser(value) !== undefined;
 }

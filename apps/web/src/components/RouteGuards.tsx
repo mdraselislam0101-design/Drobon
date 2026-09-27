@@ -1,7 +1,10 @@
 import { useEffect, useRef, type ReactElement } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import type { AccountRole } from '@drobon/shared';
+import { roleAtLeast } from '@drobon/shared';
 import { useAuth } from '../auth/context.js';
 import { ErrorState } from './ErrorState.js';
+import { ForbiddenState } from './ForbiddenState.js';
 import { LoadingState } from './LoadingState.js';
 
 /** Only render the wrapped element while anonymous (login/register pages). */
@@ -21,12 +24,17 @@ export function PublicOnlyRoute({ children }: { children: ReactElement }): React
 }
 
 /**
- * Route guard for authenticated pages. Handles the three states honestly:
+ * Route guard for authenticated pages. Handles the states honestly:
  * loading (spinner), anonymous (redirect to login, remembering where the
  * user was going), probe failure (retryable error instead of a fake
- * logout).
+ * logout), and — with `minRole` — authenticated-but-insufficient (the
+ * forbidden state, NOT a login redirect: the session is fine).
+ *
+ * The role check is pure UX defense-in-depth: the API independently
+ * enforces the same requirement server-side; hiding the page proves
+ * nothing, the API 403 proves everything.
  */
-export function ProtectedRoute(): React.JSX.Element {
+export function ProtectedRoute({ minRole }: { minRole?: AccountRole } = {}): React.JSX.Element {
   const { state, refresh } = useAuth();
   const location = useLocation();
   const sawReady = useRef(false);
@@ -63,6 +71,9 @@ export function ProtectedRoute(): React.JSX.Element {
         }}
       />
     );
+  }
+  if (minRole !== undefined && !roleAtLeast(state.user.role, minRole)) {
+    return <ForbiddenState />;
   }
   return <Outlet />;
 }

@@ -152,3 +152,82 @@ describe('auth API client', () => {
     expect(error.code).toBe('UNAUTHORIZED');
   });
 });
+
+describe('authorization API client (Pump 3)', () => {
+  test('getCapability hits the level endpoint with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ capability: 'admin' })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getCapability('admin');
+    expect(result).toEqual({ capability: 'admin' });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/authz/capabilities/admin');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('403 capability denials surface as an http error with FORBIDDEN', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        errorEnvelope('FORBIDDEN', 'You do not have access to this resource.'),
+        403,
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getCapability('owner')).rejects.toMatchObject({
+      kind: 'http',
+      status: 403,
+      code: 'FORBIDDEN',
+    });
+  });
+
+  test('capability payloads failing the shared guard are rejected', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ capability: 'root' })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getCapability('member')).rejects.toMatchObject({
+      kind: 'invalid-response',
+    });
+  });
+
+  test('getUserById encodes the id and validates the user payload', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope({ user: TEST_USER })));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getUserById('usr_x/../y');
+    expect(isCurrentUserResponse(result)).toBe(true);
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(url).toBe('/api/v1/users?id=usr_x%2F..%2Fy');
+  });
+
+  test('getUserById maps 403 (IDOR denial) onto the shared error contract', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        errorEnvelope('FORBIDDEN', 'You do not have access to this resource.'),
+        403,
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getUserById('usr_other')).rejects.toMatchObject({
+      status: 403,
+      code: 'FORBIDDEN',
+    });
+  });
+
+  test('authz payloads never adopt a client-forged role shape', async () => {
+    // The user guard is strict: unknown role strings fail the payload.
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({ user: { ...TEST_USER, role: 'SUPERADMIN' } }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getUserById('usr_self')).rejects.toMatchObject({
+      kind: 'invalid-response',
+    });
+  });
+});

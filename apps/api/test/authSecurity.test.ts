@@ -235,6 +235,7 @@ describe('auth security controls', () => {
             authRateLimitMaxRequests: 1000,
             authRateLimitWindowMs: 60_000,
             cookieSecure: false,
+            authzProbeRoutes: true,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

@@ -21,10 +21,14 @@ describe('GET /api/v1/me', () => {
     expect(res.status).toBe(200);
     const payload = body as { ok: true; data: { user: Record<string, unknown> } };
     // Exact shape: password, hash, token, internal fields — none of it.
+    // role/userType are the Pump 3 public authorization fields (server-
+    // assigned, non-sensitive).
     expect(payload.data.user).toEqual({
       id: expect.any(String),
       email: 'me@example.test',
       createdAt: expect.any(String),
+      role: 'MEMBER',
+      userType: null,
     });
     expect(res.headers.get('x-request-id')).toBeTruthy();
   });

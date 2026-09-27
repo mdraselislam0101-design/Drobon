@@ -129,3 +129,55 @@ Exit code is `0` on PASS, `1` on any FAIL.
   `check:secrets` PASS over sources and builds; `.data/` (account store)
   gitignored; final `git status` clean of secrets/datasets/junk after
   commit.
+
+## Verification evidence (Pump 3 — authorization + access control)
+
+> Re-run `npm run verify` after any change and update this section —
+> evidence must always describe the current tree.
+
+- Date: 2026-09-27
+- `npm run verify` result: **PASS** — all 9 steps green
+  (boundaries, secret self-test, secret scan 243 files, typecheck, lint,
+  tests, production builds, secret scan incl. builds, dependency audit)
+- Test totals: **413 passed, 0 failed** (44 files)
+  - `@drobon/shared`: 59 passed (4 files) — Pump 2's 46 + 13 authz-contract
+    tests (plus hardened auth guards)
+  - `@drobon/api`: 229 passed (27 files) — Pump 2's 199 (2 exact-shape
+    assertions strengthened with role/userType, none weakened) + 30 new
+    authorization tests across 4 new suites
+  - `@drobon/worker`: 28 passed (3 files) — unchanged
+  - `@drobon/web`: 97 passed (11 files) — Pump 2's 81 + 16 new
+    authorization tests (UI suite + client boundary)
+- Pump 1 + Pump 2 suites remain green; only contract-strengthening
+  changes (public user shape gained `role`/`userType`).
+- `npm run audit` result: **0 vulnerabilities**
+- Manual E2E probes — authorization matrix against the **production API
+  build** (`node apps/api/dist/index.js`, three seeded role accounts):
+  - Proofs 1–6 exactly as specified:
+    member probe → member 200 / admin 200 / owner 200 / anon 401;
+    admin probe → member **403** / admin 200 / owner 200 / anon 401;
+    owner probe → member 403 / **admin 403** / owner 200 / anon 401
+  - 401 body `UNAUTHORIZED "Authentication required."` vs 403 body
+    `FORBIDDEN "You do not have access to this resource."` — neither
+    hints at roles or accounts
+  - Ownership: self 200; member→other 403 (IDOR blocked); admin/owner→
+    other 200; unknown id → 403 for member AND admin (no oracle); anon → 401
+  - `x-role: ACCOUNT_OWNER` header ignored → still 403; register with
+    `role` payload → 422; register with `userType: 'ADMIN'` → 422;
+    valid `userType: 'PENTESTER'` → stored, `role` still MEMBER
+  - Production posture (`NODE_ENV=production` build): all three probes
+    **404 even for a logged-in ADMIN** (cannot ship), `/api/v1/users`
+    still registered and enforced (self 200 / anon 401), session cookie
+    carries `Secure`, security headers intact, `/me` 200
+- Manual E2E through the Web origin (`http://127.0.0.1:5173`, proxy →
+  API): register with userType → 201 `role: MEMBER, userType: PENTESTER`;
+  `/me` returns both fields (badge source); probes 200/403/403 as member;
+  self-lookup 200, other-lookup 403, anon probe 401; **Pump 2-era store
+  record (no role fields) logs in and migrates to `MEMBER`/`null`**;
+  operator elevation (store edit + restart) → same account now sees
+  `role: ADMIN`, admin probe 200, owner probe 403, privileged
+  cross-account lookup 200 returning only public fields — proving
+  authorization reads live server-side state end to end.
+- Boundary checks: `check:boundaries` PASS; `check:secrets` PASS over
+  sources and builds; `.data/` (account store, mode 0600) gitignored;
+  final `git status` clean of secrets/datasets/junk after commit.

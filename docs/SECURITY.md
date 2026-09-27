@@ -5,18 +5,20 @@ first-class, **tested** requirement. A control is listed as VERIFIED only
 if an automated test or an executed check proves it; anything else is
 marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth stage)
+## Threat model (foundation + auth + authz stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
-against the cookie session; misconfiguration; secret leakage into code,
-logs or the browser bundle; dependency risk; abuse/accidental overload of
-a single instance.
+against the cookie session; privilege escalation (vertical: MEMBER→ADMIN→
+OWNER; horizontal: cross-account IDOR); role tampering via client input;
+misconfiguration; secret leakage into code, logs or the browser bundle;
+dependency risk; abuse/accidental overload of a single instance.
 
 Out of scope for now: persistent attackers across restarts (sessions are
 process-local), supply-chain compromise beyond `npm audit`,
-DDoS/absorption (single-instance limiter only), roles/authorization
-(admin/attacker with a *valid* session — no privileged roles exist yet).
+DDoS/absorption (single-instance limiter only), attackers with a
+*legitimately granted* privileged role acting within their permissions
+(no audit trail yet — see NOT_IMPLEMENTED).
 
 ## Controls
 
@@ -54,6 +56,25 @@ DDoS/absorption (single-instance limiter only), roles/authorization
 | Durable account store: atomic writes, fail-fast on corruption, serialized creates (no duplicate races), `:memory:` rejected in production | VERIFIED | `apps/api/test/authStore.test.ts`, `config.test.ts` |
 | Web: guarded session state (no token in JS), open-redirect-proof post-login navigation, expiry handling, accessible auth forms, logout honesty (server-confirmed only) | VERIFIED | `apps/web/test/{authClient,authPages,protected}.test.ts` / `.tsx` |
 
+### Authorization (Pump 3)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Role-gated routes: `Route.requireRole`/`requirePermission` enforced at the router (401 anonymous → 403 insufficient); capability matrix proofs 1–6 (MEMBER/ADMIN/OWNER × member/admin/owner) | VERIFIED | `apps/api/test/authzMatrix.test.ts`, `authorization.test.ts` |
+| 401 vs 403 semantics kept distinct with uniform messages; denial bodies hint nothing about roles, configuration or account existence | VERIFIED | `authzMatrix.test.ts` (exact envelopes), `authzOwnership.test.ts` |
+| UserType never grants access (classification ≠ authorization); role-shaped client headers/body/cookies ignored | VERIFIED | `authzMatrix.test.ts`, `authzSecurity.test.ts` |
+| Mass-assignment: `role` rejected as unknown property at register; `userType` validated against the closed enum; new accounts always MEMBER | VERIFIED | `authzMatrix.test.ts` |
+| Server-side role state: sessions carry only opaque token → id; live role changes observed next request; client cannot influence | VERIFIED | `authzMatrix.test.ts` (elevation test) |
+| Ownership/IDOR: self-read allowed; cross-read only via explicit `users:read:others` (ADMIN+); unknown/malformed/oversized/manipulated ids → byte-identical 403 (no existence oracle, incl. for admins) | VERIFIED | `authzOwnership.test.ts` |
+| Forged/expired/empty session cookies → 401 on every capability; Bearer/Basic/API-key headers never authenticate | VERIFIED | `authzSecurity.test.ts` |
+| HTTP method tricks cannot bypass role gates (405/204, never a grant) | VERIFIED | `authzSecurity.test.ts` |
+| 403 denials keep the full security-header set + exact-origin CORS (`Vary`, credentials reflection) | VERIFIED | `authzSecurity.test.ts` |
+| Denial logs carry no role names, emails, tokens or permission names (captured-log scan) | VERIFIED | `authzSecurity.test.ts` |
+| Capability probes never register in production (`authzProbeRoutes` derived from env → 404 there) | VERIFIED | `config.test.ts`, `authzMatrix.test.ts` |
+| Store: invalid/tampered `role`/`userType` fields refuse to load; Pump 2-era records migrate to MEMBER/null (never elevated) | VERIFIED | `authStore.test.ts` |
+| Web: forbidden state (not login redirect) for insufficient roles; role-aware guards; capability verdicts rendered from API responses only; permission-aware UI visibility | VERIFIED | `apps/web/test/authzUi.test.tsx` |
+| Web authz payload boundary: guards reject forged role values (`SUPERADMIN` etc.) | VERIFIED | `apps/web/test/authClient.test.ts`, `shared/test/auth.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -90,13 +111,15 @@ DDoS/absorption (single-instance limiter only), roles/authorization
 
 ## NOT_IMPLEMENTED (do not assume these exist)
 
-Roles/authorization (any valid session is equal — there is no privileged
-role yet), account email verification, password reset, MFA, account
-lockout (deliberate — rate limits instead), OAuth/OIDC/JWT, distributed
-sessions or rate limiting, trusted-proxy (`X-Forwarded-For`) handling,
-WAF, durable queues, the database phase, dataset ingestion, file uploads,
-outgoing fetch/SSRF surface (the API makes no outbound calls), command
-execution, metrics/tracing, security-event alerting.
+Role management console / first-admin bootstrap (elevation is an operator
+action on the store today), role-change audit trail, account email
+verification, password reset, MFA, account lockout (deliberate — rate
+limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
+beyond the fixed permission table, distributed sessions or rate limiting,
+trusted-proxy (`X-Forwarded-For`) handling, WAF, durable queues, the
+database phase, dataset ingestion, file uploads, outgoing fetch/SSRF
+surface (the API makes no outbound calls), command execution,
+metrics/tracing, security-event alerting.
 
 Note on SSRF/path-traversal/command-injection: the app has no feature that
 fetches URLs, resolves file paths from input, or executes commands — the

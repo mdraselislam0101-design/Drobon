@@ -57,6 +57,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     authRateLimitMaxRequests: 1000,
     authRateLimitWindowMs: 60_000,
     cookieSecure: false,
+    authzProbeRoutes: true,
     ...configOverrides,
   };
   const effectiveStorePath =

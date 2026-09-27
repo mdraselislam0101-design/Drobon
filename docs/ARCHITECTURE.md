@@ -1,10 +1,11 @@
 # Architecture
 
-Pump 1 foundation, extended by Pump 2 (authentication): an npm-workspaces
-monorepo with three runtime components (Web, API, Worker) sharing one
-contract package. TypeScript everywhere, strict mode everywhere (`strict`,
-`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`,
-`verbatimModuleSyntax` — see `tsconfig.base.json`).
+Pump 1 foundation, extended by Pump 2 (authentication) and Pump 3
+(authorization): an npm-workspaces monorepo with three runtime components
+(Web, API, Worker) sharing one contract package. TypeScript everywhere,
+strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
+`noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
+`tsconfig.base.json`).
 
 ## Components
 
@@ -18,10 +19,16 @@ browser bundle and the servers can all consume it:
 - `errors.ts` — the closed `ErrorCode` vocabulary. A code may only exist if
   some component emits it (Pump 2 added `UNAUTHORIZED`, `FORBIDDEN`,
   `CONFLICT`).
-- `auth.ts` — auth contracts: `AuthUser`, `RegisterRequest`,
-  `LoginRequest`, `AuthResponse`, `CurrentUserResponse`, `LogoutResponse`,
-  the shared email/password policy (`isValidEmail`, `passwordPolicyIssue`)
-  and payload guards (`isAuthUser` — also rejects credential material).
+- `auth.ts` — auth contracts: `AuthUser` (now including `role` and
+  `userType`), `RegisterRequest`, `LoginRequest`, `AuthResponse`,
+  `CurrentUserResponse`, `LogoutResponse`, the shared email/password
+  policy (`isValidEmail`, `passwordPolicyIssue`) and payload guards
+  (`isAuthUser` — also rejects credential material and forged roles).
+- `authz.ts` — authorization contracts (Pump 3): `AccountRole`
+  (MEMBER/ADMIN/ACCOUNT_OWNER + ranks), `UserType` (classification only),
+  the central `PERMISSIONS` table + `hasPermission`/`roleAtLeast`,
+  `AuthzContext`, capability-probe types and guards. No scattered role
+  strings anywhere else.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -38,8 +45,8 @@ minimal attack surface):
 
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)
-        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user)
-        → router (requireAuth boundary) → handler
+        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz)
+        → router: match → authenticate (401) → authorize (403) → handler
 ```
 
 - `config.ts` — the ONLY module that reads `process.env`; validates every
@@ -63,25 +70,31 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   with `RateLimit-*` / `Retry-After` headers, a path-scoped credential
   rate limit, the CSRF origin guard, and session resolution
   (cookie → store → repository → `ctx.user`, stale cookies actively cleared).
-- `auth/` — the Pump 2 authentication core: `passwords.ts` (scrypt hashing,
+- `auth/` — the authentication core: `passwords.ts` (scrypt hashing,
   constant-time verify, dummy verify for timing equalization),
-  `repositories.ts` (`UserRepository` interface + `toAuthUser` projection),
+  `repositories.ts` (`UserRepository` interface + `toAuthUser` projection;
+  `UserRecord` carries `role`/`userType` with migration-safe parsing),
   `jsonFileUserRepository.ts` (the minimum durable persistence boundary —
   atomic writes, fail-fast on corruption), `memoryUserRepository.ts`
   (tests + explicit `:memory:`), `sessions.ts` (server-side store keyed by
   SHA-256 of the token, absolute TTL, immediate revocation), `cookies.ts`
-  (HttpOnly/SameSite=Strict/Secure-in-production serialization).
+  (HttpOnly/SameSite=Strict/Secure-in-production serialization),
+  `authorization.ts` (Pump 3: `createAuthzContext`, role/permission
+  assertions, ownership helpers, uniform denial message).
 - `routes/` — `GET /livez`, `GET /readyz` (checks: configuration,
   accounts), `GET /api/v1/status`, `POST /api/v1/echo`, plus
-  `POST /api/v1/auth/register` (201 + session cookie),
+  `POST /api/v1/auth/register` (201 + session cookie; always MEMBER),
   `POST /api/v1/auth/login` (200 + cookie, generic 401s),
   `POST /api/v1/auth/logout` (idempotent 200 + cookie clear),
-  `GET /api/v1/me` (`requireAuth`, public fields only).
+  `GET /api/v1/me` (`requireAuth`, public fields only), Pump 3's
+  `GET /api/v1/authz/capabilities/*` (role-gated probes, dev/test only)
+  and `GET /api/v1/users?id=` (ownership-checked read).
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher,
-  centralized catch + structured access log, `Route.requireAuth` enforced at
-  the router (one choke point for every protected route). Accepts
-  `extraRoutes` + injectable `users`/`sessions` repositories.
+  centralized catch + structured access log, and the single router choke
+  point enforcing authentication (401) then authorization (403) before any
+  handler runs. Accepts `extraRoutes` + injectable `users`/`sessions`
+  repositories.
 - `server.ts` / `index.ts` — socket timeouts, startup (a corrupt account
   store refuses to start), SIGTERM/SIGINT graceful shutdown.
 
@@ -106,14 +119,17 @@ NOT_IMPLEMENTED).
   session state (`loading`/`ready`/`anonymous`/`error`), mount-time `/me`
   probe, login/register/logout actions. The token itself is never held in
   JavaScript — only the browser's httpOnly cookie.
-- `components/RouteGuards.tsx` — `ProtectedRoute` (loading → spinner,
-  anonymous → /login remembering `from`, probe failure → retryable error,
-  ready→anonymous transition flagged as *expired*), `PublicOnlyRoute`
-  (authed visitors bounce off /login and /register), and `readSafePath()`
-  (open-redirect defense for post-login navigation).
+- `components/RouteGuards.tsx` — `ProtectedRoute` with optional `minRole`
+  (loading → spinner, anonymous → /login remembering `from`, probe
+  failure → retryable error, ready→anonymous transition flagged as
+  *expired*, authenticated-but-insufficient → `ForbiddenState` — never a
+  login redirect), `PublicOnlyRoute` (authed visitors bounce off /login
+  and /register), and `readSafePath()` (open-redirect defense for
+  post-login navigation). `components/ForbiddenState.tsx` is the generic
+  403 view (alert, no role hints).
 - `routes.tsx` / `App.tsx` — `BrowserRouter` in prod, `MemoryRouter` in
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
-  `/register`, `/account` (protected), `*` (404).
+  `/register`, `/account` (protected, `minRole="MEMBER"`), `*` (404).
 - `components/` — `Layout` (auth-aware header/nav/main/footer, skip link),
   `LoadingState` (`role=status`), `ErrorState` (`role=alert` + request ID +
   retry), `ErrorBoundary`, `AuthFormError` (form-level alert + strict
@@ -124,7 +140,10 @@ NOT_IMPLEMENTED).
   `role=alert` errors, busy buttons), shared policy validation with the API,
   server-safe error rendering.
 - `pages/AccountPage.tsx` — protected page: re-verifies the session on
-  mount (session-expiry discovery), shows public account facts, sign-out.
+  mount (session-expiry discovery), shows public account facts, role and
+  user-type badges, live capability checks (each verdict is the API's
+  200/403, not a client guess), a permission-gated privileged lookup
+  section, sign-out.
 - `vite-plugin-aegis.ts` — dev/preview-only hardening: security headers on
   every response (strict CSP on preview; CSP omitted in dev because Vite HMR
   needs inline scripts) and SPA fallback for the preview server.
@@ -156,9 +175,13 @@ NOT_IMPLEMENTED).
 4. Credential endpoints get a second, tighter rate limit; unsafe methods
    pass the CSRF origin guard (Origin must be allowlisted or same-host).
 5. Session resolution: session cookie → session store → user repository →
-   `ctx.user`; invalid/stale cookies are cleared on the way through.
-6. Router match → `requireAuth` boundary (401 if anonymous) → handler.
-   Handlers validate input, then `sendSuccess()` / throw `AppError`.
+   `ctx.user` + `ctx.authz` (role/userType from the LIVE record);
+   invalid/stale cookies are cleared on the way through.
+6. Router match → authentication boundary (`requireAuth` → 401 if
+   anonymous) → authorization boundary (`requireRole`/`requirePermission`
+   → 403 if insufficient) → handler. Handlers validate input, then
+   `sendSuccess()` / throw `AppError`; ownership-sensitive handlers add
+   `assertCanReadUser`.
 7. Central catch maps to the error envelope (4xx exposed, 5xx generic),
    logs appropriately (5xx → error with stack server-side only), and every
    request ends with one structured access-log line.
@@ -175,9 +198,10 @@ NOT_IMPLEMENTED).
 
 ## NOT_IMPLEMENTED (future Pumps)
 
-Roles/authorization (RBAC) on top of the auth boundary, account email
-verification, password reset, trusted-proxy support, distributed rate
-limiting, durable/persistent sessions and queues, the database phase
+Role management console / first-admin bootstrap and role-change audit
+trail (authorization primitives themselves are DONE in Pump 3), account
+email verification, password reset, trusted-proxy support, distributed
+rate limiting, durable/persistent sessions and queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
 ingestion/storage, scanning/findings/reports/remediation, AI assistance,
-admin, payments, multi-instance deployment, metrics/tracing.
+admin dashboard, payments, multi-instance deployment, metrics/tracing.

@@ -39,6 +39,14 @@ export interface ApiConfig {
    * environment (production only) so plain-HTTP localhost keeps working.
    */
   cookieSecure: boolean;
+  /**
+   * Whether the authorization capability probes
+   * (`GET /api/v1/authz/capabilities/*`) are registered. Derived:
+   * enabled outside production so they can never accidentally ship as
+   * public production surface — in production those paths simply 404.
+   * The ownership route (`GET /api/v1/users`) is always registered.
+   */
+  authzProbeRoutes: boolean;
 }
 
 export class ConfigError extends Error {
@@ -221,5 +229,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     authRateLimitMaxRequests,
     authRateLimitWindowMs,
     cookieSecure: environment === 'production',
+    authzProbeRoutes: environment !== 'production',
   };
 }

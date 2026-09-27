@@ -12,6 +12,8 @@ function record(email: string, id = `usr_${email}`): UserRecord {
     email,
     passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==', // fixture marker: test
     createdAt: '2026-09-27T00:00:00.000Z',
+    role: 'MEMBER',
+    userType: null,
   };
 }
 
@@ -92,6 +94,8 @@ describe('JSON file user repository', () => {
       email: 'hash@example.test',
       passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==',
       createdAt: '2026-09-27T00:00:00.000Z',
+      role: 'MEMBER',
+      userType: null,
     });
     const raw = readFileSync(path, 'utf8');
     expect(raw).toContain('scrypt$');
@@ -151,6 +155,74 @@ describe('JSON file user repository', () => {
       writeFileSync(path, content, 'utf8');
       expect(() => createJsonFileUserRepository(path)).toThrow(pattern);
     }
+  });
+
+  test('Pump 2-era records without role/userType load as MEMBER/null', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    // Exactly what a Pump 2 store looked like: no authorization fields.
+    const pump2Doc = {
+      version: 1,
+      users: [
+        {
+          id: 'usr_legacy',
+          email: 'legacy@example.test',
+          passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==',
+          createdAt: '2026-09-27T00:00:00.000Z',
+        },
+      ],
+    };
+    writeFileSync(path, JSON.stringify(pump2Doc));
+    const repo = createJsonFileUserRepository(path);
+    const found = await repo.findByEmail('legacy@example.test');
+    expect(found).toBeDefined();
+    // Migration defaults are safe: never elevated, classification empty.
+    expect(found?.role).toBe('MEMBER');
+    expect(found?.userType).toBeNull();
+  });
+
+  test('invalid authorization fields refuse to load (fail fast)', () => {
+    const dir = tempDir();
+    const base = {
+      id: 'usr_badrole',
+      email: 'badrole@example.test',
+      passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==',
+      createdAt: '2026-09-27T00:00:00.000Z',
+    };
+    for (const bad of [
+      { role: 'SUPERADMIN' },
+      { role: 'admin' },
+      { role: null },
+      { role: 7 },
+      { userType: 'ADMIN' },
+      { userType: 'hacker' },
+      { userType: 42 },
+    ]) {
+      const path = join(dir, `store-${Object.keys(bad).join('-')}-${Object.values(bad).join('')}.json`);
+      writeFileSync(
+        path,
+        JSON.stringify({ version: 1, users: [{ ...base, ...bad }] }),
+      );
+      expect(() => createJsonFileUserRepository(path)).toThrow(/invalid record/);
+    }
+  });
+
+  test('valid Pump 3 authorization fields round-trip through the file', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    const repo = createJsonFileUserRepository(path);
+    const created: UserRecord = {
+      id: 'usr_roundtrip',
+      email: 'roundtrip@example.test',
+      passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==',
+      createdAt: '2026-09-27T00:00:00.000Z',
+      role: 'ACCOUNT_OWNER',
+      userType: 'SECURITY_PROFESSIONAL',
+    };
+    expect(await repo.create(created)).toBe(true);
+    const reloaded = createJsonFileUserRepository(path);
+    const found = await reloaded.findById('usr_roundtrip');
+    expect(found).toEqual(created);
   });
 
   test('reading an unreadable file fails loudly', () => {

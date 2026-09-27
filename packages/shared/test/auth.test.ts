@@ -76,10 +76,14 @@ describe('auth guards', () => {
     id: 'usr_test_1',
     email: 'user@example.test',
     createdAt: '2026-09-27T00:00:00.000Z',
+    role: 'MEMBER',
+    userType: null,
   };
 
   test('isAuthUser accepts the public shape', () => {
     expect(isAuthUser(user)).toBe(true);
+    expect(isAuthUser({ ...user, userType: 'DEVELOPER' })).toBe(true);
+    expect(isAuthUser({ ...user, role: 'ACCOUNT_OWNER', userType: 'PENTESTER' })).toBe(true);
   });
 
   test('isAuthUser rejects internal security fields and bad shapes', () => {
@@ -91,6 +95,26 @@ describe('auth guards', () => {
     expect(isAuthUser({ ...user, email: 'not-an-email' })).toBe(false);
     expect(isAuthUser({ ...user, createdAt: 'not-a-date' })).toBe(false);
     expect(isAuthUser({ ...user, createdAt: 12345 })).toBe(false);
+  });
+
+  test('isAuthUser rejects tampered authorization fields', () => {
+    // Missing role/userType (Pump 2-era payload) — the guard is strict.
+    expect(
+      isAuthUser({
+        id: user.id,
+        email: user.email,
+        createdAt: user.createdAt,
+      }),
+    ).toBe(false);
+    // Unknown role strings must never be adopted as truth.
+    expect(isAuthUser({ ...user, role: 'SUPERADMIN' })).toBe(false);
+    expect(isAuthUser({ ...user, role: 'admin' })).toBe(false);
+    expect(isAuthUser({ ...user, role: 1 })).toBe(false);
+    expect(isAuthUser({ ...user, role: null })).toBe(false);
+    // UserType is classification only — but it must still be a known value.
+    expect(isAuthUser({ ...user, userType: 'ADMIN' })).toBe(false);
+    expect(isAuthUser({ ...user, userType: 'HACKER' })).toBe(false);
+    expect(isAuthUser({ ...user, userType: undefined })).toBe(false);
   });
 
   test('response guards validate their envelopes', () => {

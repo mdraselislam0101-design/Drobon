@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
   AuthResponse,
+  CapabilityResponse,
   CurrentUserResponse,
   HealthResponse,
   LogoutResponse,
@@ -22,10 +23,25 @@ export function unauthorizedError(message = 'Authentication required.'): ApiClie
   });
 }
 
+/** A 403 ApiClientError, as the API returns for denied capabilities. */
+export function forbiddenError(
+  message = 'You do not have access to this resource.',
+): ApiClientError {
+  return new ApiClientError({
+    kind: 'http',
+    message,
+    status: 403,
+    code: 'FORBIDDEN',
+    requestId: 'req-test-403',
+  });
+}
+
 export const TEST_USER = {
   id: 'usr_test_1',
   email: 'user@example.test',
   createdAt: '2026-01-01T00:00:00.000Z',
+  role: 'MEMBER',
+  userType: null,
 } as const;
 
 /**
@@ -60,6 +76,19 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       async (email: string): Promise<AuthResponse> => ({ user: { ...TEST_USER, email } }),
     ),
     postLogout: vi.fn(async (): Promise<LogoutResponse> => ({ loggedOut: true })),
+    // Pump 3 defaults: a MEMBER world — member capability granted,
+    // higher capabilities denied, privileged lookup denied.
+    getCapability: vi.fn(
+      async (level: 'member' | 'admin' | 'owner'): Promise<CapabilityResponse> => {
+        if (level !== 'member') {
+          throw forbiddenError();
+        }
+        return { capability: 'member' };
+      },
+    ),
+    getUserById: vi.fn(async () => {
+      throw forbiddenError();
+    }),
     ...overrides,
   };
 }

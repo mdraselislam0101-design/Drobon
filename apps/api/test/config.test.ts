@@ -23,6 +23,15 @@ describe('loadConfig', () => {
     expect(config.cookieSecure).toBe(false);
   });
 
+  test('authorization probes are on outside production, off in it', () => {
+    expect(loadConfig({}).authzProbeRoutes).toBe(true);
+    expect(loadConfig({ NODE_ENV: 'development' }).authzProbeRoutes).toBe(true);
+    expect(loadConfig({ NODE_ENV: 'test' }).authzProbeRoutes).toBe(true);
+    // Production must never register the capability probes — they are
+    // development/test observability only and cannot ship by accident.
+    expect(loadConfig({ NODE_ENV: 'production' }).authzProbeRoutes).toBe(false);
+  });
+
   test('production enables the Secure cookie attribute', () => {
     const config = loadConfig({ NODE_ENV: 'production' });
     expect(config.cookieSecure).toBe(true);

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { isValidStoredUser, type UserRepository, type UserRecord } from './repositories.js';
+import { parseStoredUser, type UserRepository, type UserRecord } from './repositories.js';
 
 /**
  * Durable user repository backed by a single JSON document.
@@ -58,20 +58,23 @@ function loadDocument(path: string): StoreDocument {
   ) {
     throw new Error(`Auth store at ${path} has an unexpected shape — refusing to start.`);
   }
-  const users = (parsed as StoreDocument).users;
+  const rawUsers = (parsed as StoreDocument).users;
   const seenEmails = new Set<string>();
   const seenIds = new Set<string>();
-  users.forEach((entry, index) => {
-    if (!isValidStoredUser(entry)) {
+  const users: UserRecord[] = [];
+  rawUsers.forEach((entry, index) => {
+    const record = parseStoredUser(entry);
+    if (record === undefined) {
       throw new Error(
         `Auth store at ${path} has an invalid record at index ${index} — refusing to start.`,
       );
     }
-    if (seenEmails.has(entry.email) || seenIds.has(entry.id)) {
+    if (seenEmails.has(record.email) || seenIds.has(record.id)) {
       throw new Error(`Auth store at ${path} contains duplicate records — refusing to start.`);
     }
-    seenEmails.add(entry.email);
-    seenIds.add(entry.id);
+    seenEmails.add(record.email);
+    seenIds.add(record.id);
+    users.push(record);
   });
   return { version: 1, users };
 }

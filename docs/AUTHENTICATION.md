@@ -1,4 +1,4 @@
-# Authentication Design (Pump 2)
+# Authentication Design (Pump 2, extended by Pump 3)
 
 How authentication works in DROBON AEGIS AI today — what is implemented,
 why it is built this way, and exactly what it is not. Everything on this
@@ -100,11 +100,13 @@ forbids starting the broader database phase. The compromise:
 
 ## What this is NOT
 
-- No roles/authorization (the `requireAuth` boundary is authorization-*ready*),
-  no email verification, no password reset, no MFA, no OAuth/OIDC/JWT,
-  no account lockout (deliberate: lockouts are a DoS vector; rate limits
-  instead), no distributed session state, no password history/rotation
-  policy. See the NOT_IMPLEMENTED sections in `docs/SECURITY.md`.
+- Roles/authorization are now implemented in Pump 3 — see
+  `docs/AUTHORIZATION.md` for the role model, permission table and
+  guards. Authentication itself still has no email verification, no
+  password reset, no MFA, no OAuth/OIDC/JWT, no account lockout
+  (deliberate: lockouts are a DoS vector; rate limits instead), no
+  distributed session state, no password history/rotation policy. See the
+  NOT_IMPLEMENTED sections in `docs/SECURITY.md`.
 
 ## Test coverage map
 

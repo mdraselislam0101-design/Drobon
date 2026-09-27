@@ -60,7 +60,11 @@ export function AppRoutes({
                   </PublicOnlyRoute>
                 }
               />
-              <Route element={<ProtectedRoute />}>
+              {/* minRole wires the role-aware guard into the real tree:
+                  MEMBER is the floor for /account (every signed-in
+                  account), while the API independently enforces the
+                  same boundary on every request. */}
+              <Route element={<ProtectedRoute minRole="MEMBER" />}>
                 <Route path="account" element={<AccountPage />} />
               </Route>
               <Route path="*" element={<NotFoundPage />} />

@@ -1,15 +1,18 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 2: foundation + authentication**,
-cumulative on top of the verified Pump 1 base.
+Cybersecurity application — **Pump 3: foundation + authentication +
+authorization**, cumulative on top of the verified Pump 1 + Pump 2 base.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
-contracts, security, testing, build, docs). Pump 2 added the real
-authentication layer: registration, login, logout, httpOnly sessions,
-protected routes and a minimal durable account store — wired end to end
-through the existing pipeline. There is still **no database phase, no
-security dataset, and no product features** (scanning, findings, etc.
-arrive in later Pumps).
+contracts, security, testing, build, docs). Pump 2 added real
+authentication (registration/login/logout, httpOnly sessions, protected
+routes, minimal durable account persistence). Pump 3 adds the
+authorization + access-control foundation on top: account roles
+(MEMBER < ADMIN < ACCOUNT_OWNER), a shared permission table, role/permission
+guards at the router, ownership checks, forbidden/unauthorized states, and
+role-aware UI (UX defense-in-depth — the API remains the real boundary).
+There is still **no database phase, no security dataset, and no product
+features** (scanning, findings, admin console, etc. arrive later).
 
 ## Layout
 
@@ -64,30 +67,32 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 
 - `docs/ARCHITECTURE.md` — components, contracts, request lifecycle
 - `docs/AUTHENTICATION.md` — auth design: sessions, hashing, persistence
+- `docs/AUTHORIZATION.md` — roles, permission table, guards, ownership
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 2, cumulative)
+## Scope (Pump 3, cumulative)
 
-**Included:** everything from Pump 1 (Web shell, typed API client, versioned
-JSON API with validation/correlation/rate limiting/security headers, worker
-contracts, structured logging with redaction, docs, one-command verification)
-**plus**: registration/login/logout flows, `GET /api/v1/me`, httpOnly +
-SameSite=Strict session cookies, server-side session store with absolute TTL,
-scrypt password hashing, a dedicated credential rate limit, CSRF origin
-guard, protected-route machinery in the Web app (loading/error/expiry
-states), and the minimum durable account persistence (single JSON document
-behind a repository interface).
+**Included:** everything from Pumps 1–2 (Web shell, typed API client,
+versioned JSON API with validation/correlation/rate limiting/security
+headers, worker contracts, redacted structured logging, authentication
+with sessions/scrypt/persistence) **plus**: `AccountRole` and `UserType`
+contracts, central permission table, `requireRole`/`requirePermission`
+router enforcement (401 vs 403 semantics), capability probes (dev/test
+only), ownership-checked user reads, forbidden state + role-aware route
+guards, permission-aware UI, role badges.
 
-**NOT included:** the broader database phase (projects/scans/findings), any
-security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds), roles/
-authorization, plans/entitlements, scanning, findings, reports, remediation,
-AI assistance, admin, payments. Anything in that list is future work — see
-the NOT_IMPLEMENTED sections in `docs/`.
+**NOT included:** the broader database phase, any security dataset
+(CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds), role management console,
+email verification, password reset, MFA, plans/entitlements, scanning,
+findings, reports, remediation, AI assistance, admin dashboard, payments,
+partner/referral, UserType-specific product features. See the
+NOT_IMPLEMENTED sections in `docs/`.
 
 ## Status
 
-Pump 2 — foundation + authentication. See `docs/BUILD_VERIFICATION.md` for
-the latest verification evidence and `git log` for history.
+Pump 3 — foundation + authentication + authorization. See
+`docs/BUILD_VERIFICATION.md` for the latest verification evidence and
+`git log` for history.
