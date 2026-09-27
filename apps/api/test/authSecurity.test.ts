@@ -236,6 +236,8 @@ describe('auth security controls', () => {
             authRateLimitWindowMs: 60_000,
             cookieSecure: false,
             authzProbeRoutes: true,
+            usageStorePath: `${dir}/usage.json`,
+            usageConsumeRoutes: true,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

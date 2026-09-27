@@ -1,7 +1,8 @@
 # Architecture
 
 Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
-(authorization) and Pump 4 (plans/subscriptions/entitlements): an
+(authorization), Pump 4 (plans/subscriptions/entitlements) and Pump 5
+(usage quota + device anti-abuse foundation): an
 npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
@@ -37,6 +38,13 @@ browser bundle and the servers can all consume it:
   decision table `SUBSCRIPTION_ENTITLEMENTS` (`feature:pro` exists in
   exactly one cell: PRO + ACTIVE; `plan:manage` in none). Role and
   UserType are deliberately not inputs to any of it.
+- `usage.ts` — usage/quota contracts (Pump 5): `FREE_MONTHLY_SCAN_QUOTA` /
+  `FREE_DEVICE_MONTHLY_SCAN_QUOTA` (3/3), the strict UTC period pattern
+  (`YYYY-MM`), `UsagePeriodInfo` (end-exclusive month window),
+  `QuotaStatus` (`OK`/`EXHAUSTED`/`EXEMPT`), `UsageResponse` and payload
+  guards — including cross-field invariants the server always maintains
+  (exempt views carry no numbers; counts never exceed the limit). No
+  device identifiers exist in this contract.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -54,13 +62,15 @@ minimal attack surface):
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)
         → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
+        → device(cookie→ctx.deviceHash; issue/replace drobon_device when authenticated)
         → router: match → authenticate (401) → authorize (403) → handler
 ```
 
 - `config.ts` — the ONLY module that reads `process.env`; validates every
   variable (including the Pump 2 `AUTH_*` set) and throws one `ConfigError`
-  listing all issues (fail fast). Rejects `AUTH_STORE_PATH=:memory:` in
-  production. Derives `cookieSecure` from the environment.
+  listing all issues (fail fast). Rejects `AUTH_STORE_PATH=:memory:` and
+  `USAGE_STORE_PATH=:memory:` in production. Derives `cookieSecure` and
+  `usageConsumeRoutes` (dev/test probe gating) from the environment.
 - `logger.ts` — structured JSON-lines logger with level filtering and
   deep secret redaction (sensitive keys, bearer-like values, credentialed
   URLs, cycles). Error stacks are logged in dev/test only.
@@ -76,8 +86,12 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   headers, allowlist CORS (fail closed; credentials allowed ONLY with an
   exact reflected origin, never `*`), in-memory fixed-window rate limiting
   with `RateLimit-*` / `Retry-After` headers, a path-scoped credential
-  rate limit, the CSRF origin guard, and session resolution
-  (cookie → store → repository → `ctx.user`, stale cookies actively cleared).
+  rate limit, the CSRF origin guard, session resolution
+  (cookie → store → repository → `ctx.user`, stale cookies actively cleared),
+  and device identity resolution (Pump 5 `middleware/device.ts`: the opaque
+  `drobon_device` cookie → SHA-256 hash on `ctx.deviceHash`; malformed
+  cookies are ignored and replaced with a server-issued identity;
+  anonymous requests are never issued one).
 - `auth/` — the authentication core: `passwords.ts` (scrypt hashing,
   constant-time verify, dummy verify for timing equalization),
   `repositories.ts` (`UserRepository` interface + `toAuthUser` projection;
@@ -93,6 +107,16 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   fail-closed normalization of persisted subscription data,
   `resolveSubscription`, `deriveEntitlements`; reads only the account's
   subscription, never role/userType/client input).
+- `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
+  base64url device token issuance + hashed lookup, hardened cookie
+  serialization), `store.ts` (the single persistence boundary — durable
+  JSON file store with a serialized mutation queue for atomic
+  check-both-limits/increment/persist, plus the in-memory test store) and
+  `service.ts` (the single consumption authority: UTC period derivation,
+  account+device counters, FREE enforcement, PRO exemption via the Pump 4
+  entitlement pipeline, `QUOTA_EXCEEDED` denials with `Retry-After`).
+  Routes never re-implement quota logic; the future scan engine will call
+  this service too.
 - `routes/` — `GET /livez`, `GET /readyz` (checks: configuration,
   accounts), `GET /api/v1/status`, `POST /api/v1/echo`, plus
   `POST /api/v1/auth/register` (201 + session cookie; always MEMBER),
@@ -103,13 +127,16 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   and `GET /api/v1/users?id=` (ownership-checked read), plus Pump 4's
   `GET /api/v1/subscription` (self-only read of the caller's own
   subscription + server-derived entitlements; no id parameter, no
-  mutation methods).
+  mutation methods), plus Pump 5's `GET /api/v1/usage` (self-only usage
+  view; always registered) and the dev/test-gated consumption probe
+  `POST /api/v1/usage/consume` (404 in production — see docs/USAGE.md).
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher,
   centralized catch + structured access log, and the single router choke
   point enforcing authentication (401) then authorization (403) before any
   handler runs. Accepts `extraRoutes` + injectable `users`/`sessions`
-  repositories.
+  repositories and `usageStore`/`usageNow` (test isolation: in-memory
+  stores and clock injection for deterministic month boundaries).
 - `server.ts` / `index.ts` — socket timeouts, startup (a corrupt account
   store refuses to start), SIGTERM/SIGINT graceful shutdown.
 
@@ -160,8 +187,10 @@ NOT_IMPLEMENTED).
   badges + PRO-feature verdict rendered from `GET /api/v1/subscription`
   — the server's entitlement list, never a local recomputation; errors
   fail closed with no plan shown), live capability checks (each verdict
-  is the API's 200/403, not a client guess), a permission-gated
-  privileged lookup section, sign-out.
+  is the API's 200/403, not a client guess), the Pump 5 monthly usage
+  section (FREE allowance/remaining/UTC period, PRO exempt state —
+  rendered from `GET /api/v1/usage`, display-only, errors fail closed),
+  a permission-gated privileged lookup section, sign-out.
 - `vite-plugin-aegis.ts` — dev/preview-only hardening: security headers on
   every response (strict CSP on preview; CSP omitted in dev because Vite HMR
   needs inline scripts) and SPA fallback for the preview server.
@@ -197,6 +226,10 @@ NOT_IMPLEMENTED).
    `ctx.subscription`/`ctx.entitlements` (commercial state from the LIVE
    record — Pump 4; operator store changes apply on the next request);
    invalid/stale cookies are cleared on the way through.
+5b. Device identity (Pump 5): authenticated requests resolve the
+   `drobon_device` cookie to `ctx.deviceHash` (SHA-256); a missing or
+   malformed cookie is replaced with a fresh server-issued one on the
+   response. Anonymous requests get no device identity at all.
 6. Router match → authentication boundary (`requireAuth` → 401 if
    anonymous) → authorization boundary (`requireRole`/`requirePermission`
    → 403 if insufficient) → handler. Handlers validate input, then
@@ -226,5 +259,7 @@ subscription + entitlement foundation itself is DONE in Pump 4 — see
 email verification, password reset, trusted-proxy support, distributed
 rate limiting, durable/persistent sessions and queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
-ingestion/storage, scanning/findings/reports/remediation, AI assistance,
+ingestion/storage, scanning/findings/reports/remediation (the scan
+engine will consume the Pump 5 usage service as its quota boundary —
+see docs/USAGE.md; the quota foundation itself is DONE), AI assistance,
 admin dashboard, multi-instance deployment, metrics/tracing.

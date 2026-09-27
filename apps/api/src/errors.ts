@@ -104,6 +104,24 @@ export function rateLimited(retryAfterSec: number): AppError {
 }
 
 /**
+ * Quota exhaustion (Pump 5): the FREE monthly scan allowance (account or
+ * shared device) is used up. Distinct stable code (`QUOTA_EXCEEDED`) from
+ * transport rate limiting (`RATE_LIMITED`) so clients can render "upgrade
+ * or wait for the next UTC month" instead of "slow down". Same 429 status
+ * family with `Retry-After` pointing at the next UTC month boundary.
+ * Denials are uniform: they never reveal which limit tripped, other
+ * accounts, or device state.
+ */
+export function quotaExceeded(retryAfterSec: number): AppError {
+  return new AppError({
+    code: 'QUOTA_EXCEEDED',
+    statusCode: 429,
+    message: 'Monthly free scan limit reached. Your allowance resets at the start of the next UTC month.',
+    retryAfterSec,
+  });
+}
+
+/**
  * Missing/invalid/expired authentication. The default message is generic on
  * purpose — it must not reveal whether the account exists.
  */

@@ -9,6 +9,7 @@ import type {
   LogoutResponse,
   StatusResponse,
   SubscriptionResponse,
+  UsageResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -99,6 +100,20 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
         updatedAt: '2026-01-01T00:00:00.000Z',
       },
       entitlements: ['plan:view'],
+    })),
+    // Pump 5 default: a fresh FREE usage view (nothing consumed this
+    // UTC month). Suites override it to model exhaustion or PRO.
+    getUsage: vi.fn(async (): Promise<UsageResponse> => ({
+      plan: 'FREE',
+      period: {
+        period: '2026-09',
+        startUtc: '2026-09-01T00:00:00.000Z',
+        endUtc: '2026-10-01T00:00:00.000Z',
+      },
+      used: 0,
+      limit: 3,
+      remaining: 3,
+      quotaStatus: 'OK',
     })),
     ...overrides,
   };

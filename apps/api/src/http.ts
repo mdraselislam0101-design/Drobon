@@ -42,6 +42,14 @@ export interface RequestContext {
    * UserType deliberately never contribute. Set alongside `subscription`.
    */
   entitlements?: readonly Entitlement[];
+  /**
+   * Device identity for usage anti-abuse (Pump 5): the SHA-256 hash of
+   * the opaque `drobon_device` cookie token, resolved by the device
+   * middleware for authenticated requests (issuing a fresh token when
+   * absent/malformed). The raw token never enters the context; usage
+   * routes may trust the hash. `undefined` for anonymous requests.
+   */
+  deviceHash?: string;
 }
 
 export type NextFunction = () => Promise<void>;

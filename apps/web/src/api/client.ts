@@ -4,6 +4,7 @@ import {
   isCurrentUserResponse,
   isLogoutResponse,
   isSubscriptionResponse,
+  isUsageResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AuthResponse,
@@ -15,6 +16,7 @@ import {
   type LogoutResponse,
   type StatusResponse,
   type SubscriptionResponse,
+  type UsageResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -109,6 +111,14 @@ export interface ApiClient {
    * client renders the server's verdict and never recomputes it.
    */
   getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
+  /**
+   * The authenticated account's OWN usage view (Pump 5): plan, current
+   * UTC period, used/limit/remaining and the quota status. Read-only and
+   * display-only; rejects with 401 when anonymous. The response is
+   * validated against the shared guard — the server computes the quota,
+   * the client only renders it.
+   */
+  getUsage(signal?: AbortSignal): Promise<UsageResponse>;
 }
 
 /**
@@ -316,6 +326,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         '/api/v1/subscription',
         signal === undefined ? {} : { signal },
         isSubscriptionResponse,
+      ),
+    getUsage: (signal?: AbortSignal): Promise<UsageResponse> =>
+      authRequest<UsageResponse>(
+        '/api/v1/usage',
+        signal === undefined ? {} : { signal },
+        isUsageResponse,
       ),
   };
 }

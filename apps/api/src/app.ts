@@ -21,6 +21,7 @@ import { createRateLimiter } from './middleware/rateLimit.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
 import { securityHeadersMiddleware } from './middleware/securityHeaders.js';
 import { sessionMiddleware } from './middleware/session.js';
+import { deviceMiddleware } from './middleware/device.js';
 import { sendFailure } from './respond.js';
 import { AUTHZ_DENIED_MESSAGE } from './auth/authorization.js';
 import { hasPermission, roleAtLeast } from '@drobon/shared';
@@ -30,6 +31,10 @@ import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
 import { createSubscriptionRoutes } from './routes/subscription.js';
+import { createUsageRoutes } from './routes/usage.js';
+import { createUsageService, type UsageService } from './usage/service.js';
+import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
+import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 
 export interface AppDeps {
@@ -52,6 +57,17 @@ export interface AppDeps {
   users?: UserRepository;
   /** Session store. Defaults to a fresh in-memory store (Pump 2). */
   sessions?: SessionStore;
+  /**
+   * Usage/quota store (Pump 5). Defaults to the durable JSON store at
+   * `config.usageStorePath` (`:memory:` for explicitly ephemeral setups).
+   * Tests inject their own instance to control persistence.
+   */
+  usageStore?: UsageStore;
+  /**
+   * Clock for usage period math (epoch ms, injectable so tests exercise
+   * UTC month boundaries deterministically).
+   */
+  usageNow?: () => number;
 }
 
 export interface App {
@@ -98,6 +114,18 @@ export function createApp(deps: AppDeps): App {
       : createJsonFileUserRepository(config.authStorePath));
   const sessions: SessionStore =
     deps.sessions ?? createSessionStore({ ttlSeconds: config.authSessionTtlSeconds });
+  // Usage/quota store (Pump 5): durable by default (fail-fast on a
+  // corrupt document — the process refuses to start, quotas never
+  // silently reset); tests inject their own store.
+  const usageStore: UsageStore =
+    deps.usageStore ??
+    (config.usageStorePath === ':memory:'
+      ? createMemoryUsageStore()
+      : createUsageFileStore(config.usageStorePath));
+  const usage: UsageService = createUsageService({
+    store: usageStore,
+    ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
+  });
 
   const routes: Route[] = [
     ...createHealthRoutes({ config }),
@@ -106,6 +134,7 @@ export function createApp(deps: AppDeps): App {
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
+    ...createUsageRoutes({ config, users, usage }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -137,7 +166,8 @@ export function createApp(deps: AppDeps): App {
 
   // Pipeline order (docs/ARCHITECTURE.md): request ID → security headers →
   // CORS → global rate limit → credential-endpoint rate limit → CSRF origin
-  // guard → session resolution → routing (with requireAuth boundary).
+  // guard → session resolution → device resolution (usage anti-abuse) →
+  // routing (with requireAuth boundary).
   const middlewares: Middleware[] = [
     requestIdMiddleware(),
     securityHeadersMiddleware(),
@@ -146,6 +176,7 @@ export function createApp(deps: AppDeps): App {
     authRateLimiter.middleware,
     originGuardMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     sessionMiddleware({ sessions, users, cookieSecure: config.cookieSecure }),
+    deviceMiddleware({ cookieSecure: config.cookieSecure }),
   ];
 
   const routeRequest = async (
@@ -242,12 +273,23 @@ export function createApp(deps: AppDeps): App {
             err: error,
           });
         } else if (status === 429) {
-          logger.warn('Request rate limited', {
-            requestId: ctx.id,
-            method: ctx.method,
-            path: ctx.pathname,
-            status,
-          });
+          // Two distinct 429 causes with different meanings: transport
+          // rate limiting vs. plan quota exhaustion (Pump 5).
+          if (isAppError(error) && error.code === 'QUOTA_EXCEEDED') {
+            logger.warn('Scan quota exceeded', {
+              requestId: ctx.id,
+              method: ctx.method,
+              path: ctx.pathname,
+              status,
+            });
+          } else {
+            logger.warn('Request rate limited', {
+              requestId: ctx.id,
+              method: ctx.method,
+              path: ctx.pathname,
+              status,
+            });
+          }
         } else {
           logger.info('Request rejected', {
             requestId: ctx.id,

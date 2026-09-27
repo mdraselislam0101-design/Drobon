@@ -7,3 +7,4 @@ export * from './guards.js';
 export * from './jobs.js';
 export * from './models.js';
 export * from './plans.js';
+export * from './usage.js';

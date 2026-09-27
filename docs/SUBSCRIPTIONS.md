@@ -5,6 +5,12 @@ subscription state is stored, who decides entitlements, and what is
 deliberately NOT implemented yet. Everything here is covered by
 executable tests (see `docs/TESTING.md`).
 
+Pump 5 builds directly on this foundation: the FREE monthly scan
+allowance and the PRO exemption live in the usage service and reuse
+`deriveEntitlements` unchanged — see `docs/USAGE.md`. In particular,
+"exempt from the quota" means exactly `PRO + ACTIVE` here, and lapsed
+PRO accounts fall back to the FREE allowance.
+
 ## Four concepts, never conflated
 
 | Concept | Values | Purpose | Grants PRO? |
@@ -144,6 +150,8 @@ section — no second account page, no second client:
 Payments/billing integration (gateway, invoices, webhooks), coupon and
 promotion codes, partner/referral programs, trials/grace periods,
 proration, plan changes by users, an operator subscription console,
-`plan:manage` grant path, per-feature metering/limits, entitlement
-changes audit trail, database-backed subscription store, any PRO-only
-product feature itself (scanning etc. arrive in later pumps).
+`plan:manage` grant path, entitlement changes audit trail,
+database-backed subscription store, any PRO-only product feature itself
+(scanning etc. arrive in later pumps). Per-plan usage limits themselves
+ARE implemented as of Pump 5 (the single scan allowance — see
+`docs/USAGE.md`); richer per-feature metering is not.

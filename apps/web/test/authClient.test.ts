@@ -300,3 +300,100 @@ describe('subscription API client (Pump 4)', () => {
     expect(methods).toEqual(['getSubscription']);
   });
 });
+
+describe('usage API client (Pump 5)', () => {
+  test('getUsage hits the read-only endpoint with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          plan: 'FREE',
+          period: {
+            period: '2026-09',
+            startUtc: '2026-09-01T00:00:00.000Z',
+            endUtc: '2026-10-01T00:00:00.000Z',
+          },
+          used: 3,
+          limit: 3,
+          remaining: 0,
+          quotaStatus: 'EXHAUSTED',
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getUsage();
+    expect(result.quotaStatus).toBe('EXHAUSTED');
+    expect(result.remaining).toBe(0);
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/usage');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('the PRO exempt view (null limit/remaining) validates too', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          plan: 'PRO',
+          period: {
+            period: '2026-09',
+            startUtc: '2026-09-01T00:00:00.000Z',
+            endUtc: '2026-10-01T00:00:00.000Z',
+          },
+          used: 12,
+          limit: null,
+          remaining: null,
+          quotaStatus: 'EXEMPT',
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getUsage();
+    expect(result.quotaStatus).toBe('EXEMPT');
+    expect(result.limit).toBeNull();
+  });
+
+  test('anonymous 401s surface as http ApiClientError with UNAUTHORIZED', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getUsage()).rejects.toMatchObject({
+      kind: 'http',
+      status: 401,
+      code: 'UNAUTHORIZED',
+    });
+  });
+
+  test('usage payloads failing the shared guard are rejected', async () => {
+    // Forged plans, negative counts, invented statuses, malformed
+    // periods — all fail closed at the client boundary.
+    const bad = [
+      { plan: 'ENTERPRISE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 0, limit: 3, remaining: 3, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: -1, limit: 3, remaining: 4, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: '2', quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'UNLIMITED' },
+      { plan: 'FREE', period: { period: '2026-9', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      { plan: 'FREE', used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getUsage()).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+
+  test('the client exposes no usage mutation method', () => {
+    const client = createApiClient({ baseUrl: '', fetchImpl: vi.fn() });
+    const methods = Object.keys(client).filter((key) => key.toLowerCase().includes('usage'));
+    // Only the read exists — consumption is a server-side decision the
+    // browser can never trigger on its own.
+    expect(methods).toEqual(['getUsage']);
+  });
+});

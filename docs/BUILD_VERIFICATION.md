@@ -253,3 +253,81 @@ Exit code is `0` on PASS, `1` on any FAIL.
   payment/gateway code); `check:secrets` PASS over sources and builds;
   DATASET LOCK respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere;
   final `git status` clean of secrets/datasets/junk after commit.
+
+## Verification evidence (Pump 5 — usage quota + device anti-abuse)
+
+> Re-run `npm run verify` after any change and update this section —
+> evidence must always describe the current tree.
+
+- Date: 2026-09-28
+- `npm run verify` result: **PASS** — all 9 steps green
+  (boundaries, secret self-test, secret scan 282 files, typecheck, lint,
+  tests, production builds, secret scan incl. builds, dependency audit)
+- Test totals: **533 passed, 0 failed** (55 files)
+  - `@drobon/shared`: 84 passed (7 files) — Pump 4's 74 + 10 usage
+    contract tests (`usage.test.ts`: quota constants, strict UTC period
+    pattern, quota-status vocabulary, response guards incl. cross-field
+    invariants)
+  - `@drobon/api`: 299 passed (32 files) — Pump 4's 255 + 44: three new
+    suites (`usageApi.test.ts` endpoint/authorization/tamper matrix,
+    `usageQuota.test.ts` atomicity/boundaries/persistence,
+    `usageDevice.test.ts` device model) + 2 config tests; one shared
+    error-vocabulary test extended for `QUOTA_EXCEEDED`
+  - `@drobon/worker`: 28 passed (3 files) — unchanged
+  - `@drobon/web`: 122 passed (13 files) — Pump 4's 109 + 13: Account-page
+    usage section (8) + usage client boundary (5)
+- `npm run audit` result: **0 vulnerabilities**
+- Manual E2E — real dev servers (`dev:api` on :3001 with the durable
+  JSON stores, `dev:web` on :5173; curl with cookie headers; fixed
+  clock NOT used — live UTC date 2026-09-28):
+  1. Anonymous `GET /api/v1/usage` → **401** exact envelope
+  2. FREE login → `GET /usage` → **FREE 0/3 OK, period 2026-09**, and
+     the first authenticated response issued `drobon_device` with
+     `HttpOnly; SameSite=Strict; Path=/; Max-Age=34560000` (no `Secure`
+     in dev)
+  3. Consumes 1–3 → **200** with used 1,2,3 / remaining 2,1,0
+  4. Consume #4 → **429 `QUOTA_EXCEEDED`** + `Retry-After: 267818`
+     (exact seconds to 2026-10-01T00:00:00Z)
+  5. Denial immutable: `GET /usage` after → still **used 3, remaining 0,
+     EXHAUSTED**; repeat consume → 429 again
+  6. PRO+ACTIVE account (store-edit workflow) on the SAME device → 5
+     consumes all **200**, view **EXEMPT** (`limit`/`remaining` `null`,
+     used 5) — and the on-disk store proves the PRO scans never touched
+     the device counter (device count stayed 3, all from the FREE
+     account)
+  7. A second FREE account on the same device → **used 0, remaining 0,
+     EXHAUSTED**; its consume → **429** (shared-device allowance)
+  8. Cross-account read attempts (`?userId=<other>&email=<other>`) →
+     own view only
+  9. Plan tampering (`x-plan: PRO`, `x-quota`, `x-remaining` headers +
+     `plan=PRO` cookie) → still **FREE/EXHAUSTED**; consume still 429
+  10. Quota tampering: body `{used,remaining,plan}` → **422
+      VALIDATION_ERROR** ("Unexpected property" ×3); `PATCH`/`DELETE
+      /usage` → **405 + Allow: GET**
+  11. Malformed device cookies (`garbage`, wrong length,
+      `../../etc/passwd`) → **200** + a fresh valid `drobon_device`
+      each time (never an error, never trusted)
+  12. API restart (SIGTERM → start): re-login → usage intact
+      (demo-free **3/0 EXHAUSTED**; the second account's device-shared
+      exhaustion persisted too)
+  13. UTC month boundary: seeded the durable store with the previous
+      period (`2026-08`: account 3 + a valid device token's hash 3),
+      restarted → September view on that device **used 0, remaining 3,
+      OK** — August never reduces September (Dec→Jan covered by tests)
+  14. Production build (`node apps/api/dist/index.js`,
+      NODE_ENV=production, :4001, temp store copies): `GET /usage` →
+      **200 EXEMPT** (read the persisted PRO count — durable store
+      across binaries), device cookie gained **Secure**;
+      `POST /usage/consume` → **404** (probe not registered);
+      anonymous `GET /usage` → **401**; and
+      `USAGE_STORE_PATH=:memory:` refused to boot (**Configuration
+      error**, exit 1)
+  15. The same usage view through the **web dev proxy** (:5173 → API)
+      → identical authoritative JSON (the browser's actual path)
+  16. Live log hygiene: consumption/denial lines carry requestId +
+      userId only — no device hash, token, email or plan material
+      anywhere in the captured server logs
+- Boundary checks: `check:boundaries` PASS (no DB/dataset/shell; no
+  payment code); `check:secrets` PASS over sources and builds; DATASET
+  LOCK respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; final
+  `git status` clean of secrets/datasets/junk after commit.

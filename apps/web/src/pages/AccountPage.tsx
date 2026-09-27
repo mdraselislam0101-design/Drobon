@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { AuthzCapability, Permission, SubscriptionResponse } from '@drobon/shared';
+import type { AuthzCapability, Permission, SubscriptionResponse, UsageResponse } from '@drobon/shared';
 import { hasPermission } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
@@ -34,6 +34,16 @@ import { LoadingState } from '../components/LoadingState.js';
 type PlanState =
   | { status: 'loading' }
   | { status: 'ready'; data: SubscriptionResponse }
+  | { status: 'error'; message: string };
+
+/**
+ * Server-authoritative usage view (Pump 5). Like the plan state, the
+ * page NEVER computes counts, limits or periods locally — it renders
+ * exactly what the API returned, and fails closed on any error.
+ */
+type UsageState =
+  | { status: 'loading' }
+  | { status: 'ready'; data: UsageResponse }
   | { status: 'error'; message: string };
 
 type CheckState =
@@ -133,6 +143,31 @@ export function AccountPage(): React.JSX.Element {
     }
   }, [state.status, loadPlan]);
 
+  // Server-authoritative usage view (Pump 5): display-only. The counts,
+  // limits and the current UTC period all come from the API; the page
+  // never recomputes them from local state (tampering changes nothing).
+  const [usageState, setUsageState] = useState<UsageState>({ status: 'loading' });
+
+  const loadUsage = useCallback(async (): Promise<void> => {
+    setUsageState({ status: 'loading' });
+    try {
+      const data = await client.getUsage();
+      setUsageState({ status: 'ready', data });
+    } catch (error: unknown) {
+      setUsageState({
+        status: 'error',
+        message:
+          error instanceof ApiClientError ? error.message : 'Could not load usage information.',
+      });
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (state.status === 'ready') {
+      void loadUsage();
+    }
+  }, [state.status, loadUsage]);
+
   const onLogout = async (): Promise<void> => {
     setLogoutError(null);
     setLoggingOut(true);
@@ -206,6 +241,14 @@ export function AccountPage(): React.JSX.Element {
         not from this page.
       </p>
       <PlanPanel planState={planState} onRetry={() => void loadPlan()} />
+
+      <h2>Monthly scan usage</h2>
+      <p className="muted">
+        Your monthly allowance is tracked by the server in UTC months and
+        cannot be changed from the browser. The numbers below come from
+        the API, not from this page.
+      </p>
+      <UsagePanel usageState={usageState} onRetry={() => void loadUsage()} />
 
       <h2>Access checks</h2>
       <p className="muted">
@@ -368,6 +411,80 @@ function PlanPanel({
           </dd>
         </div>
       </dl>
+    </div>
+  );
+}
+
+/**
+ * Server-authoritative usage display (Pump 5). Three honest states:
+ * loading, ready (renders ONLY the API's counts — FREE shows the monthly
+ * allowance, active PRO shows its exempt status with usage still
+ * tracked), and error (fail closed: no numbers at all, just a retry).
+ * Display-only: there is no client-side consumption path anywhere.
+ */
+function UsagePanel({
+  usageState,
+  onRetry,
+}: {
+  usageState: UsageState;
+  onRetry: () => void;
+}): React.JSX.Element {
+  if (usageState.status === 'loading') {
+    return (
+      <p role="status" data-testid="usage-loading">
+        Loading usage information…
+      </p>
+    );
+  }
+  if (usageState.status === 'error') {
+    return (
+      <div className="form-alert" role="alert" data-testid="usage-error">
+        <p>Could not load your usage information. Your allowance has not changed.</p>
+        <p>{usageState.message}</p>
+        <button type="button" className="button button-ghost" onClick={onRetry}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+  const { usage } = { usage: usageState.data };
+  const exempt = usage.quotaStatus === 'EXEMPT';
+  const statusText =
+    usage.quotaStatus === 'OK'
+      ? 'Available'
+      : usage.quotaStatus === 'EXHAUSTED'
+        ? 'Monthly allowance used'
+        : 'PRO — no monthly limit';
+  return (
+    <div data-testid="usage-panel">
+      <p className="badges">
+        <span className="pill" data-testid="usage-period">
+          Period: {usage.period.period} (UTC)
+        </span>
+        <span className="pill" data-testid="usage-status">
+          {statusText}
+        </span>
+      </p>
+      <dl className="facts">
+        <div className="fact">
+          <dt>Scans used this month</dt>
+          <dd data-testid="usage-used">
+            {usage.used}
+            {exempt ? '' : ` of ${usage.limit ?? 0}`}
+          </dd>
+        </div>
+        <div className="fact">
+          <dt>Scans remaining</dt>
+          <dd data-testid="usage-remaining">
+            {exempt ? 'No limit (PRO)' : usage.remaining}
+          </dd>
+        </div>
+      </dl>
+      <p className="muted">
+        {exempt
+          ? 'PRO accounts are exempt from the monthly free limit. Usage is still tracked by the server.'
+          : 'The free allowance resets at the start of the next UTC month.'}
+      </p>
     </div>
   );
 }

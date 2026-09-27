@@ -1,12 +1,13 @@
 # Security
 
 Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
-(authorization), Pump 4 extended (plans/subscriptions/entitlements):
+(authorization), Pump 4 extended (plans/subscriptions/entitlements),
+Pump 5 extended (usage quota + device anti-abuse):
 security is a first-class, **tested** requirement. A control is listed as
 VERIFIED only if an automated test or an executed check proves it;
 anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz + subscription stage)
+## Threat model (foundation + auth + authz + subscription + usage stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
@@ -14,9 +15,11 @@ against the cookie session; privilege escalation (vertical: MEMBER→ADMIN→
 OWNER; horizontal: cross-account IDOR); role tampering via client input;
 commercial entitlement fraud (forging PRO via body/query/header/cookie
 tampering, client state, UserType or AccountRole; degrading or reading
-another account's subscription); misconfiguration; secret leakage into
-code, logs or the browser bundle; dependency risk; abuse/accidental
-overload of a single instance.
+another account's subscription); **quota abuse (multi-account farming of
+the FREE scan allowance, racing concurrent consumes, forging/altering the
+device cookie, tampering with usage counts or periods)**; misconfiguration;
+secret leakage into code, logs or the browser bundle; dependency risk;
+abuse/accidental overload of a single instance.
 
 Out of scope for now: persistent attackers across restarts (sessions are
 process-local), supply-chain compromise beyond `npm audit`,
@@ -98,6 +101,30 @@ DDoS/absorption (single-instance limiter only), attackers with a
 | Subscription requests log no plan state, emails, passwords or tokens | VERIFIED | `apps/api/test/subscriptionApi.test.ts` (captured-log scan) |
 | Web: plan/PRO verdict rendered only from the server response; errors fail closed (no plan shown, never a silent PRO); no plan state in URL/localStorage/sessionStorage; user payloads can never carry plan material (`isAuthUser` rejects it) | VERIFIED | `apps/web/test/subscriptionUi.test.tsx`, `authClient.test.ts`, `packages/shared/test/plans.test.ts` |
 
+### Usage quota & device anti-abuse (Pump 5)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| FREE allowance (3 scans/UTC month) enforced by a single server-side consumption authority; routes contain no duplicate quota logic | VERIFIED | `apps/api/test/usageQuota.test.ts`, `usageApi.test.ts` |
+| Atomic consumption: serialized check-both-limits → increment → persist; 10 concurrent consumes → exactly 3 grants + 7 denials (memory store, durable store, and two accounts racing on one device token) | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Denials mutate nothing (no counter, device, period or subscription changes) and carry a stable `QUOTA_EXCEEDED` code + `Retry-After` | VERIFIED | `apps/api/test/usageApi.test.ts` |
+| PRO exemption only via the Pump 4 entitlement pipeline (PRO + ACTIVE); ADMIN/ACCOUNT_OWNER/UserTypes never exempt; lapsed PRO falls back to FREE | VERIFIED | `apps/api/test/usageApi.test.ts`, `usageQuota.test.ts` |
+| PRO consumption never counts against the shared FREE device allowance | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| UTC month rollover is natural (lazy period keys) — September never reduces October, Dec→Jan tested, clock injection supported | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Usage counters survive API restart (durable JSON store, atomic writes; corrupt documents refuse to start) | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Device identity: opaque 32-byte base64url server-issued cookie (`HttpOnly`, `SameSite=Strict`, `Secure` in production, ~400d); only a SHA-256 hash is stored; token/hash never logged or returned | VERIFIED | `apps/api/test/usageDevice.test.ts`, `usageApi.test.ts` (captured-log scan) |
+| Malformed/missing device cookies are ignored and replaced; shape-valid client-forged tokens are treated as unknown devices (no trust, no crash) | VERIFIED | `apps/api/test/usageDevice.test.ts` |
+| Cookie rotation cannot bypass the quota: the ACCOUNT allowance binds on every device | VERIFIED | `apps/api/test/usageDevice.test.ts` |
+| `GET /api/v1/usage`: self-only (no id parameter exists), 401 anonymous, 405 for mutation methods, no device hash/other accounts' data in any response | VERIFIED | `apps/api/test/usageApi.test.ts` |
+| Production protection: the consume probe is not registered in production (404); `USAGE_STORE_PATH=:memory:` rejected in production | VERIFIED | `apps/api/test/usageApi.test.ts`, `config.test.ts` |
+| Client tampering (headers, cookies, query, body fields, localStorage) never changes usage or exemption decisions; exact body validation rejects any property | VERIFIED | `apps/api/test/usageApi.test.ts`, `usageDevice.test.ts` |
+| Web: usage section display-only (client exposes exactly one usage method, `getUsage`), numbers rendered exclusively from the server response, errors fail closed | VERIFIED | `apps/web/test/usageUi.test.tsx`, `authClient.test.ts` |
+
+Known, documented limits (see `docs/USAGE.md`): cookie rotation starts a
+fresh DEVICE identity (backstopped by the account quota, credential rate
+limits, and the hashed opaque cookie — no fingerprinting is used);
+honest users sharing a browser share the device allowance.
+
 ### Web
 
 | Control | Status | Evidence |
@@ -138,7 +165,10 @@ Role management console / first-admin bootstrap (elevation is an operator
 action on the store today), role-change audit trail, payment/billing
 workflows and any subscription mutation path (subscription state changes
 only via the operator store-edit + restart workflow — see
-`docs/SUBSCRIPTIONS.md`), account email
+`docs/SUBSCRIPTIONS.md`), per-feature metering beyond the single scan
+allowance, usage analytics/history, operator quota adjustments,
+device-management UI (the usage quota + device foundation itself is DONE
+in Pump 5 — see `docs/USAGE.md`), account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,

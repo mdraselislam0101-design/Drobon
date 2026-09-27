@@ -9,6 +9,7 @@ import { createSessionStore, type SessionStore } from '../src/auth/sessions.js';
 import type { Route } from '../src/http.js';
 import { createLogger } from '../src/logger.js';
 import { startServer, type StartedServer } from '../src/server.js';
+import type { UsageStore } from '../src/usage/store.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -18,6 +19,11 @@ export interface TestServer {
   users: UserRepository;
   /** Session store backing this server (expiry/revocation in tests). */
   sessions: SessionStore;
+  /**
+   * The injected usage/quota store, when one was provided (Pump 5).
+   * Tests that need to inspect/seed usage counters inject their own.
+   */
+  usageStore?: UsageStore;
   resetRateLimit: () => void;
   stop: () => Promise<void>;
 }
@@ -28,6 +34,12 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   sessions?: SessionStore;
   /** Use a real JSON file store at a temp path instead of memory. */
   authStoreDir?: string;
+  /** Use a real JSON usage store at a temp path instead of memory (Pump 5). */
+  usageStoreDir?: string;
+  /** Inject a usage store directly (defaults: memory or usageStoreDir). */
+  usageStore?: UsageStore;
+  /** Injected clock for usage period math (deterministic month boundaries). */
+  usageNow?: () => number;
 };
 
 /**
@@ -36,11 +48,21 @@ export type TestServerOverrides = Partial<ApiConfig> & {
  * Auth defaults are intentionally fast for tests: scrypt cost 1024 (the
  * same code path as production, cheaper parameters — see docs/TESTING.md)
  * and the memory account store unless `authStoreDir` opts into the real
- * JSON file repository.
+ * JSON file repository. Usage stores follow the same pattern
+ * (`usageStore`/`usageStoreDir`).
  */
 export async function startTestServer(overrides: TestServerOverrides = {}): Promise<TestServer> {
   const logs: string[] = [];
-  const { extraRoutes, users, sessions, authStoreDir, ...configOverrides } = overrides;
+  const {
+    extraRoutes,
+    users,
+    sessions,
+    authStoreDir,
+    usageStoreDir,
+    usageStore,
+    usageNow,
+    ...configOverrides
+  } = overrides;
   const config: ApiConfig = {
     env: 'test',
     host: '127.0.0.1',
@@ -58,12 +80,22 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     authRateLimitWindowMs: 60_000,
     cookieSecure: false,
     authzProbeRoutes: true,
+    usageStorePath: ':memory:',
+    usageConsumeRoutes: true,
     ...configOverrides,
   };
   const effectiveStorePath =
     authStoreDir === undefined ? config.authStorePath : join(authStoreDir, 'users.json');
+  const effectiveUsageStorePath =
+    usageStoreDir === undefined ? config.usageStorePath : join(usageStoreDir, 'usage.json');
   const configWithStore: ApiConfig =
-    authStoreDir === undefined ? config : { ...config, authStorePath: effectiveStorePath };
+    authStoreDir === undefined && usageStoreDir === undefined
+      ? config
+      : {
+          ...config,
+          ...(authStoreDir === undefined ? {} : { authStorePath: effectiveStorePath }),
+          ...(usageStoreDir === undefined ? {} : { usageStorePath: effectiveUsageStorePath }),
+        };
   const resolvedUsers =
     users ??
     (authStoreDir === undefined
@@ -86,6 +118,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     logger,
     users: resolvedUsers,
     sessions: resolvedSessions,
+    ...(usageStore === undefined ? {} : { usageStore }),
+    ...(usageNow === undefined ? {} : { usageNow }),
     ...(extraRoutes === undefined ? {} : { extraRoutes }),
   });
   return {
@@ -94,6 +128,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     logs,
     users: resolvedUsers,
     sessions: resolvedSessions,
+    ...(usageStore === undefined ? {} : { usageStore }),
     resetRateLimit: started.resetRateLimit,
     stop: started.stop,
   };

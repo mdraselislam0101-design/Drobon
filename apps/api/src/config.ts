@@ -47,6 +47,24 @@ export interface ApiConfig {
    * The ownership route (`GET /api/v1/users`) is always registered.
    */
   authzProbeRoutes: boolean;
+  /**
+   * Where durable usage/quota counters live (Pump 5): a filesystem path
+   * (same minimum-persistence pattern as the account store) or the
+   * literal `:memory:` for explicitly ephemeral setups — rejected in
+   * production by {@link loadConfig} (quota state must survive restarts,
+   * otherwise a restart would reset allowances).
+   */
+  usageStorePath: string;
+  /**
+   * Whether the scan-consumption probe (`POST /api/v1/usage/consume`) is
+   * registered. Derived: enabled outside production only — it exists so
+   * the usage boundary is observable and E2E-testable before the real
+   * Scan/Job system lands. In production it 404s; production scan
+   * consumption will happen inside the future scan workflow, never
+   * through a user-callable endpoint. `GET /api/v1/usage` is always
+   * registered (it is a real user-facing feature).
+   */
+  usageConsumeRoutes: boolean;
 }
 
 export class ConfigError extends Error {
@@ -209,6 +227,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('AUTH_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
   }
 
+  // --- Usage / quota (Pump 5) --------------------------------------------
+  const usageStorePath = (env['USAGE_STORE_PATH'] ?? '.data/usage.json').trim();
+  const usageMemoryStore = usageStorePath === ':memory:';
+  if (usageStorePath.length === 0) {
+    issues.push('USAGE_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (usageMemoryStore && environment === 'production') {
+    issues.push(
+      'USAGE_STORE_PATH=":memory:" is not allowed in production (quota state would not persist)',
+    );
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -230,5 +259,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     authRateLimitWindowMs,
     cookieSecure: environment === 'production',
     authzProbeRoutes: environment !== 'production',
+    usageStorePath,
+    usageConsumeRoutes: environment !== 'production',
   };
 }

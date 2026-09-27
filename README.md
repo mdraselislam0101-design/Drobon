@@ -75,37 +75,47 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/AUTHENTICATION.md` — auth design: sessions, hashing, persistence
 - `docs/AUTHORIZATION.md` — roles, permission table, guards, ownership
 - `docs/SUBSCRIPTIONS.md` — plans, subscription states, entitlement authority
+- `docs/USAGE.md` — usage quota, UTC periods, device policy, consume boundary
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 4, cumulative)
+## Scope (Pump 5, cumulative)
 
-**Included:** everything from Pumps 1–3 (Web shell, typed API client,
+**Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
 headers, worker contracts, redacted structured logging, authentication
 with sessions/scrypt/persistence, roles + permission table + router
-enforcement + ownership checks + role-aware UI) **plus**: `Plan`
-(FREE/PRO) and `SubscriptionStatus` contracts, the shared entitlement
-decision table, server-written FREE default on registration,
-subscription state on the existing account store with fail-closed
-migration/normalization, a single server-authoritative entitlement
-derivation (role/UserType never contribute), read-only self-only
-`GET /api/v1/subscription` (401 anonymous, no IDOR, no mutation
-methods), and the Account-page plan/subscription section (fail-closed
-display, no client recomputation, no web-storage plan state).
+enforcement + ownership checks + role-aware UI, plans/subscriptions/
+entitlements) **plus**: the usage quota foundation — `FREE_MONTHLY_SCAN_QUOTA`
+(3 scans/UTC month) and the shared `UsageResponse` contract with strict
+guards, a single server-authoritative usage service (UTC period
+derivation, account + shared-device counters, atomic
+check-and-increment consumption, PRO exemption through the Pump 4
+entitlement pipeline), a durable JSON usage store surviving restarts
+(atomic writes, corrupt documents refuse to start), the opaque
+server-issued `drobon_device` cookie (hashed at rest, hardened
+attributes, shared-device allowance for FREE accounts), read-only
+self-only `GET /api/v1/usage` (401 anonymous, no IDOR, no mutation
+methods, no device identifiers exposed), a dev/test-gated consumption
+probe (404 in production), and the Account-page monthly usage section
+(display-only, fail-closed). See `docs/USAGE.md`.
 
-**NOT included:** the broader database phase, payments/billing (no
-gateway, coupons, partner/referral or approval UI), plan mutation
-workflow (`plan:manage` is granted to no one), any security dataset
-(CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds), role management console,
-email verification, password reset, MFA, scanning, findings, reports,
-remediation, AI assistance, admin dashboard, UserType-specific product
-features. See the NOT_IMPLEMENTED sections in `docs/`.
+**NOT included:** the scan engine itself (SAST/SCA/DAST, jobs calling
+this quota boundary arrive in later pumps), the broader database phase,
+payments/billing (no gateway, coupons, partner/referral or approval
+UI), plan mutation workflow (`plan:manage` is granted to no one), usage
+analytics/history, operator quota adjustments, device-management UI,
+any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
+role management console, email verification, password reset, MFA,
+findings, reports, remediation, AI assistance, admin dashboard,
+UserType-specific product features. See the NOT_IMPLEMENTED sections in
+`docs/`.
 
 ## Status
 
-Pump 4 — foundation + authentication + authorization + plans/
-subscriptions/entitlements. See `docs/BUILD_VERIFICATION.md` for the
-latest verification evidence and `git log` for history.
+Pump 5 — foundation + authentication + authorization + plans/
+subscriptions/entitlements + usage quota & device anti-abuse
+foundation. See `docs/BUILD_VERIFICATION.md` for the latest
+verification evidence and `git log` for history.
