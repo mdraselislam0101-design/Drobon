@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { AuthzCapability, Permission } from '@drobon/shared';
+import type { AuthzCapability, Permission, SubscriptionResponse } from '@drobon/shared';
 import { hasPermission } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
@@ -21,7 +21,20 @@ import { LoadingState } from '../components/LoadingState.js';
  *   403; the page only renders the verdict (UI hiding is never the rule);
  * - a privileged-only lookup section (visibility via the shared permission
  *   table) — even if forced open, the API still enforces 403.
+ *
+ * Pump 4 adds the commercial view (server-authoritative, fail closed):
+ * - plan + subscription status fetched from `GET /api/v1/subscription`;
+ * - the PRO-feature verdict renders the server's entitlement list — it is
+ *   NEVER recomputed from the plan locally;
+ * - on any failure the section shows an honest error and no plan at all —
+ *   it never silently assumes PRO or any entitlement.
  */
+
+/** Server-authoritative plan view. No local plan state exists anywhere. */
+type PlanState =
+  | { status: 'loading' }
+  | { status: 'ready'; data: SubscriptionResponse }
+  | { status: 'error'; message: string };
 
 type CheckState =
   | { status: 'checking' }
@@ -93,6 +106,33 @@ export function AccountPage(): React.JSX.Element {
     }
   }, [state.status, runChecks]);
 
+  // Server-authoritative plan view (Pump 4): fetched from the API, never
+  // derived from local state, and rendered exactly as the server states
+  // it. Errors fail CLOSED — no plan, no PRO assumption, just a retry.
+  const [planState, setPlanState] = useState<PlanState>({ status: 'loading' });
+
+  const loadPlan = useCallback(async (): Promise<void> => {
+    setPlanState({ status: 'loading' });
+    try {
+      const data = await client.getSubscription();
+      setPlanState({ status: 'ready', data });
+    } catch (error: unknown) {
+      setPlanState({
+        status: 'error',
+        message:
+          error instanceof ApiClientError
+            ? error.message
+            : 'Could not load plan information.',
+      });
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (state.status === 'ready') {
+      void loadPlan();
+    }
+  }, [state.status, loadPlan]);
+
   const onLogout = async (): Promise<void> => {
     setLogoutError(null);
     setLoggingOut(true);
@@ -158,6 +198,14 @@ export function AccountPage(): React.JSX.Element {
           </div>
         ))}
       </dl>
+
+      <h2>Plan &amp; subscription</h2>
+      <p className="muted">
+        Your plan is assigned and managed by the server — it cannot be
+        changed from the browser. The verdict below comes from the API,
+        not from this page.
+      </p>
+      <PlanPanel planState={planState} onRetry={() => void loadPlan()} />
 
       <h2>Access checks</h2>
       <p className="muted">
@@ -248,6 +296,80 @@ function CapabilityVerdict({ check }: { check: CheckState }): React.JSX.Element 
         </span>
       );
   }
+}
+
+/**
+ * Server-authoritative plan display (Pump 4). Three honest states:
+ * loading, ready (renders ONLY what the API returned — the PRO verdict
+ * reads the server's entitlement list, never a local recomputation), and
+ * error (fail closed: no plan shown at all, never a silent PRO).
+ */
+function PlanPanel({
+  planState,
+  onRetry,
+}: {
+  planState: PlanState;
+  onRetry: () => void;
+}): React.JSX.Element {
+  if (planState.status === 'loading') {
+    return (
+      <p role="status" data-testid="plan-loading">
+        Loading plan information…
+      </p>
+    );
+  }
+  if (planState.status === 'error') {
+    return (
+      <div className="form-alert" role="alert" data-testid="plan-error">
+        <p>Could not load your plan information. Your plan has not changed.</p>
+        <p>{planState.message}</p>
+        <button type="button" className="button button-ghost" onClick={onRetry}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+  const { subscription, entitlements } = planState.data;
+  // The verdict is the SERVER's entitlement list — the page never derives
+  // it from the plan name (a plan string alone must not unlock UI).
+  const proEnabled = entitlements.includes('feature:pro');
+  return (
+    <div data-testid="plan-panel">
+      <p className="badges">
+        <span className="pill" data-testid="plan-badge">
+          Plan: {subscription.plan}
+        </span>
+        <span className="pill" data-testid="subscription-status-badge">
+          Status: {subscription.status}
+        </span>
+      </p>
+      <ul className="access-checks" aria-label="Plan entitlements">
+        <li data-testid="pro-entitlement">
+          <span className="capability-label">PRO features</span>
+          <span
+            className={proEnabled ? 'capability-verdict granted' : 'capability-verdict denied'}
+            data-testid="pro-verdict"
+          >
+            {proEnabled ? 'Enabled' : 'Not enabled'}
+          </span>
+        </li>
+      </ul>
+      <dl className="facts">
+        <div className="fact">
+          <dt>Subscribed since</dt>
+          <dd>
+            <code>{subscription.createdAt ?? '—'}</code>
+          </dd>
+        </div>
+        <div className="fact">
+          <dt>Last updated</dt>
+          <dd>
+            <code>{subscription.updatedAt ?? '—'}</code>
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
 }
 
 /**

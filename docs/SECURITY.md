@@ -1,18 +1,22 @@
 # Security
 
-Pump 1 established, Pump 2 extended (authentication): security is a
-first-class, **tested** requirement. A control is listed as VERIFIED only
-if an automated test or an executed check proves it; anything else is
-marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
+Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
+(authorization), Pump 4 extended (plans/subscriptions/entitlements):
+security is a first-class, **tested** requirement. A control is listed as
+VERIFIED only if an automated test or an executed check proves it;
+anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz stage)
+## Threat model (foundation + auth + authz + subscription stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
 against the cookie session; privilege escalation (vertical: MEMBER→ADMIN→
 OWNER; horizontal: cross-account IDOR); role tampering via client input;
-misconfiguration; secret leakage into code, logs or the browser bundle;
-dependency risk; abuse/accidental overload of a single instance.
+commercial entitlement fraud (forging PRO via body/query/header/cookie
+tampering, client state, UserType or AccountRole; degrading or reading
+another account's subscription); misconfiguration; secret leakage into
+code, logs or the browser bundle; dependency risk; abuse/accidental
+overload of a single instance.
 
 Out of scope for now: persistent attackers across restarts (sessions are
 process-local), supply-chain compromise beyond `npm audit`,
@@ -75,6 +79,25 @@ DDoS/absorption (single-instance limiter only), attackers with a
 | Web: forbidden state (not login redirect) for insufficient roles; role-aware guards; capability verdicts rendered from API responses only; permission-aware UI visibility | VERIFIED | `apps/web/test/authzUi.test.tsx` |
 | Web authz payload boundary: guards reject forged role values (`SUPERADMIN` etc.) | VERIFIED | `apps/web/test/authClient.test.ts`, `shared/test/auth.test.ts` |
 
+### Subscriptions & entitlements (Pump 4)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Entitlements derived ONLY from the account's persisted subscription via the shared decision table (`feature:pro` in exactly one cell: PRO + ACTIVE; fail closed) | VERIFIED | `packages/shared/test/plans.test.ts`, `apps/api/test/subscriptionMatrix.test.ts` |
+| AccountRole never grants PRO (full MEMBER/ADMIN/ACCOUNT_OWNER × FREE/PRO grid; derivation structurally ignores role/userType) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| UserType never grants PRO (all four classifications × FREE/PRO) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Non-ACTIVE PRO (INACTIVE/CANCELLED/EXPIRED) loses `feature:pro` while the plan label stays honest | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Registration always writes FREE + ACTIVE server-side; `plan`/`subscription`/`entitlements` in the payload → 422 (mass assignment) | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| `GET /api/v1/subscription` is self-only: identity from the session alone, no id parameter exists; `?userId=/?accountId=/?email=`/path manipulation cannot read another account | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Tampering cannot forge PRO: request headers, query strings, extra cookies, forged session cookies (401) and GET bodies are never consulted | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| No mutation endpoint: POST/PATCH/PUT/DELETE → 405 + `Allow: GET`, state unchanged | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Anonymous subscription read → 401 | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Live server state: operator subscription changes apply on the next request (no re-login, no cookie reissue) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Store migration: Pump 2/3-era records (no subscription) resolve to FREE + ACTIVE and stay readable; corrupt subscription data fails closed (never PRO, never bricks the store) | VERIFIED | `apps/api/test/authStore.test.ts` |
+| Subscription state survives restarts (durable JSON store) | VERIFIED | `apps/api/test/authStore.test.ts` |
+| Subscription requests log no plan state, emails, passwords or tokens | VERIFIED | `apps/api/test/subscriptionApi.test.ts` (captured-log scan) |
+| Web: plan/PRO verdict rendered only from the server response; errors fail closed (no plan shown, never a silent PRO); no plan state in URL/localStorage/sessionStorage; user payloads can never carry plan material (`isAuthUser` rejects it) | VERIFIED | `apps/web/test/subscriptionUi.test.tsx`, `authClient.test.ts`, `packages/shared/test/plans.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -112,7 +135,10 @@ DDoS/absorption (single-instance limiter only), attackers with a
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator
-action on the store today), role-change audit trail, account email
+action on the store today), role-change audit trail, payment/billing
+workflows and any subscription mutation path (subscription state changes
+only via the operator store-edit + restart workflow — see
+`docs/SUBSCRIPTIONS.md`), account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,

@@ -3,6 +3,7 @@ import {
   isCapabilityResponse,
   isCurrentUserResponse,
   isLogoutResponse,
+  isSubscriptionResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AuthResponse,
@@ -13,6 +14,7 @@ import {
   type CurrentUserResponse,
   type LogoutResponse,
   type StatusResponse,
+  type SubscriptionResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -100,6 +102,13 @@ export interface ApiClient {
    * account; ADMIN+ for others; uniform 403 otherwise.
    */
   getUserById(id: string, signal?: AbortSignal): Promise<CurrentUserResponse>;
+  /**
+   * The authenticated account's OWN subscription + the entitlements the
+   * server derives from it (Pump 4). Read-only; rejects with 401 when
+   * anonymous. The response is validated against the shared guard — the
+   * client renders the server's verdict and never recomputes it.
+   */
+  getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
 }
 
 /**
@@ -301,6 +310,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/users?id=${encodeURIComponent(id)}`,
         signal === undefined ? {} : { signal },
         isCurrentUserResponse,
+      ),
+    getSubscription: (signal?: AbortSignal): Promise<SubscriptionResponse> =>
+      authRequest<SubscriptionResponse>(
+        '/api/v1/subscription',
+        signal === undefined ? {} : { signal },
+        isSubscriptionResponse,
       ),
   };
 }

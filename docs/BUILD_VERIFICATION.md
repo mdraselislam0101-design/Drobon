@@ -181,3 +181,75 @@ Exit code is `0` on PASS, `1` on any FAIL.
 - Boundary checks: `check:boundaries` PASS; `check:secrets` PASS over
   sources and builds; `.data/` (account store, mode 0600) gitignored;
   final `git status` clean of secrets/datasets/junk after commit.
+
+## Verification evidence (Pump 4 — plans, subscriptions & entitlements)
+
+> Re-run `npm run verify` after any change and update this section —
+> evidence must always describe the current tree.
+
+- Date: 2026-09-27/28
+- `npm run verify` result: **PASS — all 9 steps green**
+  (boundaries, secret self-test, secret scan 258 files, typecheck, lint,
+  tests, production builds, secret scan incl. builds, dependency audit)
+- Test totals: **466 passed, 0 failed** (50 files)
+  - `@drobon/shared`: 74 passed (6 files) — Pump 3's 59 + 15 plan/
+    subscription/entitlement contract tests (decision table, guards,
+    legacy default, plan-material rejection on user payloads)
+  - `@drobon/api`: 255 passed (29 files) — Pump 3's 229 + 26 new tests
+    across 2 new suites (subscription endpoint security incl. IDOR/
+    tamper/405/log hygiene; commercial matrix incl. role×plan,
+    UserType×plan, status matrix, live operator flips) and 7 store
+    migration/normalization/restart tests in `authStore.test.ts`
+  - `@drobon/worker`: 28 passed (3 files) — unchanged
+  - `@drobon/web`: 97 → 109 passed (12 files) — +12 tests: Account-page
+    plan section (8, incl. fail-closed error + verdict-from-server +
+    no-URL/storage-state) and subscription client boundary (4)
+- Pump 1–3 suites remain green; no existing test was weakened.
+- `npm run audit` result: **0 vulnerabilities**
+- Manual E2E — the **real dev workflow** (`dev:api` + `dev:web`,
+  durable JSON account store, browser-shaped requests through the Vite
+  proxy with a same-origin `Origin` header):
+  - Web shell `/`, `/account` → 200; `/livez` + `/api/v1/status` via the
+    proxy → live API JSON; direct API `/livez`, `/readyz` → 200
+  - Anonymous `GET /api/v1/subscription` → 401 exact envelope; forged
+    `drobon_session` cookie → 401
+  - Register (with `userType: DEVELOPER`) via proxy → 201, role MEMBER,
+    and `GET /api/v1/subscription` → **FREE + ACTIVE** with
+    server-written ISO timestamps, entitlements exactly `["plan:view"]`;
+    persisted store record matches the response
+  - `GET /api/v1/me` with session via proxy → 200 public shape
+  - Pump 3 authorization intact: capability probes member 200 / admin
+    403 / owner 403; `GET /api/v1/users` self 200 / unknown id 403
+    (IDOR blocked)
+  - Client tampering on the FREE session — `x-plan: PRO` +
+    `x-user-id` headers, `?plan=PRO&userId=&accountId=&email=` query,
+    an extra `plan=PRO` cookie, and a raw GET with a JSON body
+    `{"plan":"PRO","status":"ACTIVE"}` — all answered **200 FREE**
+    (`["plan:view"]`); the API response stayed authoritative
+  - Mutation attempts: POST/PATCH/PUT/DELETE `/api/v1/subscription` →
+    **405 + `Allow: GET`**, state unchanged afterwards; evil-origin
+    register → 403 (CSRF guard intact); direct-API login with a web
+    Origin → 403 (origin guard intact)
+  - **Operator workflow (store edit + restart — the only PRO path):**
+    stopped the API, set the account's subscription to `PRO + ACTIVE`
+    in the JSON store, restarted, re-logged in (sessions are
+    process-local by design) → `GET /api/v1/subscription` → **PRO +
+    ACTIVE, entitlements `["plan:view","feature:pro"]`** — restart
+    preserved the subscription state (durable store)
+  - Lapse matrix, each via store edit + restart + re-login:
+    PRO + **INACTIVE** → `["plan:view"]`; PRO + **CANCELLED** →
+    `["plan:view"]`; PRO + **EXPIRED** → `["plan:view"]` — the PRO
+    label stayed honest while `feature:pro` disappeared every time
+  - **Legacy migration live:** deleted the `subscription` field from
+    the record (exact Pump 3-era shape), restarted, re-logged in →
+    FREE + ACTIVE with `null` timestamps, `["plan:view"]` — pre-Pump-4
+    accounts remain readable with the documented safe default
+  - Log hygiene on the live server: subscription request lines carry
+    only requestId/method/path/status/durationMs — no plan state,
+    emails, passwords or tokens
+  - Account store file: scrypt hash + subscription state only, no
+    plaintext password, mode 0600, inside gitignored `.data/`
+- Boundary checks: `check:boundaries` PASS (no DB/dataset/shell; no
+  payment/gateway code); `check:secrets` PASS over sources and builds;
+  DATASET LOCK respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere;
+  final `git status` clean of secrets/datasets/junk after commit.

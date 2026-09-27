@@ -1,7 +1,8 @@
 # Architecture
 
-Pump 1 foundation, extended by Pump 2 (authentication) and Pump 3
-(authorization): an npm-workspaces monorepo with three runtime components
+Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
+(authorization) and Pump 4 (plans/subscriptions/entitlements): an
+npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -29,6 +30,13 @@ browser bundle and the servers can all consume it:
   the central `PERMISSIONS` table + `hasPermission`/`roleAtLeast`,
   `AuthzContext`, capability-probe types and guards. No scattered role
   strings anywhere else.
+- `plans.ts` — commercial contracts (Pump 4): `Plan` (FREE/PRO — the
+  closed two-value vocabulary), `SubscriptionStatus`
+  (ACTIVE/INACTIVE/CANCELLED/EXPIRED), `Subscription` +
+  `SubscriptionResponse` with payload guards, and the shared entitlement
+  decision table `SUBSCRIPTION_ENTITLEMENTS` (`feature:pro` exists in
+  exactly one cell: PRO + ACTIVE; `plan:manage` in none). Role and
+  UserType are deliberately not inputs to any of it.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -45,7 +53,7 @@ minimal attack surface):
 
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)
-        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz)
+        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
         → router: match → authenticate (401) → authorize (403) → handler
 ```
 
@@ -80,7 +88,11 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   SHA-256 of the token, absolute TTL, immediate revocation), `cookies.ts`
   (HttpOnly/SameSite=Strict/Secure-in-production serialization),
   `authorization.ts` (Pump 3: `createAuthzContext`, role/permission
-  assertions, ownership helpers, uniform denial message).
+  assertions, ownership helpers, uniform denial message) and
+  `subscriptions.ts` (Pump 4: the single entitlement decision point —
+  fail-closed normalization of persisted subscription data,
+  `resolveSubscription`, `deriveEntitlements`; reads only the account's
+  subscription, never role/userType/client input).
 - `routes/` — `GET /livez`, `GET /readyz` (checks: configuration,
   accounts), `GET /api/v1/status`, `POST /api/v1/echo`, plus
   `POST /api/v1/auth/register` (201 + session cookie; always MEMBER),
@@ -88,7 +100,10 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   `POST /api/v1/auth/logout` (idempotent 200 + cookie clear),
   `GET /api/v1/me` (`requireAuth`, public fields only), Pump 3's
   `GET /api/v1/authz/capabilities/*` (role-gated probes, dev/test only)
-  and `GET /api/v1/users?id=` (ownership-checked read).
+  and `GET /api/v1/users?id=` (ownership-checked read), plus Pump 4's
+  `GET /api/v1/subscription` (self-only read of the caller's own
+  subscription + server-derived entitlements; no id parameter, no
+  mutation methods).
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher,
   centralized catch + structured access log, and the single router choke
@@ -141,9 +156,12 @@ NOT_IMPLEMENTED).
   server-safe error rendering.
 - `pages/AccountPage.tsx` — protected page: re-verifies the session on
   mount (session-expiry discovery), shows public account facts, role and
-  user-type badges, live capability checks (each verdict is the API's
-  200/403, not a client guess), a permission-gated privileged lookup
-  section, sign-out.
+  user-type badges, the Pump 4 plan & subscription section (plan/status
+  badges + PRO-feature verdict rendered from `GET /api/v1/subscription`
+  — the server's entitlement list, never a local recomputation; errors
+  fail closed with no plan shown), live capability checks (each verdict
+  is the API's 200/403, not a client guess), a permission-gated
+  privileged lookup section, sign-out.
 - `vite-plugin-aegis.ts` — dev/preview-only hardening: security headers on
   every response (strict CSP on preview; CSP omitted in dev because Vite HMR
   needs inline scripts) and SPA fallback for the preview server.
@@ -175,7 +193,9 @@ NOT_IMPLEMENTED).
 4. Credential endpoints get a second, tighter rate limit; unsafe methods
    pass the CSRF origin guard (Origin must be allowlisted or same-host).
 5. Session resolution: session cookie → session store → user repository →
-   `ctx.user` + `ctx.authz` (role/userType from the LIVE record);
+   `ctx.user` + `ctx.authz` (role/userType from the LIVE record) +
+   `ctx.subscription`/`ctx.entitlements` (commercial state from the LIVE
+   record — Pump 4; operator store changes apply on the next request);
    invalid/stale cookies are cleared on the way through.
 6. Router match → authentication boundary (`requireAuth` → 401 if
    anonymous) → authorization boundary (`requireRole`/`requirePermission`
@@ -199,9 +219,12 @@ NOT_IMPLEMENTED).
 ## NOT_IMPLEMENTED (future Pumps)
 
 Role management console / first-admin bootstrap and role-change audit
-trail (authorization primitives themselves are DONE in Pump 3), account
+trail (authorization primitives themselves are DONE in Pump 3), payment /
+billing integration and any subscription mutation workflow (the
+subscription + entitlement foundation itself is DONE in Pump 4 — see
+`docs/SUBSCRIPTIONS.md`), account
 email verification, password reset, trusted-proxy support, distributed
 rate limiting, durable/persistent sessions and queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
 ingestion/storage, scanning/findings/reports/remediation, AI assistance,
-admin dashboard, payments, multi-instance deployment, metrics/tracing.
+admin dashboard, multi-instance deployment, metrics/tracing.

@@ -231,3 +231,72 @@ describe('authorization API client (Pump 3)', () => {
     });
   });
 });
+
+describe('subscription API client (Pump 4)', () => {
+  test('getSubscription hits the read-only endpoint with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          subscription: {
+            plan: 'PRO',
+            status: 'ACTIVE',
+            createdAt: '2026-09-01T00:00:00.000Z',
+            updatedAt: '2026-09-01T00:00:00.000Z',
+          },
+          entitlements: ['plan:view', 'feature:pro'],
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getSubscription();
+    expect(result.subscription.plan).toBe('PRO');
+    expect(result.entitlements).toContain('feature:pro');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/subscription');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('anonymous 401s surface as http ApiClientError with UNAUTHORIZED', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getSubscription()).rejects.toMatchObject({
+      kind: 'http',
+      status: 401,
+      code: 'UNAUTHORIZED',
+    });
+  });
+
+  test('subscription payloads failing the shared guard are rejected', async () => {
+    // Forged plan, unknown entitlement keys, missing halves — all fail
+    // closed at the client boundary as invalid-response.
+    const bad = [
+      { subscription: { plan: 'ENTERPRISE', status: 'ACTIVE', createdAt: null, updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'active', createdAt: null, updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: 'nope', updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null }, entitlements: ['feature:pro', 'plan:godmode'] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null } },
+      { entitlements: ['plan:view'] },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getSubscription()).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+
+  test('the client exposes no subscription mutation method', () => {
+    const client = createApiClient({ baseUrl: '', fetchImpl: vi.fn() });
+    const methods = Object.keys(client).filter((key) => key.toLowerCase().includes('subscription'));
+    // Only the read exists — there is no post/patch/put/delete to call.
+    expect(methods).toEqual(['getSubscription']);
+  });
+});

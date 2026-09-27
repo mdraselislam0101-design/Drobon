@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
+import type { Subscription } from '@drobon/shared';
 import { createJsonFileUserRepository } from '../src/auth/jsonFileUserRepository.js';
 import { createMemoryUserRepository } from '../src/auth/memoryUserRepository.js';
 import type { UserRecord } from '../src/auth/repositories.js';
+import { deriveEntitlements, resolveSubscription } from '../src/auth/subscriptions.js';
 import { cleanupTempStoreDir, makeTempStoreDir } from './helpers.js';
 
 function record(email: string, id = `usr_${email}`): UserRecord {
@@ -231,5 +233,265 @@ describe('JSON file user repository', () => {
     writeFileSync(path, JSON.stringify({ version: 1, users: [] }), 'utf8');
     // Point the repository at a directory instead of a file: EISDIR.
     expect(() => createJsonFileUserRepository(dir)).toThrow(/Cannot read auth store/);
+  });
+});
+
+describe('subscription persistence (Pump 4)', () => {
+  const IDENTITY = {
+    id: 'usr_sub',
+    email: 'sub@example.test',
+    passwordHash: 'scrypt$1024$8$1$c2FsdA==$aGFzaA==', // fixture marker: test
+    createdAt: '2026-09-27T00:00:00.000Z',
+  };
+
+  test('Pump 2-era records (no role/userType/subscription) resolve to FREE + ACTIVE', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    // Exactly what a Pump 2 store looked like.
+    writeFileSync(path, JSON.stringify({ version: 1, users: [IDENTITY] }));
+    const repo = createJsonFileUserRepository(path);
+    const found = await repo.findByEmail('sub@example.test');
+    expect(found).toBeDefined();
+    expect(found?.role).toBe('MEMBER'); // Pump 3 migration
+    expect(found?.userType).toBeNull(); // Pump 3 migration
+    expect('subscription' in (found ?? {})).toBe(false); // key stays absent
+    expect(resolveSubscription(found as UserRecord)).toEqual({
+      plan: 'FREE',
+      status: 'ACTIVE',
+      createdAt: null,
+      updatedAt: null,
+    });
+    expect(deriveEntitlements(found as UserRecord)).toEqual(['plan:view']);
+  });
+
+  test('Pump 3-era records (role/userType, no subscription) resolve to FREE + ACTIVE', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        users: [{ ...IDENTITY, role: 'ADMIN', userType: 'PENTESTER' }],
+      }),
+    );
+    const repo = createJsonFileUserRepository(path);
+    const found = await repo.findByEmail('sub@example.test');
+    expect(found?.role).toBe('ADMIN');
+    expect(found?.userType).toBe('PENTESTER');
+    // An ADMIN PENTESTER with no subscription record is still FREE —
+    // role/userType never grant commercial state.
+    expect(resolveSubscription(found as UserRecord).plan).toBe('FREE');
+    expect(deriveEntitlements(found as UserRecord)).toEqual(['plan:view']);
+  });
+
+  test('Pump 4 records with a valid subscription round-trip exactly', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    const subscription: Subscription = {
+      plan: 'PRO',
+      status: 'ACTIVE',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-02T00:00:00.000Z',
+    };
+    const repo = createJsonFileUserRepository(path);
+    expect(
+      await repo.create({
+        ...IDENTITY,
+        id: 'usr_roundtrip4',
+        role: 'MEMBER',
+        userType: null,
+        subscription,
+      }),
+    ).toBe(true);
+    const reloaded = createJsonFileUserRepository(path);
+    const found = await reloaded.findById('usr_roundtrip4');
+    expect(found?.subscription).toEqual(subscription);
+  });
+
+  test('subscription state survives a restart (new repository, same file)', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    const first = createJsonFileUserRepository(path);
+    await first.create({
+      ...IDENTITY,
+      id: 'usr_restart4',
+      role: 'MEMBER',
+      userType: null,
+      subscription: {
+        plan: 'PRO',
+        status: 'ACTIVE',
+        createdAt: '2026-09-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      },
+    });
+    const second = createJsonFileUserRepository(path);
+    const found = await second.findByEmail('sub@example.test');
+    expect(found?.subscription).toEqual({
+      plan: 'PRO',
+      status: 'ACTIVE',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    });
+    expect(deriveEntitlements(found as UserRecord)).toEqual(['plan:view', 'feature:pro']);
+  });
+
+  test('invalid persisted subscription data fails safely (loads, never grants PRO)', async () => {
+    const dir = tempDir();
+    // Each case pins the EXACT documented fail-closed mapping:
+    // - invalid/missing plan → FREE;
+    // - invalid/missing status → INACTIVE (ACTIVE is never assumed);
+    // - invalid timestamps → null (metadata only, never entitlement inputs);
+    // - unknown extra fields → dropped;
+    // - `feature:pro` requires valid stored PRO **and** valid stored ACTIVE.
+    const cases: Array<{ name: string; subscription: unknown; expected: Subscription }> = [
+      {
+        name: 'string',
+        subscription: 'PRO',
+        expected: { plan: 'FREE', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'number',
+        subscription: 7,
+        expected: { plan: 'FREE', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'array',
+        subscription: ['PRO', 'ACTIVE'],
+        expected: { plan: 'FREE', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'empty-object',
+        subscription: {},
+        expected: { plan: 'FREE', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'unknown-plan',
+        subscription: { plan: 'ENTERPRISE', status: 'ACTIVE' },
+        expected: { plan: 'FREE', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'lowercase-plan',
+        subscription: { plan: 'pro', status: 'ACTIVE' },
+        expected: { plan: 'FREE', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'numeric-plan',
+        subscription: { plan: 1, status: 'ACTIVE' },
+        expected: { plan: 'FREE', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'lowercase-status',
+        subscription: { plan: 'PRO', status: 'active' },
+        expected: { plan: 'PRO', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'numeric-status',
+        subscription: { plan: 'PRO', status: 42 },
+        expected: { plan: 'PRO', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'missing-status',
+        subscription: { plan: 'PRO' },
+        expected: { plan: 'PRO', status: 'INACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'missing-plan',
+        subscription: { status: 'ACTIVE' },
+        expected: { plan: 'FREE', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'bad-timestamps',
+        subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: 'yesterday', updatedAt: 7 },
+        // Timestamps are display metadata, not entitlement inputs: a valid
+        // PRO + ACTIVE pair keeps its entitlement with nulled timestamps.
+        expected: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+      {
+        name: 'extra-fields',
+        subscription: {
+          plan: 'PRO',
+          status: 'ACTIVE',
+          createdAt: null,
+          updatedAt: null,
+          paymentToken: 'should-be-dropped',
+        },
+        expected: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null },
+      },
+    ];
+    for (const { name, subscription, expected } of cases) {
+      const path = join(dir, `sub-${name}.json`);
+      writeFileSync(
+        path,
+        JSON.stringify({
+          version: 1,
+          users: [{ ...IDENTITY, role: 'MEMBER', userType: null, subscription }],
+        }),
+      );
+      // The store still loads — corrupt COMMERCIAL data degrades the
+      // account's entitlements, it does not brick the account store
+      // (deliberate contrast with corrupt authorization fields).
+      const repo = createJsonFileUserRepository(path);
+      const found = await repo.findByEmail('sub@example.test');
+      expect(found, name).toBeDefined();
+      const effective = resolveSubscription(found as UserRecord);
+      expect(effective, name).toEqual(expected);
+      const entitlements = deriveEntitlements(found as UserRecord);
+      if (expected.plan !== 'PRO' || expected.status !== 'ACTIVE') {
+        // Fail closed: any degraded shape loses the PRO entitlement.
+        expect(entitlements, name).not.toContain('feature:pro');
+      } else {
+        // Only an explicit, fully valid PRO + ACTIVE grants it.
+        expect(entitlements, name).toEqual(['plan:view', 'feature:pro']);
+      }
+    }
+  });
+
+  test('null subscription behaves like an absent one (legacy default)', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        users: [{ ...IDENTITY, role: 'MEMBER', userType: null, subscription: null }],
+      }),
+    );
+    const repo = createJsonFileUserRepository(path);
+    const found = await repo.findByEmail('sub@example.test');
+    expect(found).toBeDefined();
+    expect(resolveSubscription(found as UserRecord)).toEqual({
+      plan: 'FREE',
+      status: 'ACTIVE',
+      createdAt: null,
+      updatedAt: null,
+    });
+  });
+
+  test('valid PRO + ACTIVE remains the only persisted shape granting feature:pro', async () => {
+    const dir = tempDir();
+    const path = join(dir, 'users.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        users: [
+          {
+            ...IDENTITY,
+            role: 'MEMBER',
+            userType: null,
+            subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null },
+          },
+        ],
+      }),
+    );
+    const repo = createJsonFileUserRepository(path);
+    const found = (await repo.findByEmail('sub@example.test')) as UserRecord;
+    expect(found.subscription).toEqual({
+      plan: 'PRO',
+      status: 'ACTIVE',
+      createdAt: null,
+      updatedAt: null,
+    });
+    expect(deriveEntitlements(found)).toEqual(['plan:view', 'feature:pro']);
   });
 });

@@ -45,7 +45,10 @@ const credentialsSchema = v.object({
  * Registration accepts an OPTIONAL classification tag. `role` is NOT in
  * any client schema — a `role` key in the payload is rejected as an
  * unknown property (mass-assignment defense; the server always writes
- * MEMBER and elevates roles only through operator/server actions).
+ * MEMBER and elevates roles only through operator/server actions). Since
+ * Pump 4 the same defense covers commercial state: `plan`/`subscription`
+ * keys are rejected too — the server always writes FREE + ACTIVE and
+ * PRO is reachable only through the (future) authorized workflow.
  */
 const registerSchema = v.object({
   email: v.string({ maxLength: EMAIL_MAX_LENGTH, trim: true }),
@@ -115,14 +118,20 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
         // cost the same CPU as the "new account" path, otherwise response
         // timing becomes an enumeration oracle.
         const passwordHash = await hashPassword(parsed.value.password, config.authScryptCost);
+        const now = new Date().toISOString();
         const record: UserRecord = {
           id: `usr_${randomUUID()}`,
           email,
           passwordHash,
-          createdAt: new Date().toISOString(),
+          createdAt: now,
           // Server-assigned: every self-registration starts as MEMBER.
           role: 'MEMBER',
           userType,
+          // Server-assigned commercial state (Pump 4): every new account
+          // starts FREE + ACTIVE. No registration parameter, UserType or
+          // role can select PRO — `plan`/`subscription` keys in the
+          // payload are rejected as unknown properties by the schema.
+          subscription: { plan: 'FREE', status: 'ACTIVE', createdAt: now, updatedAt: now },
         };
         const created = await users.create(record);
         if (!created) {

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { AccountRole, AuthUser, Permission } from '@drobon/shared';
+import type { AccountRole, AuthUser, Entitlement, Permission, Subscription } from '@drobon/shared';
 import type { AuthzContext } from '@drobon/shared';
 import type { Logger } from './logger.js';
 
@@ -29,6 +29,19 @@ export interface RequestContext {
    * trust its view of role/userType.
    */
   authz?: AuthzContext;
+  /**
+   * Subscription state (Pump 4) derived from the LIVE account record on
+   * every request — commercial state is never trusted from clients, and
+   * operator store changes take effect on the next request (like role
+   * changes). Set by session middleware whenever `user` is defined.
+   */
+  subscription?: Subscription;
+  /**
+   * Server-authoritative commercial entitlements derived exclusively from
+   * the subscription above (shared decision table). AccountRole and
+   * UserType deliberately never contribute. Set alongside `subscription`.
+   */
+  entitlements?: readonly Entitlement[];
 }
 
 export type NextFunction = () => Promise<void>;

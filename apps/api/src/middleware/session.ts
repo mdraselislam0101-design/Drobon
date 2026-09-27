@@ -1,6 +1,7 @@
 import type { Middleware } from '../http.js';
 import { readSessionToken, clearSessionCookie } from '../auth/cookies.js';
 import { createAuthzContext } from '../auth/authorization.js';
+import { deriveEntitlements, resolveSubscription } from '../auth/subscriptions.js';
 import { toAuthUser, type UserRepository } from '../auth/repositories.js';
 import type { SessionStore } from '../auth/sessions.js';
 
@@ -38,10 +39,13 @@ export function sessionMiddleware(options: SessionMiddlewareOptions): Middleware
           options.sessions.revoke(token);
           cleared = true;
         } else {
-          // Role/userType come from the live repository record on EVERY
-          // request — authorization never trusts cached or client state.
+          // Role/userType/subscription come from the live repository record
+          // on EVERY request — authorization AND commercial entitlements
+          // never trust cached or client state (Pump 3 + Pump 4 rules).
           ctx.user = toAuthUser(record);
           ctx.authz = createAuthzContext(ctx.user);
+          ctx.subscription = resolveSubscription(record);
+          ctx.entitlements = deriveEntitlements(record);
         }
       } else {
         cleared = true;

@@ -29,6 +29,7 @@ import { createAuthzRoutes } from './routes/authz.js';
 import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
+import { createSubscriptionRoutes } from './routes/subscription.js';
 import type { Logger } from './logger.js';
 
 export interface AppDeps {
@@ -104,6 +105,7 @@ export function createApp(deps: AppDeps): App {
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
+    ...createSubscriptionRoutes(),
     ...(deps.extraRoutes ?? []),
   ];
 

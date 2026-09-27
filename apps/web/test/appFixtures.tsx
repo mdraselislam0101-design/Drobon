@@ -8,6 +8,7 @@ import type {
   HealthResponse,
   LogoutResponse,
   StatusResponse,
+  SubscriptionResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -89,6 +90,16 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getUserById: vi.fn(async () => {
       throw forbiddenError();
     }),
+    // Pump 4 default: the FREE world — FREE + ACTIVE, no PRO entitlement.
+    getSubscription: vi.fn(async (): Promise<SubscriptionResponse> => ({
+      subscription: {
+        plan: 'FREE',
+        status: 'ACTIVE',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      entitlements: ['plan:view'],
+    })),
     ...overrides,
   };
 }
