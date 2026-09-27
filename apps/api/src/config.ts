@@ -21,6 +21,24 @@ export interface ApiConfig {
   rateLimitWindowMs: number;
   bodyMaxBytes: number;
   version: string;
+  /**
+   * Where durable user accounts live. A filesystem path (the minimum auth
+   * persistence boundary) or the literal `:memory:` for explicitly
+   * ephemeral setups — rejected in production by {@link loadConfig}.
+   */
+  authStorePath: string;
+  /** scrypt cost parameter N (power of two). */
+  authScryptCost: number;
+  /** Absolute session lifetime in seconds. */
+  authSessionTtlSeconds: number;
+  /** Dedicated rate limit for credential endpoints (per client IP). */
+  authRateLimitMaxRequests: number;
+  authRateLimitWindowMs: number;
+  /**
+   * `Secure` attribute for the session cookie. Derived from the
+   * environment (production only) so plain-HTTP localhost keeps working.
+   */
+  cookieSecure: boolean;
 }
 
 export class ConfigError extends Error {
@@ -146,6 +164,43 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('BODY_MAX_BYTES must be an integer between 1024 and 10485760');
   }
 
+  // --- Authentication (Pump 2) -------------------------------------------
+  const authStorePath = (env['AUTH_STORE_PATH'] ?? '.data/users.json').trim();
+  const memoryStore = authStorePath === ':memory:';
+  if (authStorePath.length === 0) {
+    issues.push('AUTH_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (memoryStore && environment === 'production') {
+    issues.push('AUTH_STORE_PATH=":memory:" is not allowed in production (accounts would not persist)');
+  }
+
+  const authScryptCost =
+    parseInteger(env['AUTH_SCRYPT_COST'], 'AUTH_SCRYPT_COST', issues) ?? 32_768;
+  if (
+    authScryptCost < 1024 ||
+    authScryptCost > 1_048_576 ||
+    (authScryptCost & (authScryptCost - 1)) !== 0
+  ) {
+    issues.push('AUTH_SCRYPT_COST must be a power of two between 1024 and 1048576');
+  }
+
+  const authSessionTtlSeconds =
+    parseInteger(env['AUTH_SESSION_TTL_SECONDS'], 'AUTH_SESSION_TTL_SECONDS', issues) ?? 604_800;
+  if (authSessionTtlSeconds < 60 || authSessionTtlSeconds > 2_592_000) {
+    issues.push('AUTH_SESSION_TTL_SECONDS must be an integer between 60 and 2592000');
+  }
+
+  const authRateLimitMaxRequests =
+    parseInteger(env['AUTH_RATE_LIMIT_MAX_REQUESTS'], 'AUTH_RATE_LIMIT_MAX_REQUESTS', issues) ?? 30;
+  if (authRateLimitMaxRequests < 1 || authRateLimitMaxRequests > 1_000_000) {
+    issues.push('AUTH_RATE_LIMIT_MAX_REQUESTS must be an integer between 1 and 1000000');
+  }
+
+  const authRateLimitWindowMs =
+    parseInteger(env['AUTH_RATE_LIMIT_WINDOW_MS'], 'AUTH_RATE_LIMIT_WINDOW_MS', issues) ?? 60_000;
+  if (authRateLimitWindowMs < 1000 || authRateLimitWindowMs > 3_600_000) {
+    issues.push('AUTH_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -160,5 +215,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     rateLimitWindowMs,
     bodyMaxBytes,
     version: readServiceVersion(),
+    authStorePath,
+    authScryptCost,
+    authSessionTtlSeconds,
+    authRateLimitMaxRequests,
+    authRateLimitWindowMs,
+    cookieSecure: environment === 'production',
   };
 }

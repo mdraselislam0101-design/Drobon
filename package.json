@@ -2,7 +2,7 @@
   "name": "drobon-aegis-ai",
   "version": "0.1.0",
   "private": true,
-  "description": "Drobon Aegis AI — cybersecurity application foundation (Pump 1).",
+  "description": "Drobon Aegis AI — cybersecurity application foundation + authentication (Pump 2).",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "engines": {

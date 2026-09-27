@@ -1,23 +1,28 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 1: production-oriented foundation**, built from zero.
+Cybersecurity application — **Pump 2: foundation + authentication**,
+cumulative on top of the verified Pump 1 base.
 
-Pump 1 establishes the clean technical base (Web, API, Worker, shared contracts,
-security, testing, build, docs) on which all later Pumps build. It deliberately
-contains **no database, no security dataset, no auth, and no product features yet**.
+Pump 1 established the clean technical base (Web, API, Worker, shared
+contracts, security, testing, build, docs). Pump 2 added the real
+authentication layer: registration, login, logout, httpOnly sessions,
+protected routes and a minimal durable account store — wired end to end
+through the existing pipeline. There is still **no database phase, no
+security dataset, and no product features** (scanning, findings, etc.
+arrive in later Pumps).
 
 ## Layout
 
 ```
 Drobon/
 ├── apps/
-│   ├── api/          # HTTP API (zero runtime dependencies)
-│   ├── web/          # React + Vite web application
+│   ├── api/          # HTTP API (zero runtime dependencies) + auth layer
+│   ├── web/          # React + Vite web application (auth UI + guards)
 │   └── worker/       # Background worker (in-memory execution)
 ├── packages/
-│   └── shared/       # Contracts: API envelopes, errors, jobs, config, models
+│   └── shared/       # Contracts: API envelopes, errors, jobs, auth, config
 ├── scripts/          # dev runner, secret scan, scope gates, verifier
-└── docs/             # Architecture, development, testing, security, builds
+└── docs/             # Architecture, development, testing, security, auth, builds
 ```
 
 ## Quickstart
@@ -58,25 +63,31 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — components, contracts, request lifecycle
-- `docs/DEVELOPMENT.md` — setup, workflow, conventions
+- `docs/AUTHENTICATION.md` — auth design: sessions, hashing, persistence
+- `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 1)
+## Scope (Pump 2, cumulative)
 
-**Included:** Web shell + routing + typed API client, versioned JSON API with
-validation/correlation/rate limiting/security headers, worker with job
-contracts/timeouts/cancellation/retry, structured logging with secret
-redaction, strict config validation, liveness/readiness probes, test suites
-for every package, docs, and one-command verification.
+**Included:** everything from Pump 1 (Web shell, typed API client, versioned
+JSON API with validation/correlation/rate limiting/security headers, worker
+contracts, structured logging with redaction, docs, one-command verification)
+**plus**: registration/login/logout flows, `GET /api/v1/me`, httpOnly +
+SameSite=Strict session cookies, server-side session store with absolute TTL,
+scrypt password hashing, a dedicated credential rate limit, CSRF origin
+guard, protected-route machinery in the Web app (loading/error/expiry
+states), and the minimum durable account persistence (single JSON document
+behind a repository interface).
 
-**NOT included:** database of any kind, security datasets (CVE/NVD/GHSA/OSV/
-KEV/EPSS catalogs or feeds), authentication/authorization, scanning, findings,
-reports, remediation, AI assistance, admin, payments. Anything in that list is
-future work — see the NOT_IMPLEMENTED sections in `docs/`.
+**NOT included:** the broader database phase (projects/scans/findings), any
+security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds), roles/
+authorization, plans/entitlements, scanning, findings, reports, remediation,
+AI assistance, admin, payments. Anything in that list is future work — see
+the NOT_IMPLEMENTED sections in `docs/`.
 
 ## Status
 
-Pump 1 — foundation. See `docs/BUILD_VERIFICATION.md` for the latest
-verification evidence and `git log` for history.
+Pump 2 — foundation + authentication. See `docs/BUILD_VERIFICATION.md` for
+the latest verification evidence and `git log` for history.

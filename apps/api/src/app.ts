@@ -1,12 +1,20 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiConfig } from './config.js';
-import { badRequest, internal, isAppError, methodNotAllowed, notFound } from './errors.js';
+import { badRequest, internal, isAppError, methodNotAllowed, notFound, unauthorized } from './errors.js';
 import type { Middleware, RequestContext, Route } from './http.js';
+import { createJsonFileUserRepository } from './auth/jsonFileUserRepository.js';
+import { createMemoryUserRepository } from './auth/memoryUserRepository.js';
+import type { UserRepository } from './auth/repositories.js';
+import { createSessionStore, type SessionStore } from './auth/sessions.js';
 import { corsMiddleware } from './middleware/cors.js';
+import { createAuthRateLimiter } from './middleware/authRateLimit.js';
+import { originGuardMiddleware } from './middleware/originGuard.js';
 import { createRateLimiter } from './middleware/rateLimit.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
 import { securityHeadersMiddleware } from './middleware/securityHeaders.js';
+import { sessionMiddleware } from './middleware/session.js';
 import { sendFailure } from './respond.js';
+import { createAuthRoutes } from './routes/auth.js';
 import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
@@ -16,7 +24,7 @@ export interface AppDeps {
   config: ApiConfig;
   logger: Logger;
   /**
-   * Extension point for future modules (auth, scanning, admin, ...).
+   * Extension point for future modules (scanning, admin, ...).
    * Also used by tests to inject fault routes without touching prod code.
    */
   extraRoutes?: Route[];
@@ -24,6 +32,14 @@ export interface AppDeps {
   now?: () => number;
   /** Clock for the rate limiter (injectable for tests). */
   rateLimitNow?: () => number;
+  /**
+   * Account repository. Defaults to the durable JSON store at
+   * `config.authStorePath` (`:memory:` for explicitly ephemeral setups).
+   * Tests inject their own instance to control persistence.
+   */
+  users?: UserRepository;
+  /** Session store. Defaults to a fresh in-memory store (Pump 2). */
+  sessions?: SessionStore;
 }
 
 export interface App {
@@ -60,10 +76,22 @@ export function createApp(deps: AppDeps): App {
   const { config, logger } = deps;
   const clock = deps.now ?? Date.now;
 
+  // Account store: durable by default (fail-fast on a corrupt document —
+  // createApp throws, the process refuses to start). Tests inject their
+  // own repository; `:memory:` is the explicitly-ephemeral dev opt-in.
+  const users: UserRepository =
+    deps.users ??
+    (config.authStorePath === ':memory:'
+      ? createMemoryUserRepository()
+      : createJsonFileUserRepository(config.authStorePath));
+  const sessions: SessionStore =
+    deps.sessions ?? createSessionStore({ ttlSeconds: config.authSessionTtlSeconds });
+
   const routes: Route[] = [
     ...createHealthRoutes({ config }),
     ...createStatusRoutes({ config }),
     ...createEchoRoutes({ config }),
+    ...createAuthRoutes({ config, users, sessions }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -80,11 +108,30 @@ export function createApp(deps: AppDeps): App {
         },
   );
 
+  const authRateLimiter = createAuthRateLimiter(
+    deps.rateLimitNow === undefined
+      ? {
+          maxRequests: config.authRateLimitMaxRequests,
+          windowMs: config.authRateLimitWindowMs,
+        }
+      : {
+          maxRequests: config.authRateLimitMaxRequests,
+          windowMs: config.authRateLimitWindowMs,
+          now: deps.rateLimitNow,
+        },
+  );
+
+  // Pipeline order (docs/ARCHITECTURE.md): request ID → security headers →
+  // CORS → global rate limit → credential-endpoint rate limit → CSRF origin
+  // guard → session resolution → routing (with requireAuth boundary).
   const middlewares: Middleware[] = [
     requestIdMiddleware(),
     securityHeadersMiddleware(),
     corsMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     rateLimiter.middleware,
+    authRateLimiter.middleware,
+    originGuardMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
+    sessionMiddleware({ sessions, users, cookieSecure: config.cookieSecure }),
   ];
 
   const routeRequest = async (
@@ -96,6 +143,11 @@ export function createApp(deps: AppDeps): App {
       (route) => route.method === ctx.method && route.path === ctx.pathname,
     );
     if (match !== undefined) {
+      if (match.requireAuth === true && ctx.user === undefined) {
+        // Authorization-ready boundary: one choke point for every
+        // protected route. Handlers behind it can trust `ctx.user`.
+        throw unauthorized();
+      }
       await match.handler(req, res, ctx);
       return;
     }
@@ -183,5 +235,12 @@ export function createApp(deps: AppDeps): App {
     }
   };
 
-  return { handle, routes, resetRateLimit: rateLimiter.reset };
+  return {
+    handle,
+    routes,
+    resetRateLimit: (): void => {
+      rateLimiter.reset();
+      authRateLimiter.reset();
+    },
+  };
 }

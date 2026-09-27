@@ -1,18 +1,22 @@
 # Security
 
-Pump 1 treats security as a first-class, **tested** requirement. A control is
-listed as VERIFIED only if an automated test or an executed check proves it;
-anything else is marked PLANNED or NOT_IMPLEMENTED.
+Pump 1 established, Pump 2 extended (authentication): security is a
+first-class, **tested** requirement. A control is listed as VERIFIED only
+if an automated test or an executed check proves it; anything else is
+marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation stage)
+## Threat model (foundation + auth stage)
 
-In scope: Internet clients talking to the API/Web over HTTP; misconfiguration;
-secret leakage into code, logs or the browser bundle; dependency risk;
-abuse/accidental overload of a single instance.
+In scope: Internet clients talking to the API/Web over HTTP; credential
+attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
+against the cookie session; misconfiguration; secret leakage into code,
+logs or the browser bundle; dependency risk; abuse/accidental overload of
+a single instance.
 
-Out of scope for Pump 1: authenticated threats (no auth exists), persistent
-attackers across restarts (no durable state exists), supply-chain compromise
-beyond `npm audit`, DDoS/absorption (single-instance limiter only).
+Out of scope for now: persistent attackers across restarts (sessions are
+process-local), supply-chain compromise beyond `npm audit`,
+DDoS/absorption (single-instance limiter only), roles/authorization
+(admin/attacker with a *valid* session — no privileged roles exist yet).
 
 ## Controls
 
@@ -21,7 +25,7 @@ beyond `npm audit`, DDoS/absorption (single-instance limiter only).
 | Control | Status | Evidence |
 | ------- | ------ | -------- |
 | Strict security headers on every response (CSP `default-src 'none'`, nosniff, DENY, no-referrer, hardened permissions-policy, COOP/CORP, HSTS) | VERIFIED | `apps/api/test/headers.test.ts` (success + error paths) |
-| CORS allowlist, exact-match, fail-closed preflights, `Vary: Origin`, never credentials | VERIFIED | `apps/api/test/cors.test.ts`, `security.test.ts` |
+| CORS allowlist, exact-match, fail-closed preflights, `Vary: Origin`; credentials (`Allow-Credentials: true`) ONLY with an exactly reflected origin, never `*` | VERIFIED | `apps/api/test/cors.test.ts`, `security.test.ts`, `authSecurity.test.ts` |
 | Fixed-window rate limiting (429 + `Retry-After` + `RateLimit-*`), per-IP buckets | VERIFIED | `apps/api/test/rateLimit.test.ts` |
 | Request validation: content-type 415, size cap 413, malformed JSON 400, strict schemas 422 (unknown keys rejected) | VERIFIED | `apps/api/test/echo.test.ts`, `validate.test.ts` |
 | Central error mapping: 5xx collapse to `Internal Server Error.`, no stacks/messages leak, request ID always present | VERIFIED | `apps/api/test/errors.test.ts`, `errorDisclosure.test.ts` |
@@ -32,6 +36,23 @@ beyond `npm audit`, DDoS/absorption (single-instance limiter only).
 | `process.env` readable only in `config.ts` | VERIFIED | `apps/api/test/staticSafety.test.ts` |
 | Socket timeouts (`headersTimeout`, `requestTimeout`, `keepAliveTimeout`) | IMPLEMENTED | Code review (`server.ts`); behavior relies on Node runtime |
 | No `Server`/`X-Powered-By` fingerprint | VERIFIED | `apps/api/test/headers.test.ts` |
+
+### Authentication (Pump 2)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Passwords hashed with scrypt (N=32768 default, r=8, p=1, per-user salt, constant-time compare); plaintext never stored/logged/returned; corrupted hashes fail closed | VERIFIED | `apps/api/test/passwords.test.ts`, `authStore.test.ts` |
+| Session cookie: `HttpOnly` + `SameSite=Strict` + `Path=/` + host-only + `Secure` in production; token never in any response body | VERIFIED | `apps/api/test/authSecurity.test.ts`, `cookies.test.ts` |
+| Server-side sessions keyed by SHA-256 of the token; absolute TTL; immediate revocation on logout; expired/invalid cookies actively cleared | VERIFIED | `apps/api/test/{sessions,authLogout,authLogin}.test.ts` |
+| Generic login failures (unknown email ≡ wrong password: identical status/code/message) with dummy-scrypt timing equalization | VERIFIED | `apps/api/test/authLogin.test.ts` (body equality) |
+| Credential-endpoint rate limit (default 30/min/IP, separate from global) with 429 + `Retry-After` | VERIFIED | `apps/api/test/authLogin.test.ts` |
+| CSRF origin guard on unsafe methods (Origin must be allowlisted or same-host; absent Origin = non-browser) + `SameSite=Strict` | VERIFIED | `apps/api/test/authSecurity.test.ts` |
+| Protected route boundary (`Route.requireAuth` → 401) — bypass attempts: no/garbage/expired/revoked cookies, forged Bearer header, method/path tricks, deleted account | VERIFIED | `apps/api/test/authMe.test.ts` |
+| `/me` and auth responses expose ONLY public fields (`id`, `email`, `createdAt`); no hash/token/password in any body; exact-shape assertions | VERIFIED | `apps/api/test/authMe.test.ts`, `authRegistration.test.ts`, `authSecurity.test.ts` |
+| Registration: shared email/password policy, 422 field issues, unknown-key rejection (mass assignment), duplicate → 409 without changing the account | VERIFIED | `apps/api/test/authRegistration.test.ts` |
+| Auth events logged with correlation IDs but never passwords, hashes, emails or tokens | VERIFIED | `apps/api/test/authSecurity.test.ts` (log scan) |
+| Durable account store: atomic writes, fail-fast on corruption, serialized creates (no duplicate races), `:memory:` rejected in production | VERIFIED | `apps/api/test/authStore.test.ts`, `config.test.ts` |
+| Web: guarded session state (no token in JS), open-redirect-proof post-login navigation, expiry handling, accessible auth forms, logout honesty (server-confirmed only) | VERIFIED | `apps/web/test/{authClient,authPages,protected}.test.ts` / `.tsx` |
 
 ### Web
 
@@ -69,13 +90,15 @@ beyond `npm audit`, DDoS/absorption (single-instance limiter only).
 
 ## NOT_IMPLEMENTED (do not assume these exist)
 
-Authentication, authorization/sessions, trusted-proxy (`X-Forwarded-For`)
-handling, distributed/shared rate limiting, WAF, durable queues, database
-(and therefore SQL-injection surface — there is none), dataset ingestion,
-file uploads, outgoing fetch/SSRF surface (the API makes no outbound calls),
-command execution, metrics/tracing, security-event alerting.
+Roles/authorization (any valid session is equal — there is no privileged
+role yet), account email verification, password reset, MFA, account
+lockout (deliberate — rate limits instead), OAuth/OIDC/JWT, distributed
+sessions or rate limiting, trusted-proxy (`X-Forwarded-For`) handling,
+WAF, durable queues, the database phase, dataset ingestion, file uploads,
+outgoing fetch/SSRF surface (the API makes no outbound calls), command
+execution, metrics/tracing, security-event alerting.
 
-Note on SSRF/path-traversal/command-injection: Pump 1 has no feature that
+Note on SSRF/path-traversal/command-injection: the app has no feature that
 fetches URLs, resolves file paths from input, or executes commands — the
 static tests + scope gates prove the primitives are absent. These threats
 become relevant only when such features land, and must be re-assessed then.

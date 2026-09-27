@@ -36,7 +36,7 @@ export function createHealthRoutes(deps: HealthRouteDeps): Route[] {
           status: 'ready',
           service: SERVICE_NAME,
           version: deps.config.version,
-          checks: { configuration: 'ok' },
+          checks: { configuration: 'ok', accounts: 'ok' },
         };
         sendSuccess(res, ctx, body);
       },

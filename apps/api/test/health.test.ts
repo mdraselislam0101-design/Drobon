@@ -29,7 +29,9 @@ describe('health routes', () => {
         status: 'ready',
         service: 'drobon-aegis-api',
         version: '9.9.9-test',
-        checks: { configuration: 'ok' },
+        // `accounts` (Pump 2): a listening instance has loaded the auth
+        // store — a corrupt store refuses to start, so this can only be ok.
+        checks: { configuration: 'ok', accounts: 'ok' },
       },
       meta: { requestId: expect.any(String) },
     });

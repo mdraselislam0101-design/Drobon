@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet } from 'react-router-dom';
+import { useAuth } from '../auth/context.js';
 
 export function Layout({
   appName,
@@ -7,6 +8,7 @@ export function Layout({
   appName: string;
   appVersion: string;
 }): React.JSX.Element {
+  const { state } = useAuth();
   return (
     <div className="shell">
       <a className="skip-link" href="#main">
@@ -42,6 +44,32 @@ export function Layout({
             >
               Service status
             </NavLink>
+            {state.status === 'ready' && (
+              <NavLink
+                className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                to="/account"
+              >
+                Account
+              </NavLink>
+            )}
+            {state.status === 'anonymous' && (
+              <>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/login"
+                >
+                  Sign in
+                </NavLink>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/register"
+                >
+                  Sign up
+                </NavLink>
+              </>
+            )}
+            {/* `loading`/`error`: show neither set — a wrong guess would
+                flash misleading links before the session probe settles. */}
           </nav>
         </div>
       </header>
@@ -53,7 +81,7 @@ export function Layout({
           <span>
             {appName} · v{appVersion}
           </span>
-          <span className="footer-note">Foundation build — Pump 1</span>
+          <span className="footer-note">Foundation build — Pump 2</span>
         </div>
       </footer>
     </div>

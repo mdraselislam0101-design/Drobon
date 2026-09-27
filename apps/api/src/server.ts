@@ -1,14 +1,7 @@
 import { createServer, type Server } from 'node:http';
-import { createApp, type App } from './app.js';
-import type { ApiConfig } from './config.js';
-import type { Route } from './http.js';
-import type { Logger } from './logger.js';
+import { createApp, type App, type AppDeps } from './app.js';
 
-export interface ServerDeps {
-  config: ApiConfig;
-  logger: Logger;
-  extraRoutes?: Route[];
-}
+export type ServerDeps = AppDeps;
 
 export interface StartedServer {
   app: App;

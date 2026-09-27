@@ -10,20 +10,20 @@ const FOUNDATION = [
     body: 'Validated requests, consistent envelopes, correlation IDs, security headers.',
   },
   {
+    title: 'Authentication',
+    body: 'Registration, login, logout, httpOnly sessions and protected routes — end to end.',
+  },
+  {
     title: 'Worker',
     body: 'Job contracts, timeouts, cancellation and retry over an in-memory queue.',
   },
   {
     title: 'Shared contracts',
-    body: 'One vocabulary for responses, errors, jobs and config across all three.',
+    body: 'One vocabulary for responses, errors, jobs, auth and config across all three.',
   },
   {
     title: 'Security',
-    body: 'CORS allowlist, rate limiting, secret hygiene and tested safe defaults.',
-  },
-  {
-    title: 'Testing',
-    body: 'Unit, integration and security tests with a one-command verifier.',
+    body: 'CORS allowlist, rate limiting, CSRF origin guard, secret hygiene, tested defaults.',
   },
 ] as const;
 
@@ -34,12 +34,16 @@ export function HomePage(): React.JSX.Element {
         <p className="eyebrow">Cybersecurity platform</p>
         <h1 id="hero-title">Drobon Aegis AI</h1>
         <p className="lede">
-          The Pump 1 foundation is live: a secure, tested base for the Web app, API and
-          background worker. Product capabilities — scanning, findings, reports, AI
-          assistance — arrive in later Pumps.
+          Pump 2 is live: the Pump 1 foundation now has real user accounts —
+          registration, login, sessions and protected pages wired end to end.
+          Product capabilities — scanning, findings, reports, AI assistance —
+          arrive in later Pumps.
         </p>
         <div className="hero-actions">
-          <Link className="button" to="/status">
+          <Link className="button" to="/register">
+            Create an account
+          </Link>
+          <Link className="button button-secondary" to="/status">
             Check service status
           </Link>
         </div>

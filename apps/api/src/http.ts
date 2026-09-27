@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AuthUser } from '@drobon/shared';
 import type { Logger } from './logger.js';
 
 /**
@@ -15,6 +16,12 @@ export interface RequestContext {
   ip: string;
   startedAtMs: number;
   logger: Logger;
+  /**
+   * Authenticated user, resolved by the session middleware from the session
+   * cookie. `undefined` means anonymous. Authorization layers in later
+   * Pumps build on this boundary — routes opt in via `Route.requireAuth`.
+   */
+  user?: AuthUser;
 }
 
 export type NextFunction = () => Promise<void>;
@@ -36,4 +43,10 @@ export interface Route {
   method: string;
   path: string;
   handler: RouteHandler;
+  /**
+   * Authorization-ready boundary: when true, the router refuses the request
+   * with 401 unless session middleware resolved an authenticated user.
+   * Handlers behind this flag may rely on `ctx.user` being defined.
+   */
+  requireAuth?: boolean;
 }

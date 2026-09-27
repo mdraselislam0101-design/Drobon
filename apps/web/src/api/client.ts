@@ -1,8 +1,14 @@
 import {
+  isAuthResponse,
+  isCurrentUserResponse,
+  isLogoutResponse,
   parseApiResponse,
   type ApiErrorDetail,
+  type AuthResponse,
   type EchoResponse,
   type HealthResponse,
+  type CurrentUserResponse,
+  type LogoutResponse,
   type StatusResponse,
 } from '@drobon/shared';
 
@@ -18,6 +24,8 @@ export class ApiClientError extends Error {
   readonly status?: number;
   readonly code?: string;
   readonly requestId?: string;
+  /** Server-provided issue details (e.g. 422 field errors), if any. */
+  readonly details?: unknown;
 
   constructor(options: {
     kind: ClientErrorKind;
@@ -25,6 +33,7 @@ export class ApiClientError extends Error {
     status?: number;
     code?: string;
     requestId?: string;
+    details?: unknown;
   }) {
     super(options.message);
     this.name = 'ApiClientError';
@@ -37,6 +46,9 @@ export class ApiClientError extends Error {
     }
     if (options.requestId !== undefined) {
       this.requestId = options.requestId;
+    }
+    if (options.details !== undefined) {
+      this.details = options.details;
     }
   }
 }
@@ -63,6 +75,14 @@ export interface ApiClient {
   getStatus(signal?: AbortSignal): Promise<StatusResponse>;
   getLivez(signal?: AbortSignal): Promise<HealthResponse>;
   postEcho(message: string, signal?: AbortSignal): Promise<EchoResponse>;
+  /** Create an account; the API sets the session cookie on success. */
+  postRegister(email: string, password: string, signal?: AbortSignal): Promise<AuthResponse>;
+  /** Authenticate; the API sets the session cookie on success. */
+  postLogin(email: string, password: string, signal?: AbortSignal): Promise<AuthResponse>;
+  /** Revoke the session. Idempotent (always resolves on HTTP success). */
+  postLogout(signal?: AbortSignal): Promise<LogoutResponse>;
+  /** Current authenticated user — rejects with 401 when anonymous. */
+  getMe(signal?: AbortSignal): Promise<CurrentUserResponse>;
 }
 
 /**
@@ -102,6 +122,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     try {
       response = await fetchImpl(`${baseUrl}${path}`, {
         ...init,
+        // Cookie auth (Pump 2): the session lives in an httpOnly cookie.
+        // `include` makes split-host deployments work; same-origin
+        // behavior is identical.
+        credentials: 'include',
         signal: controller.signal,
         headers: {
           accept: 'application/json',
@@ -162,9 +186,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         status: response.status,
         code: detail.code,
         requestId: parsed.meta.requestId,
+        ...(detail.details === undefined ? {} : { details: detail.details }),
       });
     }
     return parsed.data;
+  };
+
+  /**
+   * Auth endpoints validate their payloads against the shared guards — a
+   * response that smuggles extra fields or mangles the user shape fails as
+   * `invalid-response` instead of reaching application state.
+   */
+  const authRequest = async <T>(
+    path: string,
+    init: RequestInit,
+    guard: (value: unknown) => value is T,
+  ): Promise<T> => {
+    const data = await request<unknown>(path, init, generateId());
+    if (!guard(data)) {
+      throw new ApiClientError({
+        kind: 'invalid-response',
+        message: 'The server returned an unexpected response shape.',
+        requestId: generateId(),
+      });
+    }
+    return data;
   };
 
   return {
@@ -186,6 +232,43 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           ...(signal === undefined ? {} : { signal }),
         },
         generateId(),
+      ),
+    postRegister: (email: string, password: string, signal?: AbortSignal): Promise<AuthResponse> =>
+      authRequest<AuthResponse>(
+        '/api/v1/auth/register',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isAuthResponse,
+      ),
+    postLogin: (email: string, password: string, signal?: AbortSignal): Promise<AuthResponse> =>
+      authRequest<AuthResponse>(
+        '/api/v1/auth/login',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isAuthResponse,
+      ),
+    postLogout: (signal?: AbortSignal): Promise<LogoutResponse> =>
+      authRequest<LogoutResponse>(
+        '/api/v1/auth/logout',
+        {
+          method: 'POST',
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isLogoutResponse,
+      ),
+    getMe: (signal?: AbortSignal): Promise<CurrentUserResponse> =>
+      authRequest<CurrentUserResponse>(
+        '/api/v1/me',
+        signal === undefined ? {} : { signal },
+        isCurrentUserResponse,
       ),
   };
 }

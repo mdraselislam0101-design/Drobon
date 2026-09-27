@@ -1,4 +1,5 @@
-// `npm run verify` — the full Pump 1 regression pipeline in dependency order.
+// `npm run verify` — the full regression pipeline in dependency order
+// (Pump 1 foundation + Pump 2 authentication).
 // Every step must pass; the summary names each step PASS/FAIL/WARN.
 import { spawnSync } from 'node:child_process';
 

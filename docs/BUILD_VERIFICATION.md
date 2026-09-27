@@ -71,3 +71,61 @@ Exit code is `0` on PASS, `1` on any FAIL.
     `/status` → 200 SPA fallback; hashed `/assets/index-*.{js,css}`
   - Web dev proxy: `/api/v1/status` and `/livez` through `:5173` return
     live API JSON (same-origin dev works zero-config)
+
+## Verification evidence (Pump 2 — foundation + authentication)
+
+> Re-run `npm run verify` after any change and update this section —
+> evidence must always describe the current tree.
+
+- Date: 2026-09-27
+- `npm run verify` result: **PASS** — all 9 steps green
+  (boundaries, secret self-test, secret scan 227 files, typecheck, lint,
+  tests, production builds, secret scan incl. builds, dependency audit)
+- Test totals: **354 passed, 0 failed** (40 files)
+  - `@drobon/shared`: 46 passed (4 files) — Pump 1's 38 + 8 auth-contract
+    tests
+  - `@drobon/api`: 199 passed (23 files) — Pump 1's 122, of which 8 were
+    strengthened (CORS/health/config contracts), + 77 new auth/security
+    tests across 8 new suites
+  - `@drobon/worker`: 28 passed (3 files) — unchanged
+  - `@drobon/web`: 81 passed (10 files) — Pump 1's 46 (2 refactored onto
+    shared fixtures, none weakened) + 35 new auth tests across 3 suites
+- Pump 1's full suite (234 tests) remains green; the only changes are
+  contract strengthenings (CORS credentials, health readiness checks)
+  and test-fixture refactoring.
+- `npm run audit` result: **0 vulnerabilities**
+- Manual E2E probes against the production API build
+  (`node apps/api/dist/index.js`, JSON account store):
+  - Register → 201; `Set-Cookie: drobon_session=…; HttpOnly; SameSite=Strict;
+    Path=/; Max-Age=604800`; body = exact public shape, no password/hash
+  - `GET /api/v1/me` with cookie → 200 public shape; without → 401
+    `UNAUTHORIZED "Authentication required."`
+  - Login wrong password vs unknown email → identical 401 bodies
+    (modulo requestId) — enumeration neutralized
+  - Duplicate register → 409 `CONFLICT` without account change
+  - `Origin: https://evil.example.com` on POST → 403 `FORBIDDEN`
+    "Request origin is not allowed."
+  - `Authorization: Bearer forged…` on `/me` → 401 (no header auth path)
+  - Credential limiter (max 5): 6th auth request → 429 `RATE_LIMITED` +
+    `Retry-After: 53`
+  - API restart → old session 401 (in-memory grants), account still
+    resolvable: login with the original password → 200 (durable store)
+  - Logout → 200 `loggedOut:true` + clearing `Max-Age=0` cookie; `/me`
+    after → 401; repeat logout → 200 `loggedOut:false` (idempotent)
+  - Account store file contains `scrypt$4096…` hashes + emails, **no
+    plaintext password**; server logs contain auth events with
+    request IDs/user IDs but no email, password, hash or token
+- Manual E2E through the Web dev origin (`http://127.0.0.1:5173`, proxy →
+  API, `changeOrigin` intentionally removed so the CSRF origin guard sees
+  the browser Host):
+  - `GET /login` → 200 SPA shell; `/`, `/register`, `/account`, `/status`
+    → 200
+  - `POST /api/v1/auth/register` with `Origin: http://127.0.0.1:5173` →
+    201 + session cookie (origin guard passes same-host)
+  - `GET /api/v1/me` with cookie through proxy → 200; without → 401
+  - Login through proxy → 200 + cookie → `/me` 200
+  - Evil origin through proxy → still 403
+- Boundary checks: `check:boundaries` PASS (no DB/dataset/shell);
+  `check:secrets` PASS over sources and builds; `.data/` (account store)
+  gitignored; final `git status` clean of secrets/datasets/junk after
+  commit.

@@ -25,13 +25,14 @@ export function sendSuccess<TData>(
   ctx: RequestContext,
   data: TData,
   statusCode = 200,
+  headers: Record<string, string> = {},
 ): void {
   const body: ApiSuccess<TData> = {
     ok: true,
     data,
     meta: { requestId: ctx.id },
   };
-  sendJson(res, statusCode, body);
+  sendJson(res, statusCode, body, headers);
 }
 
 /** Map any thrown value through the central error contract and send it. */

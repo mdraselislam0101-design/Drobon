@@ -42,6 +42,10 @@ All variables are documented in `.env.example`. Highlights:
 | `CORS_ALLOWED_ORIGINS`  | (empty = none)          | Comma-separated exact `http(s)` origins |
 | `RATE_LIMIT_*`          | `100` / `60000`         | Max requests per window, per IP        |
 | `BODY_MAX_BYTES`        | `1048576`               | JSON body cap                          |
+| `AUTH_STORE_PATH`       | `.data/users.json`      | Durable account store; `:memory:` = explicit ephemeral opt-in (rejected in production) |
+| `AUTH_SCRYPT_COST`      | `32768`                 | scrypt N (power of two, 1024–1048576)  |
+| `AUTH_SESSION_TTL_SECONDS` | `604800`             | Absolute session lifetime (7 days)     |
+| `AUTH_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_MS` | `30` / `60000` | Credential-endpoint limiter |
 | `ALLOWED_HOSTS`         | loopback                | Vite host allowlist (`*` = sandbox only) |
 | `VITE_API_BASE_URL`     | (empty = same-origin)   | Public; baked into the browser bundle  |
 | `VITE_APP_NAME/ENV`     | `Drobon Aegis AI` / `development` | Public display values        |

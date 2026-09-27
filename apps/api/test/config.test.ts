@@ -13,6 +13,34 @@ describe('loadConfig', () => {
     expect(config.rateLimitWindowMs).toBe(60_000);
     expect(config.bodyMaxBytes).toBe(1_048_576);
     expect(typeof config.version).toBe('string');
+    // Auth defaults (Pump 2): durable store, cost-32768 scrypt, 7-day
+    // sessions, tight credential rate limit, Secure only in production.
+    expect(config.authStorePath).toBe('.data/users.json');
+    expect(config.authScryptCost).toBe(32_768);
+    expect(config.authSessionTtlSeconds).toBe(604_800);
+    expect(config.authRateLimitMaxRequests).toBe(30);
+    expect(config.authRateLimitWindowMs).toBe(60_000);
+    expect(config.cookieSecure).toBe(false);
+  });
+
+  test('production enables the Secure cookie attribute', () => {
+    const config = loadConfig({ NODE_ENV: 'production' });
+    expect(config.cookieSecure).toBe(true);
+  });
+
+  test('accepts explicitly configured auth settings', () => {
+    const config = loadConfig({
+      AUTH_STORE_PATH: '/var/lib/drobon/users.json',
+      AUTH_SCRYPT_COST: '16384',
+      AUTH_SESSION_TTL_SECONDS: '900',
+      AUTH_RATE_LIMIT_MAX_REQUESTS: '5',
+      AUTH_RATE_LIMIT_WINDOW_MS: '30000',
+    });
+    expect(config.authStorePath).toBe('/var/lib/drobon/users.json');
+    expect(config.authScryptCost).toBe(16_384);
+    expect(config.authSessionTtlSeconds).toBe(900);
+    expect(config.authRateLimitMaxRequests).toBe(5);
+    expect(config.authRateLimitWindowMs).toBe(30_000);
   });
 
   test('accepts a fully specified valid environment', () => {
@@ -63,6 +91,18 @@ describe('loadConfig', () => {
     ['tiny window', { RATE_LIMIT_WINDOW_MS: '10' }],
     ['tiny body', { BODY_MAX_BYTES: '10' }],
     ['huge body', { BODY_MAX_BYTES: '999999999' }],
+    ['blank auth store', { AUTH_STORE_PATH: '   ' }],
+    [
+      'memory auth store in production',
+      { NODE_ENV: 'production', AUTH_STORE_PATH: ':memory:' },
+    ],
+    ['non-power-of-two scrypt cost', { AUTH_SCRYPT_COST: '3000' }],
+    ['tiny scrypt cost', { AUTH_SCRYPT_COST: '512' }],
+    ['huge scrypt cost', { AUTH_SCRYPT_COST: '2097152' }],
+    ['short session ttl', { AUTH_SESSION_TTL_SECONDS: '30' }],
+    ['huge session ttl', { AUTH_SESSION_TTL_SECONDS: '99999999' }],
+    ['zero auth rate limit', { AUTH_RATE_LIMIT_MAX_REQUESTS: '0' }],
+    ['tiny auth window', { AUTH_RATE_LIMIT_WINDOW_MS: '10' }],
   ])('rejects %s', (_label, env) => {
     expect(() => loadConfig(env)).toThrowError(ConfigError);
   });

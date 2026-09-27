@@ -47,9 +47,14 @@ export default defineConfig(() => {
       allowedHosts,
       strictPort: true,
       proxy: {
-        '/api': { target: apiTarget, changeOrigin: true },
-        '/livez': { target: apiTarget, changeOrigin: true },
-        '/readyz': { target: apiTarget, changeOrigin: true },
+        // changeOrigin must stay FALSE (the Pump 2 fix): the proxy must
+        // forward the browser's Host (e.g. 127.0.0.1:5173) so the API's
+        // CSRF origin guard sees the request as same-origin. Rewriting
+        // Host to the API target makes every proxied POST/DELETE fail
+        // the guard with 403.
+        '/api': { target: apiTarget },
+        '/livez': { target: apiTarget },
+        '/readyz': { target: apiTarget },
       },
     },
     preview: {

@@ -1,0 +1,190 @@
+import { randomUUID } from 'node:crypto';
+import type {
+  AuthResponse,
+  AuthUser,
+  CurrentUserResponse,
+  LogoutResponse,
+} from '@drobon/shared';
+import {
+  EMAIL_MAX_LENGTH,
+  isValidEmail,
+  normalizeEmail,
+  passwordPolicyIssue,
+} from '@drobon/shared';
+import type { ApiConfig } from '../config.js';
+import { conflict, invalidCredentials, unauthorized, validationError } from '../errors.js';
+import type { Route } from '../http.js';
+import { dummyVerify, hashPassword, verifyPassword } from '../auth/passwords.js';
+import { readSessionToken, clearSessionCookie, sessionCookie } from '../auth/cookies.js';
+import { toAuthUser, type UserRecord, type UserRepository } from '../auth/repositories.js';
+import type { SessionStore } from '../auth/sessions.js';
+import { readJsonBody } from '../lib/body.js';
+import * as v from '../lib/validate.js';
+import { sendSuccess } from '../respond.js';
+
+export interface AuthRouteDeps {
+  config: ApiConfig;
+  users: UserRepository;
+  sessions: SessionStore;
+}
+
+/**
+ * Structural request shape. Both endpoints accept exactly these fields —
+ * unknown properties are rejected (mass-assignment defense), passwords are
+ * never trimmed (spaces are significant) and capped at the policy maximum
+ * before hashing.
+ */
+const credentialsSchema = v.object({
+  email: v.string({ maxLength: EMAIL_MAX_LENGTH, trim: true }),
+  password: v.string({ maxLength: 128 }),
+});
+
+type Credentials = { email: string; password: string };
+
+/** Shared policy pass: structural issues already validated by the schema. */
+function policyIssues(credentials: Credentials): Array<{ path: string; message: string }> {
+  const issues: Array<{ path: string; message: string }> = [];
+  if (!isValidEmail(credentials.email)) {
+    issues.push({ path: 'email', message: 'Enter a valid email address.' });
+  }
+  const passwordIssue = passwordPolicyIssue(credentials.password);
+  if (passwordIssue !== undefined) {
+    issues.push({ path: 'password', message: passwordIssue });
+  }
+  return issues;
+}
+
+/**
+ * Authentication routes. All of them run through the standard pipeline
+ * (request ID → security headers → CORS → rate limits → origin guard →
+ * session resolution) and map failures onto the shared error contract.
+ *
+ * Enumeration posture (see docs/AUTHENTICATION.md):
+ * - login answers identically for unknown email and wrong password, and
+ *   burns the same CPU in both cases;
+ * - logout is idempotent and never reveals session state through status
+ *   codes (always 200);
+ * - register's 409 is an inherent oracle without an email-verification
+ *   phase; it is rate-limited and documented rather than faked.
+ */
+export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
+  const { config, users, sessions } = deps;
+
+  return [
+    {
+      method: 'POST',
+      path: '/api/v1/auth/register',
+      handler: async (req, res, ctx): Promise<void> => {
+        const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
+        const parsed = credentialsSchema.parse(raw);
+        if (!parsed.ok) {
+          throw validationError(parsed.issues);
+        }
+        const issues = policyIssues(parsed.value);
+        if (issues.length > 0) {
+          throw validationError(issues);
+        }
+        const email = normalizeEmail(parsed.value.email);
+        // Hash BEFORE the uniqueness check: the "email taken" path must
+        // cost the same CPU as the "new account" path, otherwise response
+        // timing becomes an enumeration oracle.
+        const passwordHash = await hashPassword(parsed.value.password, config.authScryptCost);
+        const record: UserRecord = {
+          id: `usr_${randomUUID()}`,
+          email,
+          passwordHash,
+          createdAt: new Date().toISOString(),
+        };
+        const created = await users.create(record);
+        if (!created) {
+          throw conflict('An account with this email already exists.');
+        }
+        const { token } = sessions.issue(record.id);
+        ctx.logger.info('Account registered', { requestId: ctx.id, userId: record.id });
+        const body: AuthResponse = { user: toAuthUser(record) };
+        sendSuccess(
+          res,
+          ctx,
+          body,
+          201,
+          {
+            'set-cookie': sessionCookie(token, {
+              secure: config.cookieSecure,
+              maxAgeSeconds: config.authSessionTtlSeconds,
+            }),
+          },
+        );
+      },
+    },
+    {
+      method: 'POST',
+      path: '/api/v1/auth/login',
+      handler: async (req, res, ctx): Promise<void> => {
+        const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
+        const parsed = credentialsSchema.parse(raw);
+        if (!parsed.ok) {
+          throw validationError(parsed.issues);
+        }
+        // Malformed email is a format error (422); it reveals nothing
+        // about whether an account exists.
+        if (!isValidEmail(parsed.value.email)) {
+          throw validationError([{ path: 'email', message: 'Enter a valid email address.' }]);
+        }
+        const email = normalizeEmail(parsed.value.email);
+        const record = await users.findByEmail(email);
+        if (record === undefined) {
+          // Equalize CPU against the "wrong password" path so 401 timing
+          // cannot distinguish unknown emails from failed verifications.
+          await dummyVerify(parsed.value.password, config.authScryptCost);
+          ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'unknown_email' });
+          throw invalidCredentials();
+        }
+        const ok = await verifyPassword(parsed.value.password, record.passwordHash);
+        if (!ok) {
+          ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'bad_password' });
+          throw invalidCredentials();
+        }
+        const { token } = sessions.issue(record.id);
+        ctx.logger.info('Login succeeded', { requestId: ctx.id, userId: record.id });
+        const body: AuthResponse = { user: toAuthUser(record) };
+        sendSuccess(res, ctx, body, 200, {
+          'set-cookie': sessionCookie(token, {
+            secure: config.cookieSecure,
+            maxAgeSeconds: config.authSessionTtlSeconds,
+          }),
+        });
+      },
+    },
+    {
+      method: 'POST',
+      path: '/api/v1/auth/logout',
+      handler: async (req, res, ctx): Promise<void> => {
+        // Idempotent by contract: repeated logouts, logouts without a
+        // session, and logouts with garbage cookies all answer 200.
+        const token = readSessionToken(req.headers.cookie);
+        const loggedOut = token !== undefined && sessions.revoke(token);
+        if (loggedOut) {
+          ctx.logger.info('Logout succeeded', { requestId: ctx.id });
+        }
+        const body: LogoutResponse = { loggedOut };
+        sendSuccess(res, ctx, body, 200, {
+          'set-cookie': clearSessionCookie({ secure: config.cookieSecure }),
+        });
+      },
+    },
+    {
+      method: 'GET',
+      path: '/api/v1/me',
+      requireAuth: true,
+      handler: async (_req, res, ctx): Promise<void> => {
+        const user: AuthUser | undefined = ctx.user;
+        if (user === undefined) {
+          // Defensive: requireAuth should have rejected already.
+          throw unauthorized();
+        }
+        const body: CurrentUserResponse = { user };
+        sendSuccess(res, ctx, body);
+      },
+    },
+  ];
+}

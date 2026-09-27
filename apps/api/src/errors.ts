@@ -103,6 +103,33 @@ export function rateLimited(retryAfterSec: number): AppError {
   });
 }
 
+/**
+ * Missing/invalid/expired authentication. The default message is generic on
+ * purpose — it must not reveal whether the account exists.
+ */
+export function unauthorized(message = 'Authentication required.'): AppError {
+  return new AppError({ code: 'UNAUTHORIZED', statusCode: 401, message });
+}
+
+/**
+ * Credential check failure. ALWAYS the same status, code and message for
+ * "unknown email", "wrong password" and "malformed stored hash" so responses
+ * cannot be used to enumerate accounts.
+ */
+export function invalidCredentials(): AppError {
+  return new AppError({ code: 'UNAUTHORIZED', statusCode: 401, message: 'Invalid email or password.' });
+}
+
+/** Policy/origin refusal (e.g. CSRF origin guard). */
+export function forbidden(message = 'Request refused.'): AppError {
+  return new AppError({ code: 'FORBIDDEN', statusCode: 403, message });
+}
+
+/** Uniqueness conflict (e.g. registration with an email already in use). */
+export function conflict(message: string): AppError {
+  return new AppError({ code: 'CONFLICT', statusCode: 409, message });
+}
+
 export function timeoutError(message = 'The operation timed out.'): AppError {
   return new AppError({ code: 'TIMEOUT', statusCode: 504, message });
 }

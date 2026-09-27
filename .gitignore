@@ -15,6 +15,9 @@ coverage/
 .env.*
 !.env.example
 
+# Runtime data (auth account store lives here — never committed)
+.data/
+
 # Logs
 *.log
 npm-debug.log*

@@ -16,7 +16,11 @@ export interface CorsOptions {
  * - anything else → no CORS headers at all, so browsers block the read.
  *   Preflights from disallowed origins get a bare 204 (fail closed).
  *
- * Credentials mode is never enabled (the API uses no cookies in Pump 1).
+ * Credentials mode (`Access-Control-Allow-Credentials: true`) is enabled
+ * ONLY alongside an exact reflected origin — required since Pump 2 so the
+ * browser will send/read the `httpOnly` session cookie across split-host
+ * deployments. `Access-Control-Allow-Origin` is never `*`, so a hostile
+ * page can never satisfy both conditions.
  */
 export function corsMiddleware(options: CorsOptions): Middleware {
   return async (req, res, _ctx, next): Promise<void> => {
@@ -36,8 +40,11 @@ export function corsMiddleware(options: CorsOptions): Middleware {
       return;
     }
     res.setHeader('access-control-allow-origin', origin);
+    res.setHeader('access-control-allow-credentials', 'true');
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
+        'access-control-allow-origin': origin,
+        'access-control-allow-credentials': 'true',
         'access-control-allow-methods': ALLOW_METHODS,
         'access-control-allow-headers': ALLOW_HEADERS,
         'access-control-max-age': MAX_AGE_SECONDS,
