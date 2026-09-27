@@ -3,6 +3,8 @@ import {
   isCapabilityResponse,
   isCurrentUserResponse,
   isLogoutResponse,
+  isProjectResponse,
+  isProjectsResponse,
   isSubscriptionResponse,
   isUsageResponse,
   parseApiResponse,
@@ -14,6 +16,8 @@ import {
   type HealthResponse,
   type CurrentUserResponse,
   type LogoutResponse,
+  type ProjectResponse,
+  type ProjectsResponse,
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
@@ -119,6 +123,38 @@ export interface ApiClient {
    * the client only renders it.
    */
   getUsage(signal?: AbortSignal): Promise<UsageResponse>;
+  /**
+   * The authenticated caller's OWN projects (Pump 6), ordered
+   * `updatedAt` DESC then `id` ASC by the server. Rejects with 401 when
+   * anonymous. Validated by the shared guard.
+   */
+  getProjects(signal?: AbortSignal): Promise<ProjectsResponse>;
+  /**
+   * One of the caller's OWN projects. A missing/foreign/malformed id
+   * rejects with 403 (the API's uniform no-oracle denial).
+   */
+  getProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /**
+   * Create a project. The server assigns id, ownership, status (ACTIVE)
+   * and timestamps — only name/description travel in the body.
+   */
+  createProject(
+    input: { name: string; description?: string },
+    signal?: AbortSignal,
+  ): Promise<ProjectResponse>;
+  /**
+   * Update a project's name/description (owner only). Status changes go
+   * through the explicit archive/unarchive operations.
+   */
+  updateProject(
+    projectId: string,
+    input: { name?: string; description?: string },
+    signal?: AbortSignal,
+  ): Promise<ProjectResponse>;
+  /** Archive a project (explicit lifecycle operation, owner only, idempotent). */
+  archiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /** Unarchive a project (explicit lifecycle operation, owner only, idempotent). */
+  unarchiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
 }
 
 /**
@@ -332,6 +368,59 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         '/api/v1/usage',
         signal === undefined ? {} : { signal },
         isUsageResponse,
+      ),
+    getProjects: (signal?: AbortSignal): Promise<ProjectsResponse> =>
+      authRequest<ProjectsResponse>(
+        '/api/v1/projects',
+        signal === undefined ? {} : { signal },
+        isProjectsResponse,
+      ),
+    getProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}`,
+        signal === undefined ? {} : { signal },
+        isProjectResponse,
+      ),
+    createProject: (
+      input: { name: string; description?: string },
+      signal?: AbortSignal,
+    ): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        '/api/v1/projects',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isProjectResponse,
+      ),
+    updateProject: (
+      projectId: string,
+      input: { name?: string; description?: string },
+      signal?: AbortSignal,
+    ): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isProjectResponse,
+      ),
+    archiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/archive`,
+        { method: 'POST', ...(signal === undefined ? {} : { signal }) },
+        isProjectResponse,
+      ),
+    unarchiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/unarchive`,
+        { method: 'POST', ...(signal === undefined ? {} : { signal }) },
+        isProjectResponse,
       ),
   };
 }

@@ -331,3 +331,112 @@ Exit code is `0` on PASS, `1` on any FAIL.
   payment code); `check:secrets` PASS over sources and builds; DATASET
   LOCK respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; final
   `git status` clean of secrets/datasets/junk after commit.
+
+## Verification evidence (Pump 6 — projects foundation)
+
+> Re-run `npm run verify` after any change and update this section —
+> evidence must always describe the current tree.
+
+- Date: 2026-09-28
+- `npm run verify` result: **PASS** — all 9 steps green
+  (boundaries, secret self-test, secret scan 297 files, typecheck, lint,
+  tests, production builds, secret scan incl. builds, dependency audit)
+- Test totals: **593 passed, 0 failed** (58 files)
+  - `@drobon/shared`: 94 passed (8 files) — Pump 5's 84 + 10 project
+    contract tests (`projects.test.ts`: status vocabulary, id pattern,
+    ordering comparator, public-shape and response guards incl. the
+    deliberate absence of an owner field)
+  - `@drobon/api`: 327 passed (33 files) — Pump 5's 299 + 28: the new
+    `projectApi.test.ts` (26: auth matrix, server-controlled create
+    fields + 201, strict validation incl. prototype-pollution and
+    XSS-as-text and NFC normalization, server-scoped lists +
+    deterministic ordering, uniform cross-account 403 across
+    roles/user types, update/lifecycle boundaries + idempotence,
+    restart persistence incl. multi-line descriptions, corrupt-store
+    refusal, 20-way concurrent creation, claims tampering, usage
+    non-consumption, router parameterization incl. 405/percent-encoding/
+    trailing-slash semantics, log hygiene) + 1 config test
+    (`PROJECT_STORE_PATH` default/override/`:memory:`-banned-in-prod/
+    blank) + 1 validator regression (prototype-chain keys rejected)
+  - `@drobon/worker`: 28 passed (3 files) — unchanged
+  - `@drobon/web`: 144 passed (14 files) — Pump 5's 122 + 22:
+    `projectUi.test.tsx` (15: server-ordered list, honest empty/loading/
+    error states, create + edit flows with exact client calls,
+    client-side bounds, XSS-inert rendering, foreign-id honest error,
+    archive/unarchive reflection, no ownership/status form fields, no
+    storage authority, protected routes for list + deep links) + 7
+    projects client-boundary tests in `authClient.test.ts`
+- `npm run audit` result: **0 vulnerabilities**
+- Manual E2E — real dev servers (`dev:api` on :3001 with the durable
+  JSON stores, `dev:web` on :5173; curl with cookie headers; fixed
+  clock NOT used — live UTC date 2026-09-28):
+  1. Anonymous access to ALL six project routes → **401** exact envelope
+  2. Create → **201** with `prj_` + UUID id, trimmed name, ACTIVE
+     status, and exactly `{id,name,description,status,createdAt,
+     updatedAt}` — no `ownerId`, no storage paths
+  3. Ordering live: create A then B, PATCH A → A listed first
+     (updatedAt DESC); comparator re-verified independently in tests
+  4. Validation matrix: empty PATCH `{}` → 422; `ownerId`/`status`/`id`
+     in PATCH or create bodies → **422 Unexpected property** (mass
+     assignment impossible); whitespace-only and 121-char names → 422;
+     control chars → 422 (names; descriptions) while `\n`/`\t` in
+     descriptions are preserved; malformed JSON → 400
+  5. Prototype pollution: `__proto__`/`constructor` payloads → **422
+     Unexpected property ×2** (the Pump 1 validator fix, live); the
+     Node process's `Object.prototype` verified unpolluted afterwards
+  6. Lifecycle: archive → ARCHIVED (still listed + readable), repeat
+     archive → 200 idempotent WITHOUT bumping updatedAt, unarchive →
+     ACTIVE; `PATCH …/archive` → 405 (lifecycle is POST-only);
+     `DELETE /projects/:id` → **405 + `Allow: GET, PATCH`** (no hard
+     delete); `PUT /projects` → 405
+  7. Cross-account (second account, all routes): GET/PATCH/archive/
+     unarchive on the owner's id → **403** with the uniform message;
+     unknown well-formed id, 80-char oversized id and pattern-failing
+     ids → the SAME 403 (no existence oracle; error bodies byte-equal
+     modulo requestId); attacker's list stays empty; owner's project
+     untouched
+  8. Router: `GET /projects/` → 200 (collection trailing-slash
+     normalization), `GET /projects//archive` → 404 (empty segment
+     never matches), `%zz` → 404 (malformed encoding never matches),
+     `prj_…%30` → 200 (percent-encoded param decoded to the real id)
+  9. Text security: decomposed `e` + combining accent stored and
+     returned as composed `é` (NFC live); `<script>/<img onerror>/<svg
+     onload>` payloads stored verbatim as JSON text and echoed as text
+  10. Usage boundary: full CRUD + lifecycle cycle → `GET /usage` still
+      **used 0, OK, FREE** — project operations never consume a scan
+  11. Web dev proxy (:5173 → API): project list via the browser path →
+      identical authoritative JSON
+  12. Log hygiene on the live server: project log lines carry
+      requestId/userId/projectId (+ method/path/status/durationMs)
+      only — project names, descriptions and account emails never
+      appear in the captured logs
+  13. On-disk store: `.data/projects.json` mode 0600, `{version:1,
+      projects:[…]}` with internal `ownerId`, and NO email/password
+      material in the file
+  14. **Restart persistence**: SIGTERM → start → old session cookie
+      401 (in-memory sessions die), re-login → all 6 projects intact
+      with edits, ARCHIVED status, multi-line description and XSS-text
+      name unchanged; usage still used 0
+  15. Production binary (`node apps/api/dist/index.js`,
+      NODE_ENV=production, :4001, temp copies of the durable stores):
+      anonymous → 401; re-login 200 (durable accounts); list 200 with
+      the 6 durable projects (binary-to-binary persistence); create →
+      ACTIVE; PATCH → 200; archive → 200 — project routes ARE real
+      production surface (unlike probes); Pump 3 authz probes and the
+      Pump 5 consume probe still **404** in production; usage view
+      used 0; device cookie gained **Secure**;
+      `PROJECT_STORE_PATH=:memory:` refused to boot (**Configuration
+      error**, exit 1)
+- **E2E-found defect, fixed and regression-tested**: descriptions may
+  contain tab/newline (documented multi-line allowance), but the
+  project store's fail-fast load validation rejected ALL control
+  characters — so a legitimate write could brick the next startup
+  (reproduced live: restart refused with "invalid record at index 3").
+  The store backstop now mirrors the API validation policy exactly
+  (names: no control chars; descriptions: tab/newline allowed); a
+  restart-persistence regression test covers it.
+- Boundary checks: `check:boundaries` PASS (no DB/dataset/shell; no
+  payment/gateway code); `check:secrets` PASS over sources and builds
+  (one test variable renamed to keep the matcher quiet); DATASET LOCK
+  respected — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; final `git
+  status` clean of secrets/datasets/junk after commit.

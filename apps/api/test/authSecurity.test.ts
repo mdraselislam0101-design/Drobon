@@ -238,6 +238,7 @@ describe('auth security controls', () => {
             authzProbeRoutes: true,
             usageStorePath: `${dir}/usage.json`,
             usageConsumeRoutes: true,
+            projectStorePath: `${dir}/projects.json`,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

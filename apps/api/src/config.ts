@@ -65,6 +65,13 @@ export interface ApiConfig {
    * registered (it is a real user-facing feature).
    */
   usageConsumeRoutes: boolean;
+  /**
+   * Where durable project records live (Pump 6): a filesystem path
+   * (same minimum-persistence pattern as the account and usage stores)
+   * or the literal `:memory:` for explicitly ephemeral setups — rejected
+   * in production by {@link loadConfig} (projects must survive restarts).
+   */
+  projectStorePath: string;
 }
 
 export class ConfigError extends Error {
@@ -238,6 +245,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     );
   }
 
+  // --- Projects (Pump 6) ----------------------------------------------------
+  const projectStorePath = (env['PROJECT_STORE_PATH'] ?? '.data/projects.json').trim();
+  const projectMemoryStore = projectStorePath === ':memory:';
+  if (projectStorePath.length === 0) {
+    issues.push('PROJECT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (projectMemoryStore && environment === 'production') {
+    issues.push(
+      'PROJECT_STORE_PATH=":memory:" is not allowed in production (projects would not persist)',
+    );
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -261,5 +279,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     authzProbeRoutes: environment !== 'production',
     usageStorePath,
     usageConsumeRoutes: environment !== 'production',
+    projectStorePath,
   };
 }

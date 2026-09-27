@@ -23,6 +23,8 @@ describe('loadConfig', () => {
     expect(config.cookieSecure).toBe(false);
     // Usage defaults (Pump 5): durable JSON store next to the auth store.
     expect(config.usageStorePath).toBe('.data/usage.json');
+    // Projects default (Pump 6): same persistence pattern.
+    expect(config.projectStorePath).toBe('.data/projects.json');
   });
 
   test('authorization probes are on outside production, off in it', () => {
@@ -48,6 +50,20 @@ describe('loadConfig', () => {
       ConfigError,
     );
     expect(() => loadConfig({ USAGE_STORE_PATH: '  ' })).toThrow(ConfigError);
+  });
+
+  test('project storage is configurable and must be durable in production', () => {
+    expect(loadConfig({}).projectStorePath).toBe('.data/projects.json');
+    expect(loadConfig({ PROJECT_STORE_PATH: '/var/lib/drobon/projects.json' }).projectStorePath).toBe(
+      '/var/lib/drobon/projects.json',
+    );
+    expect(loadConfig({ NODE_ENV: 'test', PROJECT_STORE_PATH: ':memory:' }).projectStorePath).toBe(
+      ':memory:',
+    );
+    expect(() =>
+      loadConfig({ NODE_ENV: 'production', PROJECT_STORE_PATH: ':memory:' }),
+    ).toThrow(ConfigError);
+    expect(() => loadConfig({ PROJECT_STORE_PATH: '  ' })).toThrow(ConfigError);
   });
 
   test('the scan-consumption probe is on outside production, off in it', () => {
@@ -91,6 +107,7 @@ describe('loadConfig', () => {
       RATE_LIMIT_WINDOW_MS: '5000',
       BODY_MAX_BYTES: '2048',
       USAGE_STORE_PATH: '/var/lib/drobon/usage.json',
+      PROJECT_STORE_PATH: '/var/lib/drobon/projects.json',
     });
     expect(config.env).toBe('production');
     expect(config.host).toBe('0.0.0.0');
@@ -105,6 +122,7 @@ describe('loadConfig', () => {
     expect(config.bodyMaxBytes).toBe(2048);
     expect(config.usageStorePath).toBe('/var/lib/drobon/usage.json');
     expect(config.usageConsumeRoutes).toBe(false);
+    expect(config.projectStorePath).toBe('/var/lib/drobon/projects.json');
   });
 
   test('normalizes and dedupes origins', () => {

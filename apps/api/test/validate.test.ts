@@ -69,6 +69,26 @@ describe('validate', () => {
     expect(v.optional(v.string()).parse(1).ok).toBe(false);
   });
 
+  test('prototype-chain keys (__proto__/constructor) are rejected, never silently accepted (Pump 6 audit fix)', () => {
+    const schema = v.object({ name: v.string() });
+    // JSON.parse creates OWN properties named __proto__/constructor. The
+    // old `key in shape` check saw both on the prototype chain and
+    // silently DROPPED them instead of rejecting — a strict-validation
+    // bypass. They must now be rejected like every other unknown key.
+    const proto = schema.parse(JSON.parse('{"name":"x","__proto__":{"isAdmin":true}}'));
+    expect(proto.ok).toBe(false);
+    if (!proto.ok) {
+      expect(proto.issues).toContainEqual({
+        path: '__proto__',
+        message: 'Unexpected property.',
+      });
+    }
+    const ctor = schema.parse(JSON.parse('{"name":"x","constructor":{"prototype":{}}}'));
+    expect(ctor.ok).toBe(false);
+    // And nothing ever leaked onto Object.prototype.
+    expect(({} as Record<string, unknown>).isAdmin).toBeUndefined();
+  });
+
   test('nested paths compose', () => {
     const schema = v.object({ items: v.array(v.object({ id: v.number() })) });
     const bad = schema.parse({ items: [{ id: 1 }, { id: 'x' }] });

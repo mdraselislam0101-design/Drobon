@@ -2,12 +2,13 @@
 
 Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
 (authorization), Pump 4 extended (plans/subscriptions/entitlements),
-Pump 5 extended (usage quota + device anti-abuse):
+Pump 5 extended (usage quota + device anti-abuse), Pump 6 extended
+(projects foundation):
 security is a first-class, **tested** requirement. A control is listed as
 VERIFIED only if an automated test or an executed check proves it;
 anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz + subscription + usage stage)
+## Threat model (foundation + auth + authz + subscription + usage + projects stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
@@ -17,7 +18,10 @@ commercial entitlement fraud (forging PRO via body/query/header/cookie
 tampering, client state, UserType or AccountRole; degrading or reading
 another account's subscription); **quota abuse (multi-account farming of
 the FREE scan allowance, racing concurrent consumes, forging/altering the
-device cookie, tampering with usage counts or periods)**; misconfiguration;
+device cookie, tampering with usage counts or periods)**; **project
+ownership fraud (claiming another account's project via ownerId/headers/
+query, cross-account reads/writes, injecting lifecycle status,
+prototype-pollution payloads, XSS/HTML in project text)**; misconfiguration;
 secret leakage into code, logs or the browser bundle; dependency risk;
 abuse/accidental overload of a single instance.
 
@@ -125,6 +129,37 @@ fresh DEVICE identity (backstopped by the account quota, credential rate
 limits, and the hashed opaque cookie — no fingerprinting is used);
 honest users sharing a browser share the device allowance.
 
+### Projects foundation (Pump 6)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Ownership from the authenticated session only; body `ownerId`/`status`/`id`/timestamps are unknown properties → 422 (mass-assignment impossible) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Cross-account GET/PATCH/archive answer the SAME uniform 403 as unknown/malformed/oversized ids — no existence oracle, no IDOR | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| AccountRole never grants project ownership (ADMIN, ACCOUNT_OWNER × cross-account all 403) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| UserType never grants project ownership (all four classifications tested cross-account) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| List is server-scoped to the caller; a foreign project never appears in another account's list (no frontend filtering relied upon) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Anonymous access to every project route → 401; forged and expired sessions → 401 | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Strict input validation: empty/whitespace/oversized names, oversized descriptions, control characters, malformed JSON, non-object bodies (415/400/422) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Prototype pollution: `__proto__`/`constructor` payloads rejected (includes the Pump 6 audit fix to the Pump 1 validator — see below) and never merged | VERIFIED | `apps/api/test/projectApi.test.ts`, `apps/api/test/validate.test.ts` |
+| XSS/HTML payloads stored as inert text and rendered as text (React escaping; no dangerous HTML API anywhere in web src) | VERIFIED | `apps/api/test/projectApi.test.ts`, `apps/web/test/projectUi.test.tsx`, `staticWeb.test.ts` |
+| NFC Unicode normalization + bounded lengths for all project text | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Ids: `prj_` + `crypto.randomUUID()` (never counters); responses never expose `ownerId` or storage paths | VERIFIED | `packages/shared/test/projects.test.ts`, `apps/api/test/projectApi.test.ts` |
+| Deterministic ordering (updatedAt DESC, then id ASC) verified against an independent reimplementation | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Lifecycle: creation always ACTIVE; status changes ONLY via explicit owner-only archive/unarchive (idempotent); generic PATCH cannot touch status; archived projects stay listed/readable; NO hard delete | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Persistence: atomic temp+rename writes (0600), serialized mutations, 20 concurrent creates lose/duplicate nothing, corrupt store refuses to start, restart persistence (incl. the E2E-found multi-line-description load-validation mismatch, fixed + regression-tested) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Usage boundary: project CRUD never calls the usage service (scan counter untouched after full CRUD cycle) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Log hygiene: project logs carry requestId/userId/projectId only — never names, descriptions, emails | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Web: protected routes (anonymous → login redirect), fail-closed list/detail errors, no project/ownership state in localStorage/sessionStorage/URL, edit form has no ownership/status fields at all | VERIFIED | `apps/web/test/projectUi.test.tsx` |
+
+**Pump 6 audit fix to Pump 1 code**: the strict validator's unknown-key
+check used `key in shape`, which the well-known prototype-chain keys
+(`__proto__`, `constructor`) always satisfy — so those two field names
+were silently DROPPED instead of rejected with 422 (values were never
+merged, so no prototype pollution occurred, but the documented
+"unknown keys rejected" contract had a bypass). Fixed to
+`Object.prototype.hasOwnProperty.call(shape, key)` with a regression
+test in `apps/api/test/validate.test.ts`.
+
 ### Web
 
 | Control | Status | Evidence |
@@ -168,7 +203,11 @@ only via the operator store-edit + restart workflow — see
 `docs/SUBSCRIPTIONS.md`), per-feature metering beyond the single scan
 allowance, usage analytics/history, operator quota adjustments,
 device-management UI (the usage quota + device foundation itself is DONE
-in Pump 5 — see `docs/USAGE.md`), account email
+in Pump 5 — see `docs/USAGE.md`), project deletion (hard delete is
+deliberately absent — ARCHIVED is the lifecycle end-state; the projects
+foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
+project sharing/collaboration, admin/operator project visibility,
+account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,

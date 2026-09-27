@@ -10,6 +10,10 @@ import type { Route } from '../src/http.js';
 import { createLogger } from '../src/logger.js';
 import { startServer, type StartedServer } from '../src/server.js';
 import type { UsageStore } from '../src/usage/store.js';
+import {
+  createJsonFileProjectStore,
+  type ProjectStore,
+} from '../src/projects/store.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -24,6 +28,11 @@ export interface TestServer {
    * Tests that need to inspect/seed usage counters inject their own.
    */
   usageStore?: UsageStore;
+  /**
+   * The injected project store, when one was provided (Pump 6).
+   * Tests that need to inspect/seed projects inject their own.
+   */
+  projects?: ProjectStore;
   resetRateLimit: () => void;
   stop: () => Promise<void>;
 }
@@ -40,6 +49,10 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   usageStore?: UsageStore;
   /** Injected clock for usage period math (deterministic month boundaries). */
   usageNow?: () => number;
+  /** Use a real JSON project store at a temp path instead of memory (Pump 6). */
+  projectStoreDir?: string;
+  /** Inject a project store directly (defaults: memory or projectStoreDir). */
+  projectStore?: ProjectStore;
 };
 
 /**
@@ -61,6 +74,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageStoreDir,
     usageStore,
     usageNow,
+    projectStoreDir,
+    projectStore,
     ...configOverrides
   } = overrides;
   const config: ApiConfig = {
@@ -82,20 +97,31 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     authzProbeRoutes: true,
     usageStorePath: ':memory:',
     usageConsumeRoutes: true,
+    projectStorePath: ':memory:',
     ...configOverrides,
   };
   const effectiveStorePath =
     authStoreDir === undefined ? config.authStorePath : join(authStoreDir, 'users.json');
   const effectiveUsageStorePath =
     usageStoreDir === undefined ? config.usageStorePath : join(usageStoreDir, 'usage.json');
+  const effectiveProjectStorePath =
+    projectStoreDir === undefined ? config.projectStorePath : join(projectStoreDir, 'projects.json');
   const configWithStore: ApiConfig =
-    authStoreDir === undefined && usageStoreDir === undefined
+    authStoreDir === undefined && usageStoreDir === undefined && projectStoreDir === undefined
       ? config
       : {
           ...config,
           ...(authStoreDir === undefined ? {} : { authStorePath: effectiveStorePath }),
           ...(usageStoreDir === undefined ? {} : { usageStorePath: effectiveUsageStorePath }),
+          ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
         };
+  // A single resolved project-store instance: the app AND the returned
+  // TestServer must share it (inject-or-default, never two stores).
+  const resolvedProjectStore =
+    projectStore ??
+    (projectStoreDir === undefined
+      ? undefined
+      : createJsonFileProjectStore(effectiveProjectStorePath));
   const resolvedUsers =
     users ??
     (authStoreDir === undefined
@@ -120,6 +146,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sessions: resolvedSessions,
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
+    ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
     ...(extraRoutes === undefined ? {} : { extraRoutes }),
   });
   return {
@@ -129,6 +156,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     users: resolvedUsers,
     sessions: resolvedSessions,
     ...(usageStore === undefined ? {} : { usageStore }),
+    ...(resolvedProjectStore === undefined ? {} : { projects: resolvedProjectStore }),
     resetRateLimit: started.resetRateLimit,
     stop: started.stop,
   };

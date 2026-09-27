@@ -9,7 +9,7 @@ import {
   notFound,
   unauthorized,
 } from './errors.js';
-import type { Middleware, RequestContext, Route } from './http.js';
+import { matchRoutePath, type Middleware, type RequestContext, type Route } from './http.js';
 import { createJsonFileUserRepository } from './auth/jsonFileUserRepository.js';
 import { createMemoryUserRepository } from './auth/memoryUserRepository.js';
 import type { UserRepository } from './auth/repositories.js';
@@ -32,8 +32,14 @@ import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
 import { createSubscriptionRoutes } from './routes/subscription.js';
 import { createUsageRoutes } from './routes/usage.js';
+import { createProjectRoutes } from './routes/projects.js';
 import { createUsageService, type UsageService } from './usage/service.js';
 import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
+import {
+  createJsonFileProjectStore,
+  createMemoryProjectStore,
+  type ProjectStore,
+} from './projects/store.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 
@@ -68,6 +74,12 @@ export interface AppDeps {
    * UTC month boundaries deterministically).
    */
   usageNow?: () => number;
+  /**
+   * Project store (Pump 6). Defaults to the durable JSON store at
+   * `config.projectStorePath` (`:memory:` for explicitly ephemeral
+   * setups). Tests inject their own instance to control persistence.
+   */
+  projectStore?: ProjectStore;
 }
 
 export interface App {
@@ -122,6 +134,11 @@ export function createApp(deps: AppDeps): App {
     (config.usageStorePath === ':memory:'
       ? createMemoryUsageStore()
       : createUsageFileStore(config.usageStorePath));
+  const projectStore: ProjectStore =
+    deps.projectStore ??
+    (config.projectStorePath === ':memory:'
+      ? createMemoryProjectStore()
+      : createJsonFileProjectStore(config.projectStorePath));
   const usage: UsageService = createUsageService({
     store: usageStore,
     ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
@@ -135,6 +152,7 @@ export function createApp(deps: AppDeps): App {
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
     ...createUsageRoutes({ config, users, usage }),
+    ...createProjectRoutes({ config, projects: projectStore }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -184,10 +202,22 @@ export function createApp(deps: AppDeps): App {
     res: ServerResponse,
     ctx: RequestContext,
   ): Promise<void> => {
-    const match = routes.find(
-      (route) => route.method === ctx.method && route.path === ctx.pathname,
-    );
-    if (match !== undefined) {
+    // Pump 6: routes may be parameterized (`:segment`); exact-match
+    // routes keep their original semantics (see matchRoutePath).
+    let matchParams: Record<string, string> | undefined;
+    const match = routes.find((route) => {
+      if (route.method !== ctx.method) {
+        return false;
+      }
+      const params = matchRoutePath(route.path, ctx.pathname);
+      if (params === undefined) {
+        return false;
+      }
+      matchParams = params;
+      return true;
+    });
+    if (match !== undefined && matchParams !== undefined) {
+      ctx.params = matchParams;
       // Authentication first (401), then authorization (403) — one choke
       // point for every protected route, in the pipeline's documented
       // order. Handlers behind these flags can trust `ctx.user`/`ctx.authz`.
@@ -216,7 +246,7 @@ export function createApp(deps: AppDeps): App {
       return;
     }
     const allowed = routes
-      .filter((route) => route.path === ctx.pathname)
+      .filter((route) => matchRoutePath(route.path, ctx.pathname) !== undefined)
       .map((route) => route.method);
     if (allowed.length > 0) {
       throw methodNotAllowed(allowed);
@@ -232,6 +262,7 @@ export function createApp(deps: AppDeps): App {
       ip: clientIp(req),
       startedAtMs: clock(),
       logger,
+      params: {},
     };
     // A dead client socket must never crash the process: a write to an
     // aborted response emits 'error' on the response stream.

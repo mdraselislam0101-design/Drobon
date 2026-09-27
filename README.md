@@ -76,12 +76,13 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/AUTHORIZATION.md` — roles, permission table, guards, ownership
 - `docs/SUBSCRIPTIONS.md` — plans, subscription states, entitlement authority
 - `docs/USAGE.md` — usage quota, UTC periods, device policy, consume boundary
+- `docs/PROJECTS.md` — project model, ownership, CRUD, lifecycle, scan boundary
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 5, cumulative)
+## Scope (Pump 6, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -102,6 +103,17 @@ methods, no device identifiers exposed), a dev/test-gated consumption
 probe (404 in production), and the Account-page monthly usage section
 (display-only, fail-closed). See `docs/USAGE.md`.
 
+**PLUS Pump 6 (Projects foundation)**: the user-owned Project container
+for all future security work — shared `Project` contract with strict
+guards (no owner field in responses), server-authoritative ownership
+(uniform 403 cross-account, role/UserType never grant it), REST CRUD +
+explicit archive/unarchive lifecycle on parameterized routes, durable
+JSON project store (atomic, serialized, restart-persistent,
+fail-fast), NFC-normalized bounded text validation, and the Projects
+web experience (list/create/edit/lifecycle, protected routes,
+fail-closed states). Project CRUD never consumes a scan. See
+`docs/PROJECTS.md`.
+
 **NOT included:** the scan engine itself (SAST/SCA/DAST, jobs calling
 this quota boundary arrive in later pumps), the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
@@ -115,7 +127,7 @@ UserType-specific product features. See the NOT_IMPLEMENTED sections in
 
 ## Status
 
-Pump 5 — foundation + authentication + authorization + plans/
-subscriptions/entitlements + usage quota & device anti-abuse
-foundation. See `docs/BUILD_VERIFICATION.md` for the latest
+Pump 6 — foundation + authentication + authorization + plans/
+subscriptions/entitlements + usage quota & device anti-abuse +
+projects foundation. See `docs/BUILD_VERIFICATION.md` for the latest
 verification evidence and `git log` for history.

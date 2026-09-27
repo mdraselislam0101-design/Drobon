@@ -1,9 +1,9 @@
 # Architecture
 
 Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
-(authorization), Pump 4 (plans/subscriptions/entitlements) and Pump 5
-(usage quota + device anti-abuse foundation): an
-npm-workspaces monorepo with three runtime components
+(authorization), Pump 4 (plans/subscriptions/entitlements), Pump 5
+(usage quota + device anti-abuse foundation) and Pump 6 (projects
+foundation): an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -45,6 +45,11 @@ browser bundle and the servers can all consume it:
   guards — including cross-field invariants the server always maintains
   (exempt views carry no numbers; counts never exceed the limit). No
   device identifiers exist in this contract.
+- `projects.ts` — project contracts (Pump 6): the closed status
+  vocabulary (ACTIVE/ARCHIVED), the `prj_` UUID id pattern, bounded
+  name/description lengths, the public `Project` shape (deliberately
+  owner-free — the API is self-only), the documented deterministic
+  ordering comparator (updatedAt DESC, then id ASC) and payload guards.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -107,6 +112,12 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   fail-closed normalization of persisted subscription data,
   `resolveSubscription`, `deriveEntitlements`; reads only the account's
   subscription, never role/userType/client input).
+- `projects/` — the Projects foundation store (Pump 6):
+  `store.ts` is the minimum persistence boundary (one JSON document,
+  serialized mutation queue, atomic temp+rename writes, fail-fast load
+  validation — the same architecture as the account and usage stores)
+  exposing create/listByOwner/findById/update/setStatus. The stored
+  record carries `ownerId`; responses never do.
 - `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
   base64url device token issuance + hashed lookup, hardened cookie
   serialization), `store.ts` (the single persistence boundary — durable
@@ -129,9 +140,16 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   subscription + server-derived entitlements; no id parameter, no
   mutation methods), plus Pump 5's `GET /api/v1/usage` (self-only usage
   view; always registered) and the dev/test-gated consumption probe
-  `POST /api/v1/usage/consume` (404 in production — see docs/USAGE.md).
+  `POST /api/v1/usage/consume` (404 in production — see docs/USAGE.md),
+  plus Pump 6's project routes: `POST/GET /api/v1/projects`,
+  `GET/PATCH /api/v1/projects/:projectId` and the explicit lifecycle
+  operations `POST …/archive` / `…/unarchive` — all self-only, uniform
+  403 for unknown/foreign/malformed ids (see docs/PROJECTS.md).
   Unknown path → 404, wrong method → 405 + `Allow`.
-- `app.ts` — composition: per-request context, `next()`-chaining dispatcher,
+- `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
+  segments via `matchRoutePath` — exact-match routes keep their original
+  semantics; captured params land on `ctx.params`; malformed
+  percent-encoding never matches),
   centralized catch + structured access log, and the single router choke
   point enforcing authentication (401) then authorization (403) before any
   handler runs. Accepts `extraRoutes` + injectable `users`/`sessions`
@@ -171,7 +189,9 @@ NOT_IMPLEMENTED).
   403 view (alert, no role hints).
 - `routes.tsx` / `App.tsx` — `BrowserRouter` in prod, `MemoryRouter` in
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
-  `/register`, `/account` (protected, `minRole="MEMBER"`), `*` (404).
+  `/register`, `/account` (protected, `minRole="MEMBER"`), `/projects`
+  and `/projects/:projectId` (protected, `minRole="MEMBER"` — Pump 6),
+  `*` (404).
 - `components/` — `Layout` (auth-aware header/nav/main/footer, skip link),
   `LoadingState` (`role=status`), `ErrorState` (`role=alert` + request ID +
   retry), `ErrorBoundary`, `AuthFormError` (form-level alert + strict
@@ -181,6 +201,13 @@ NOT_IMPLEMENTED).
 - `pages/LoginPage/RegisterPage` — accessible forms (labels, `aria-invalid`,
   `role=alert` errors, busy buttons), shared policy validation with the API,
   server-safe error rendering.
+- `pages/ProjectsPage.tsx` / `pages/ProjectDetailPage.tsx` — the
+  Projects experience (Pump 6): server-scoped list in the server's
+  order with honest empty/loading/error states, a create form
+  (server-revalidated, per-field 422 rendering), a detail page with an
+  edit form limited to name/description and explicit archive/unarchive
+  buttons. All project text renders as text (React escaping); a
+  foreign/unknown project renders the honest error only.
 - `pages/AccountPage.tsx` — protected page: re-verifies the session on
   mount (session-expiry discovery), shows public account facts, role and
   user-type badges, the Pump 4 plan & subscription section (plan/status

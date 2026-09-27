@@ -50,6 +50,14 @@ export interface RequestContext {
    * routes may trust the hash. `undefined` for anonymous requests.
    */
   deviceHash?: string;
+  /**
+   * Path parameters extracted from parameterized route paths (Pump 6),
+   * e.g. `/api/v1/projects/:projectId` fills `params.projectId`. Empty
+   * for exact-match routes. Values are raw URL path segments — handlers
+   * must validate them before use (never trust them as ids by shape
+   * alone... they are untrusted input like any other).
+   */
+  params: Record<string, string>;
 }
 
 export type NextFunction = () => Promise<void>;
@@ -69,6 +77,15 @@ export type RouteHandler = (
 
 export interface Route {
   method: string;
+  /**
+   * Route path. Either an exact pathname (`/api/v1/projects`) or a
+   * parameterized path whose `:name` segments capture one path segment
+   * each (`/api/v1/projects/:projectId` — captured into
+   * `ctx.params.projectId`). Parameter names must be unique within a
+   * path; a segment is matched verbatim (no wildcards, no regex, no
+   * empty segments — the pathname is normalized without a trailing
+   * slash before matching).
+   */
   path: string;
   handler: RouteHandler;
   /**
@@ -89,4 +106,48 @@ export interface Route {
    * role comes from `PERMISSIONS[permission]`. Implies `requireAuth`.
    */
   requirePermission?: Permission;
+}
+
+/**
+ * Match a normalized request pathname against a route path.
+ *
+ * Exact paths (no `:` segments) compare by equality — the Pump 1–5
+ * behavior, unchanged. Parameterized paths match segment by segment,
+ * capturing `:name` segments into the returned params record. Returns
+ * `undefined` on no match. Deliberately tiny: no wildcards, no optional
+ * segments, no regex — untrusted path data stays data.
+ */
+export function matchRoutePath(
+  routePath: string,
+  pathname: string,
+): Record<string, string> | undefined {
+  if (!routePath.includes(':')) {
+    return routePath === pathname ? {} : undefined;
+  }
+  const routeParts = routePath.split('/');
+  const pathParts = pathname.split('/');
+  if (routeParts.length !== pathParts.length) {
+    return undefined;
+  }
+  const params: Record<string, string> = {};
+  for (let index = 0; index < routeParts.length; index += 1) {
+    const routePart = routeParts[index] ?? '';
+    const pathPart = pathParts[index] ?? '';
+    if (routePart.startsWith(':') && routePart.length > 1) {
+      if (pathPart.length === 0) {
+        return undefined;
+      }
+      try {
+        params[routePart.slice(1)] = decodeURIComponent(pathPart);
+      } catch {
+        // Malformed percent-encoding (`%zz`) — never a match, never a 500.
+        return undefined;
+      }
+      continue;
+    }
+    if (routePart !== pathPart) {
+      return undefined;
+    }
+  }
+  return params;
 }

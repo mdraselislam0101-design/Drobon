@@ -397,3 +397,126 @@ describe('usage API client (Pump 5)', () => {
     expect(methods).toEqual(['getUsage']);
   });
 });
+
+describe('projects API client (Pump 6)', () => {
+  const projectPayload = {
+    id: 'prj_00000000-0000-4000-8000-0000000000aa',
+    name: 'Primary web app',
+    description: 'The checkout flow.',
+    status: 'ACTIVE',
+    createdAt: '2026-09-28T10:00:00.000Z',
+    updatedAt: '2026-09-28T10:00:00.000Z',
+  };
+
+  test('getProjects hits the collection with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ projects: [projectPayload] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getProjects();
+    expect(result.projects).toHaveLength(1);
+    expect(result.projects[0]?.name).toBe('Primary web app');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('getProject encodes the id and validates the payload', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: projectPayload })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getProject('prj_00000000-0000-4000-8000-0000000000aa');
+    expect(result.project.id).toBe('prj_00000000-0000-4000-8000-0000000000aa');
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa');
+  });
+
+  test('createProject posts ONLY name/description — never ownership or status', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: projectPayload }), 201),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.createProject({ name: 'x', description: 'y' });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify({ name: 'x', description: 'y' }));
+  });
+
+  test('updateProject PATCHes the resource with only editable fields', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: { ...projectPayload, name: 'after' } })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.updateProject('prj_00000000-0000-4000-8000-0000000000aa', { name: 'after' });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ name: 'after' }));
+  });
+
+  test('archive/unarchive call the explicit lifecycle endpoints', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: { ...projectPayload, status: 'ARCHIVED' } })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.archiveProject('prj_00000000-0000-4000-8000-0000000000aa');
+    await client.unarchiveProject('prj_00000000-0000-4000-8000-0000000000aa');
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as Array<
+      [string, RequestInit]
+    >;
+    expect(calls[0]?.[0]).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/archive');
+    expect(calls[1]?.[0]).toBe(
+      '/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/unarchive',
+    );
+    expect(calls[0]?.[1].method).toBe('POST');
+  });
+
+  test('anonymous 401s and foreign 403s surface as typed errors', async () => {
+    const anon: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    await expect(createApiClient({ baseUrl: '', fetchImpl: anon }).getProjects()).rejects.toMatchObject(
+      { kind: 'http', status: 401, code: 'UNAUTHORIZED' },
+    );
+    const foreign: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('FORBIDDEN', 'You do not have access to this resource.'), 403),
+    );
+    await expect(
+      createApiClient({ baseUrl: '', fetchImpl: foreign }).getProject('prj_x'),
+    ).rejects.toMatchObject({ kind: 'http', status: 403, code: 'FORBIDDEN' });
+  });
+
+  test('project payloads failing the shared guards are rejected', async () => {
+    const bad = [
+      { projects: [{ ...projectPayload, status: 'DELETED' }] },
+      { projects: [{ ...projectPayload, name: '' }] },
+      { projects: [{ ...projectPayload, id: 'not-an-id' }] },
+      { project: null },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getProjects()).rejects.toMatchObject({ kind: 'invalid-response' });
+    }
+    for (const payload of [null, { project: { ...projectPayload, name: '' } }]) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getProject('prj_x')).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+});

@@ -7,6 +7,8 @@ import type {
   CurrentUserResponse,
   HealthResponse,
   LogoutResponse,
+  ProjectResponse,
+  ProjectsResponse,
   StatusResponse,
   SubscriptionResponse,
   UsageResponse,
@@ -115,6 +117,24 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       remaining: 3,
       quotaStatus: 'OK',
     })),
+    // Pump 6 default: no projects yet (the honest empty world). Suites
+    // override these to model owned/foreign/lifecycle states.
+    getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),
+    getProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw forbiddenError();
+    }),
+    createProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    updateProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    archiveProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    unarchiveProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
     ...overrides,
   };
 }
