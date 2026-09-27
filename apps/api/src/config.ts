@@ -1,0 +1,164 @@
+import { createRequire } from 'node:module';
+import {
+  ENVIRONMENTS,
+  LOG_LEVELS,
+  type EnvironmentName,
+  type LogLevel,
+} from '@drobon/shared';
+
+/**
+ * Validated API configuration. This is the ONLY module allowed to read
+ * `process.env` (enforced by `test/static-safety.test.ts`).
+ */
+export interface ApiConfig {
+  env: EnvironmentName;
+  host: string;
+  port: number;
+  logLevel: LogLevel;
+  /** Normalized exact origins (`scheme://host[:port]`), no credentials. */
+  corsAllowedOrigins: string[];
+  rateLimitMaxRequests: number;
+  rateLimitWindowMs: number;
+  bodyMaxBytes: number;
+  version: string;
+}
+
+export class ConfigError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(`Invalid configuration: ${issues.join('; ')}`);
+    this.name = 'ConfigError';
+    this.issues = [...issues];
+  }
+}
+
+function parseInteger(raw: string | undefined, name: string, issues: string[]): number | undefined {
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+  if (!/^-?\d+$/.test(raw.trim())) {
+    issues.push(`${name} must be an integer`);
+    return undefined;
+  }
+  return Number.parseInt(raw.trim(), 10);
+}
+
+function normalizeOrigin(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.includes('@') || /[\s]/.test(trimmed)) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return undefined;
+  }
+  if (url.username.length > 0 || url.password.length > 0) {
+    return undefined;
+  }
+  if (url.search.length > 0 || url.hash.length > 0) {
+    return undefined;
+  }
+  if (url.pathname.length > 0 && url.pathname !== '/') {
+    return undefined;
+  }
+  return url.origin;
+}
+
+function readServiceVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require('../package.json') as { version?: unknown };
+    if (typeof pkg.version === 'string' && pkg.version.length > 0) {
+      return pkg.version;
+    }
+  } catch {
+    // Fall through to the fallback below.
+  }
+  return '0.0.0-dev';
+}
+
+/**
+ * Parse and validate environment into {@link ApiConfig}. Collects every
+ * problem and throws a single {@link ConfigError} — fail fast, fail loudly.
+ */
+export function loadConfig(env: Record<string, string | undefined> = process.env): ApiConfig {
+  const issues: string[] = [];
+
+  const rawEnv = env['NODE_ENV'];
+  const environment: EnvironmentName =
+    rawEnv === undefined || rawEnv === '' ? 'development' : (rawEnv as EnvironmentName);
+  if (!(ENVIRONMENTS as readonly string[]).includes(environment)) {
+    issues.push(`NODE_ENV must be one of ${ENVIRONMENTS.join(', ')}`);
+  }
+
+  const host = env['HOST'] ?? '127.0.0.1';
+  if (host.trim().length === 0 || host.length > 255 || /[\s]/.test(host)) {
+    issues.push('HOST must be a non-empty hostname or IP without whitespace');
+  }
+
+  const port = parseInteger(env['PORT'], 'PORT', issues) ?? 3001;
+  if (port < 1 || port > 65535) {
+    issues.push('PORT must be an integer between 1 and 65535');
+  }
+
+  const rawLevel = env['LOG_LEVEL'];
+  const logLevel: LogLevel = rawLevel === undefined || rawLevel === '' ? 'info' : (rawLevel as LogLevel);
+  if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
+    issues.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}`);
+  }
+
+  const corsAllowedOrigins: string[] = [];
+  const rawOrigins = env['CORS_ALLOWED_ORIGINS'] ?? '';
+  for (const piece of rawOrigins.split(',')) {
+    if (piece.trim().length === 0) {
+      continue;
+    }
+    const normalized = normalizeOrigin(piece);
+    if (normalized === undefined) {
+      issues.push(
+        `CORS_ALLOWED_ORIGINS entry "${piece.trim()}" must be an exact http(s) origin without credentials, path, query or fragment`,
+      );
+    } else if (!corsAllowedOrigins.includes(normalized)) {
+      corsAllowedOrigins.push(normalized);
+    }
+  }
+
+  const rateLimitMaxRequests =
+    parseInteger(env['RATE_LIMIT_MAX_REQUESTS'], 'RATE_LIMIT_MAX_REQUESTS', issues) ?? 100;
+  if (rateLimitMaxRequests < 1 || rateLimitMaxRequests > 1_000_000) {
+    issues.push('RATE_LIMIT_MAX_REQUESTS must be an integer between 1 and 1000000');
+  }
+
+  const rateLimitWindowMs =
+    parseInteger(env['RATE_LIMIT_WINDOW_MS'], 'RATE_LIMIT_WINDOW_MS', issues) ?? 60_000;
+  if (rateLimitWindowMs < 1000 || rateLimitWindowMs > 3_600_000) {
+    issues.push('RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
+  }
+
+  const bodyMaxBytes = parseInteger(env['BODY_MAX_BYTES'], 'BODY_MAX_BYTES', issues) ?? 1_048_576;
+  if (bodyMaxBytes < 1024 || bodyMaxBytes > 10_485_760) {
+    issues.push('BODY_MAX_BYTES must be an integer between 1024 and 10485760');
+  }
+
+  if (issues.length > 0) {
+    throw new ConfigError(issues);
+  }
+
+  return {
+    env: environment,
+    host,
+    port,
+    logLevel,
+    corsAllowedOrigins,
+    rateLimitMaxRequests,
+    rateLimitWindowMs,
+    bodyMaxBytes,
+    version: readServiceVersion(),
+  };
+}

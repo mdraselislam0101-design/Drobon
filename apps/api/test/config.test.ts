@@ -1,0 +1,88 @@
+import { describe, expect, test } from 'vitest';
+import { ConfigError, loadConfig } from '../src/config.js';
+
+describe('loadConfig', () => {
+  test('applies secure defaults for an empty environment', () => {
+    const config = loadConfig({});
+    expect(config.env).toBe('development');
+    expect(config.host).toBe('127.0.0.1');
+    expect(config.port).toBe(3001);
+    expect(config.logLevel).toBe('info');
+    expect(config.corsAllowedOrigins).toEqual([]);
+    expect(config.rateLimitMaxRequests).toBe(100);
+    expect(config.rateLimitWindowMs).toBe(60_000);
+    expect(config.bodyMaxBytes).toBe(1_048_576);
+    expect(typeof config.version).toBe('string');
+  });
+
+  test('accepts a fully specified valid environment', () => {
+    const config = loadConfig({
+      NODE_ENV: 'production',
+      HOST: '0.0.0.0',
+      PORT: '8080',
+      LOG_LEVEL: 'warn',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.test, http://127.0.0.1:5173',
+      RATE_LIMIT_MAX_REQUESTS: '50',
+      RATE_LIMIT_WINDOW_MS: '5000',
+      BODY_MAX_BYTES: '2048',
+    });
+    expect(config.env).toBe('production');
+    expect(config.host).toBe('0.0.0.0');
+    expect(config.port).toBe(8080);
+    expect(config.logLevel).toBe('warn');
+    expect(config.corsAllowedOrigins).toEqual([
+      'https://app.example.test',
+      'http://127.0.0.1:5173',
+    ]);
+    expect(config.rateLimitMaxRequests).toBe(50);
+    expect(config.rateLimitWindowMs).toBe(5000);
+    expect(config.bodyMaxBytes).toBe(2048);
+  });
+
+  test('normalizes and dedupes origins', () => {
+    const config = loadConfig({
+      CORS_ALLOWED_ORIGINS: 'HTTPS://APP.EXAMPLE.TEST/,https://app.example.test,,',
+    });
+    expect(config.corsAllowedOrigins).toEqual(['https://app.example.test']);
+  });
+
+  test.each([
+    ['bad env', { NODE_ENV: 'staging' }],
+    ['blank host', { HOST: '   ' }],
+    ['host with whitespace', { HOST: 'a b' }],
+    ['non-numeric port', { PORT: 'abc' }],
+    ['port too low', { PORT: '0' }],
+    ['port too high', { PORT: '70000' }],
+    ['bad log level', { LOG_LEVEL: 'verbose' }],
+    ['origin with path', { CORS_ALLOWED_ORIGINS: 'https://a.test/x' }],
+    ['origin with credentials', { CORS_ALLOWED_ORIGINS: 'https://user@a.test' }],
+    ['origin with query', { CORS_ALLOWED_ORIGINS: 'https://a.test/?x=1' }],
+    ['non-http origin', { CORS_ALLOWED_ORIGINS: 'ftp://a.test' }],
+    ['garbage origin', { CORS_ALLOWED_ORIGINS: 'not a url' }],
+    ['zero rate limit', { RATE_LIMIT_MAX_REQUESTS: '0' }],
+    ['tiny window', { RATE_LIMIT_WINDOW_MS: '10' }],
+    ['tiny body', { BODY_MAX_BYTES: '10' }],
+    ['huge body', { BODY_MAX_BYTES: '999999999' }],
+  ])('rejects %s', (_label, env) => {
+    expect(() => loadConfig(env)).toThrowError(ConfigError);
+  });
+
+  test('collects every issue into a single ConfigError', () => {
+    try {
+      loadConfig({ NODE_ENV: 'nope', PORT: 'abc', LOG_LEVEL: 'nope' });
+      expect.unreachable('expected ConfigError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      const configError = error as ConfigError;
+      expect(configError.issues.length).toBeGreaterThanOrEqual(3);
+      expect(configError.message).toContain('NODE_ENV');
+      expect(configError.message).toContain('PORT');
+      expect(configError.message).toContain('LOG_LEVEL');
+    }
+  });
+
+  test('reads the version from package.json', () => {
+    const config = loadConfig({});
+    expect(config.version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});

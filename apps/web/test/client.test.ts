@@ -1,0 +1,141 @@
+import { describe, expect, test, vi } from 'vitest';
+import { ApiClientError, createApiClient } from '../src/api/client.js';
+
+type FetchImpl = typeof fetch;
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+const STATUS_PAYLOAD = {
+  ok: true,
+  data: {
+    service: 'drobon-aegis-api',
+    version: '0.1.0-test',
+    environment: 'test',
+    time: '2026-01-01T00:00:00.000Z',
+  },
+  meta: { requestId: 'req-server-1' },
+};
+
+describe('createApiClient', () => {
+  test('returns typed data and sends correlation headers', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(STATUS_PAYLOAD));
+    const client = createApiClient({
+      baseUrl: 'https://api.example.test',
+      fetchImpl,
+      generateId: () => 'web-test-id-1',
+    });
+    const data = await client.getStatus();
+    expect(data.service).toBe('drobon-aegis-api');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('https://api.example.test/api/v1/status');
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-request-id')).toBe('web-test-id-1');
+    expect(headers.get('accept')).toBe('application/json');
+  });
+
+  test('supports same-origin relative URLs', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(STATUS_PAYLOAD));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.getLivez();
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(url).toBe('/livez');
+  });
+
+  test('posts JSON for echo with the message payload', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        data: { message: 'hi', length: 2, receivedAt: '2026-01-01T00:00:00.000Z' },
+        meta: { requestId: 'r' },
+      }),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const data = await client.postEcho('hi');
+    expect(data.message).toBe('hi');
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('content-type')).toBe('application/json');
+    expect(init.body).toBe(JSON.stringify({ message: 'hi' }));
+  });
+
+  test('maps error envelopes to http errors with server message + request ID', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        {
+          ok: false,
+          error: { code: 'RATE_LIMITED', message: 'Slow down.' },
+          meta: { requestId: 'req-server-2' },
+        },
+        429,
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const failure = await client.getStatus().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiClientError);
+    const typed = failure as ApiClientError;
+    expect(typed.kind).toBe('http');
+    expect(typed.message).toBe('Slow down.');
+    expect(typed.status).toBe(429);
+    expect(typed.code).toBe('RATE_LIMITED');
+    expect(typed.requestId).toBe('req-server-2');
+  });
+
+  test('maps transport failures to network errors with safe messages', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed: ECONNREFUSED 10.0.0.99');
+    });
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const failure = await client.getStatus().catch((error: unknown) => error);
+    const typed = failure as ApiClientError;
+    expect(typed.kind).toBe('network');
+    expect(typed.message).not.toContain('10.0.0.99');
+    expect(typed.requestId).toBeDefined();
+  });
+
+  test('maps timeouts to timeout errors', async () => {
+    const fetchImpl: FetchImpl = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      })) as FetchImpl;
+    const client = createApiClient({ baseUrl: '', fetchImpl, timeoutMs: 10 });
+    const failure = await client.getStatus().catch((error: unknown) => error);
+    expect((failure as ApiClientError).kind).toBe('timeout');
+  });
+
+  test('honors caller cancellation with aborted errors', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(STATUS_PAYLOAD));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const controller = new AbortController();
+    controller.abort();
+    const failure = await client.getStatus(controller.signal).catch((error: unknown) => error);
+    expect((failure as ApiClientError).kind).toBe('aborted');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('rejects malformed JSON and unexpected shapes', async () => {
+    const badJson: FetchImpl = vi.fn(async () => new Response('{{nope', { status: 200 }));
+    const clientA = createApiClient({ baseUrl: '', fetchImpl: badJson });
+    expect(((await clientA.getStatus().catch((e: unknown) => e)) as ApiClientError).kind).toBe(
+      'invalid-response',
+    );
+    const badShape: FetchImpl = vi.fn(async () => jsonResponse({ hello: 'world' }));
+    const clientB = createApiClient({ baseUrl: '', fetchImpl: badShape });
+    expect(((await clientB.getStatus().catch((e: unknown) => e)) as ApiClientError).kind).toBe(
+      'invalid-response',
+    );
+  });
+});

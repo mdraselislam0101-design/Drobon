@@ -1,0 +1,36 @@
+{
+  "name": "drobon-aegis-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drobon Aegis AI — cybersecurity application foundation (Pump 1).",
+  "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=20.11.0 <23.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "npm run dev --workspace @drobon/api",
+    "dev:web": "npm run dev --workspace @drobon/web",
+    "typecheck": "npm run build --workspace @drobon/shared && npm run typecheck --workspace @drobon/shared && npm run typecheck --workspace @drobon/api && npm run typecheck --workspace @drobon/worker && npm run typecheck --workspace @drobon/web",
+    "lint": "eslint .",
+    "test": "npm run build --workspace @drobon/shared && npm run test --workspace @drobon/shared && npm run test --workspace @drobon/api && npm run test --workspace @drobon/worker && npm run test --workspace @drobon/web",
+    "build": "npm run build --workspace @drobon/shared && npm run build --workspace @drobon/api && npm run build --workspace @drobon/worker && npm run build --workspace @drobon/web",
+    "preview": "npm run build --workspace @drobon/web && npm run preview --workspace @drobon/web",
+    "start:api": "npm run build --workspace @drobon/api && npm run start --workspace @drobon/api",
+    "audit": "npm audit --audit-level=high",
+    "check:secrets": "node scripts/check-no-secrets.mjs",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.14.0",
+    "eslint": "^9.14.0",
+    "globals": "^15.7.0",
+    "typescript-eslint": "^8.12.0"
+  }
+}
