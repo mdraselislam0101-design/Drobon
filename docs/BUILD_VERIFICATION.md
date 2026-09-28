@@ -779,3 +779,32 @@ wrong envelope path; the endpoint itself returned
   the logger's deep redaction suite stays green.
 - DATASET LOCK (extended): no external secret databases/feeds; the
   denylists are heuristic word lists, not vendored data.
+
+### Final security gate — cross-account semantics (403 vs 404)
+
+Investigated on request: the live E2E report showed 404s next to
+"cross-account". Verification of the exact requests:
+
+- **True cross-account access** (attacker → the OWNER's project, with
+  a real scan id, on `GET /api/v1/projects/:projectId/scans/:scanId`
+  and the list route) answers the **uniform 403 `FORBIDDEN`** —
+  `ownProjectOr403()` runs BEFORE any scan lookup on every scan
+  route, byte-identical to the unknown-project answer (no existence
+  oracle). Proven live (production build) and by regression test
+  `scanApi.test.ts` → *"cross-account scan DETAIL answers the SAME
+  uniform 403 as unknown projects"* (foreign/unknown/malformed
+  project + real scan id → identical 403; owner baseline 200).
+- The E2E's 404s were **scan-id probing inside the attacker's OWN
+  project**: after project ownership is verified, scan lookup is
+  scoped to that project only, so unknown/malformed/foreign scan ids
+  answer the same 404 — indistinguishable, hence oracle-free. This is
+  the documented Pump 6/7 two-level IDOR contract
+  (`docs/SECURITY.md`, `docs/SCANS.md`, route comments): project
+  level = uniform 403, scan level inside one's own scope = uniform
+  404.
+- No product code changed: the implementation already ordered
+  authorization before existence disclosure. Changes: one new
+  regression test (API suite 543 → 544) and the E2E harness's
+  stage 11 now asserts the true cross-account detail case (403 +
+  FORBIDDEN + oracle-equivalence) alongside the scoped-404 cases
+  (E2E: 64 main + 6 restart checks, all green).

@@ -909,6 +909,52 @@ describe('scan reads', () => {
     }
   });
 
+  test('cross-account scan DETAIL answers the SAME uniform 403 as unknown projects', async () => {
+    // Final-security-gate regression: the attacker targets the OWNER's
+    // project with a REAL scan id. Project authorization must answer
+    // 403 BEFORE any scan lookup, indistinguishable from an unknown or
+    // malformed project id — no existence oracle at the project level.
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    await seedUser(users, 'attacker@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const attacker = await login(server, 'attacker@example.test');
+      const projectId = await createProject(server, owner);
+      const created = await requestScan(server, owner, projectId);
+      const scanId = scanOf(created.body).id;
+      const targets = [
+        projectId, // Foreign (the owner's) — the true cross-account case.
+        'prj_ffffffff-ffff-4fff-8fff-ffffffffffff', // Unknown.
+        'not-a-prj-id', // Malformed.
+      ];
+      const bodies: unknown[] = [];
+      for (const id of targets) {
+        const res = await fetch(
+          `${server.baseUrl}/api/v1/projects/${encodeURIComponent(id)}/scans/${encodeURIComponent(scanId)}`,
+          { headers: { cookie: cookieHeader(attacker) } },
+        );
+        expect(res.status).toBe(403);
+        const json = await readJson(res);
+        expect(errorOf(json).code).toBe('FORBIDDEN');
+        bodies.push((json as { error: unknown }).error);
+      }
+      for (const body of bodies.slice(1)) {
+        expect(JSON.stringify(body)).toBe(JSON.stringify(bodies[0]));
+      }
+      // Baseline: the same request by the owner → 200 (the scan is
+      // only "not found" for those without project access).
+      const ok = await fetch(
+        `${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}`,
+        { headers: { cookie: cookieHeader(owner) } },
+      );
+      expect(ok.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
   test('wrong methods on scan paths answer 405 + Allow; odd paths 404', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
