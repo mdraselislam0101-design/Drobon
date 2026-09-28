@@ -22,6 +22,10 @@ const FOUNDATION = [
     body: 'Ask bounded, project-scoped questions. No provider means unsupported generation stays unavailable.',
   },
   {
+    title: 'Professional assessments',
+    body: 'Security Professionals get a server-backed overview of bounded recent engine activity, finding lifecycle and verification, reports, and available passive DAST observations.',
+  },
+  {
     title: 'Account security',
     body: 'Authentication, ownership, plan entitlements, FREE quota and rate limits remain server-enforced.',
   },
@@ -34,7 +38,7 @@ export function HomePage(): React.JSX.Element {
         <p className="eyebrow">Cybersecurity platform</p>
         <h1 id="hero-title">Drobon Aegis AI</h1>
         <p className="lede">
-          A project-centered security workflow for developers: submit source, run the existing security engines, review findings and reports, and track remediation. Register as a Developer to open your account-scoped security overview. Classification changes navigation only—not access, plan, quota or ownership.
+          A project-centered security workflow for developers, students and security professionals: submit source, run the existing security engines, review findings and reports, and track remediation. Choose a profile to organize your workspace; classification changes navigation only—not access, plan, quota or ownership.
         </p>
         <div className="hero-actions">
           <Link className="button" to="/register">

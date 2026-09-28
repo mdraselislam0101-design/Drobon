@@ -135,3 +135,7 @@ missing result summaries remain unavailable rather than becoming zero.
 - These are controlled synthetic/local fixtures, not fabricated production
   state, public-target testing, external intelligence validation, or a
   browser-based full E2E test.
+
+## Pump 19 shared Professional surface
+
+Security Professionals use the same owner-scoped overview and shared project workflows as Developers and Students. The Professional route and API journey are documented in `SECURITY_PROFESSIONAL.md`; no Developer-specific server authority or alternate engine was added.

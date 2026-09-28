@@ -231,7 +231,7 @@ export interface ScanStore {
    */
   listByProject(projectId: string): Promise<ScanRecord[]>;
   /** Bounded, account-scoped scan/finding/report projections for the workspace overview. */
-  workspaceSummary(ownerId: string): Promise<{
+  workspaceSummary(ownerId: string, projectId?: string): Promise<{
     scans: WorkspaceScansSummary;
     findings: WorkspaceFindingsSummary;
     reports: WorkspaceReportsSummary;
@@ -985,7 +985,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           .map(toPublic),
       ),
 
-    workspaceSummary: (ownerId) => {
+    workspaceSummary: (ownerId, projectId) => {
       const scansSummary = emptyWorkspaceScansSummary();
       const findingsSummary = emptyWorkspaceFindingsSummary();
       const reportsSummary: WorkspaceReportsSummary = { availableCount: 0, recent: [] };
@@ -1004,7 +1004,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         b.generatedAt.localeCompare(a.generatedAt) || a.reportId.localeCompare(b.reportId);
 
       for (const scan of scansById.values()) {
-        if (scan.ownerId !== ownerId) continue;
+        if (scan.ownerId !== ownerId || (projectId !== undefined && scan.projectId !== projectId)) continue;
         scansSummary.total += 1;
         scansSummary.byStatus[scan.status] += 1;
         scansSummary.recent.push({
@@ -1017,6 +1017,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           findingsTotal: scan.resultSummary?.findingsTotal ?? null,
           partial: scan.resultSummary?.partial ?? null,
           reportAvailable: reportsByScan.get(scan.id)?.project.id === scan.projectId,
+          dastObservationsCount: scan.status === 'COMPLETED' && scan.scanType === 'DAST' ? scan.dast?.observations.length ?? null : null,
+          scaAssessmentState: scan.status === 'COMPLETED' && scan.scanType === 'SCA' ? scan.sca?.summary.assessmentState ?? null : null,
+          scaDatasetStatus: scan.status === 'COMPLETED' && scan.scanType === 'SCA' ? scan.sca?.summary.datasetStatus ?? null : null,
         });
         scansSummary.recent.sort(scanOrder);
         if (scansSummary.recent.length > WORKSPACE_SCANS_MAX) scansSummary.recent.pop();
@@ -1064,7 +1067,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
 
       for (const report of reportsByScan.values()) {
         const scan = scansById.get(report.scan.id);
-        if (scan === undefined || scan.ownerId !== ownerId || scan.projectId !== report.project.id) continue;
+        if (scan === undefined || scan.ownerId !== ownerId || scan.projectId !== report.project.id ||
+            (projectId !== undefined && scan.projectId !== projectId)) continue;
         reportsSummary.availableCount += 1;
         reportsSummary.recent.push({
           reportId: report.reportId,

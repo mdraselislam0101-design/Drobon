@@ -20,7 +20,9 @@ export function PublicOnlyRoute({ children }: { children: ReactElement }): React
       ? '/dashboard'
       : state.user.userType === 'STUDENT'
         ? '/student/dashboard'
-        : '/account';
+        : state.user.userType === 'SECURITY_PROFESSIONAL'
+          ? '/security-professional/dashboard'
+          : '/account';
     return <Navigate to={from ?? landing} replace />;
   }
   // `error` on the session probe falls through to the form: logging in is
@@ -96,6 +98,15 @@ export function DeveloperDashboardRoute(): React.JSX.Element {
 export function StudentDashboardRoute(): React.JSX.Element {
   const { state } = useAuth();
   if (state.status === 'ready' && state.user.userType !== 'STUDENT') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; the API remains self-scoped and authoritative. */
+export function SecurityProfessionalDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'SECURITY_PROFESSIONAL') {
     return <Navigate to="/projects" replace />;
   }
   return <Outlet />;

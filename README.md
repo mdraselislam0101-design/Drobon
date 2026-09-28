@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 18: cumulative security foundation + authenticated Student workspace**, adding a Student-facing route over the shared account-scoped security overview alongside the Developer workspace, integrating existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, finding remediation lifecycle, read-only AI Security Assistant, manual payment review, and restricted read-only platform operations.
+Cybersecurity application — **Pump 19: cumulative security foundation + Security Professional workspace**, adding Security Professional routing and assessment presentation alongside the shared Student/Developer workspace, integrating existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, finding remediation lifecycle, read-only AI Security Assistant, manual payment review, and restricted read-only platform operations.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -14,7 +14,7 @@ state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
 store, a single server-authoritative entitlement decision point, a
 read-only self-only `GET /api/v1/subscription`, and plan/entitlement
 views on the Account page. Role and UserType never grant PRO.
-Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 adds Student-first routing, a Student progress/history dashboard and owned-project workflow shortcuts over that same overview and shared engines. `UserType` remains classification only; role, server entitlement, ownership and quota remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP, not a browser or full DAST crawler.
+Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 added Student-first routing and progress/history over the shared overview. Pump 19 adds Security Professional-first routing and a bounded assessment dashboard over that same overview and shared engines, including persisted DAST observation and SCA assessment metadata. `UserType` remains classification only; role, server entitlement, ownership and quota remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP, not a browser or full DAST crawler.
 
 ## Layout
 
@@ -83,12 +83,13 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/PAYMENTS.md` — Pump 15 manual payment request, audit/state lifecycle, platform reviewer allowlist, consistency saga and gateway-unavailable boundary
 - `docs/DEVELOPER.md` — Pump 17 Developer registration, account-scoped dashboard/history, shared project workflow, limits and verification
 - `docs/STUDENT.md` — Pump 18 Student capability gap matrix, shared workflow and verified limits
+- `docs/SECURITY_PROFESSIONAL.md` — Pump 19 Professional dashboard, assistant scope, FREE/PRO workflow and verified limits
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 18, cumulative)
+## Scope (Pump 19, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -223,11 +224,11 @@ approval workflow (`plan:manage` is granted to no plan), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-external generative AI provider, durable assistant chat history, Security Professional, Pentester, partner/referral, or other
-user-type-specific workflows, UserType-based authorization or entitlements,
+external generative AI provider, durable assistant chat history, Pentester, partner/referral, or other
+user-type-specific workflows beyond the shared Developer/Student/Security Professional presentations, UserType-based authorization or entitlements,
 multi-scan reports, PDF/signature workflows, and a database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 18 — the cumulative security workflow includes bounded Developer and Student workspace presentations over the same account-owned overview and shared project, scan, finding/remediation, report and assistant features. Student-first routing and progress/history do not grant authority or imply scanner completeness. FREE remains 3 scans/month per account with device anti-abuse; PRO exemptions continue to come from server entitlements. The overview is not an overall security verdict and includes only persisted, account-owned projections. No account enable/disable model, online payment gateway, separate production worker, or generative provider was introduced; SCA vulnerability intelligence remains `NOT_ASSESSED` / `NO_DATA_LOADED` without a configured provider/dataset. See `docs/DEVELOPER.md`, `docs/STUDENT.md` and `docs/BUILD_VERIFICATION.md` for verified scope and limitations.
+Pump 19 — the cumulative security workflow includes bounded Developer, Student, and Security Professional workspace presentations over the same account-owned overview and shared project, scan, finding/remediation, report and assistant features. UserType-first routing and progress/assessment history do not grant authority or imply scanner completeness. FREE remains 3 scans/month per account with device anti-abuse; PRO exemptions continue to come from server entitlements. The overview is not an overall security verdict and includes only persisted, account-owned projections. No account enable/disable model, online payment gateway, separate production worker, or generative provider was introduced; SCA vulnerability intelligence remains `NOT_ASSESSED` / `NO_DATA_LOADED` without a configured provider/dataset. See `docs/DEVELOPER.md`, `docs/STUDENT.md`, `docs/SECURITY_PROFESSIONAL.md` and `docs/BUILD_VERIFICATION.md` for verified scope and limitations.

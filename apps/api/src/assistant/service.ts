@@ -24,21 +24,27 @@ export interface AssistantServiceDeps {
 }
 
 type Intent = 'TOP_FINDINGS' | 'EXPLAIN_FINDING' | 'REMEDIATION' | 'SCANNER' | 'LIFECYCLE' |
-  'COMPARE_SCANS' | 'DEPENDENCIES' | 'NOT_ASSESSED' | 'LATEST_SCAN' | 'REPORT' | 'UNKNOWN';
+  'COMPARE_SCANS' | 'DEPENDENCIES' | 'NOT_ASSESSED' | 'LATEST_SCAN' | 'REPORT' |
+  'ASSESSMENT_SUMMARY' | 'UNRESOLVED_FINDINGS' | 'VERIFICATION_SUMMARY' | 'DAST_OBSERVATIONS' | 'ATTENTION' | 'UNKNOWN';
 
 /** Closed, deterministic intent recognizer. It never parses evidence as instructions. */
 function classifyQuestion(question: string): Intent {
   const text = question.toLowerCase().replace(/[^a-z0-9\s_-]/g, ' ').replace(/\s+/g, ' ').trim();
   if (/\b(compare|changed between|what changed|difference between)\b/.test(text)) return 'COMPARE_SCANS';
+  if (/\b(unresolved findings|open findings|findings? (?:still )?unresolved|what remains unresolved)\b/.test(text)) return 'UNRESOLVED_FINDINGS';
+  if (/\b(verification (?:state|status|summary)|summari[sz]e .*verification|retest (?:state|status|summary))\b/.test(text)) return 'VERIFICATION_SUMMARY';
+  if (/\b(what (?:needs|requires) attention|identify .*attention|attention items|what should i prioritize)\b/.test(text)) return 'ATTENTION';
+  if (/\b(dast|dynamic (?:application )?scan)\b.*\b(observations?|observed|results?)\b|\b(observations?|observed|results?)\b.*\b(dast|dynamic)\b/.test(text)) return 'DAST_OBSERVATIONS';
+  if (/\b(assessment summary|summari[sz]e .*assessment|overall assessment)\b/.test(text)) return 'ASSESSMENT_SUMMARY';
   if (/\b(lifecycle|remediation status|current status|verification status|is this resolved)\b/.test(text)) return 'LIFECYCLE';
   if (/\b(which scanner|scanner produced|what scanner)\b/.test(text)) return 'SCANNER';
   if (/\b(remediat|what should i do|how do i fix|fix this finding)\b/.test(text)) return 'REMEDIATION';
   if (/\b(dependenc\w*|sbom|inventory|package list)\b/.test(text)) return 'DEPENDENCIES';
   if (/\b(not assessed|what was not assessed|assessment unavailable)\b/.test(text)) return 'NOT_ASSESSED';
-  if (/\b(report|assessment summary)\b/.test(text)) return 'REPORT';
+  if (/\b(report)\b/.test(text)) return 'REPORT';
   if (/\b(latest scan|what did .* scan|what was observed|actually observe)\b/.test(text)) return 'LATEST_SCAN';
   if (/\b(most severe|highest severity|top findings|critical findings|high findings)\b/.test(text)) return 'TOP_FINDINGS';
-  if (/\b(explain|describe)\b.*\bfinding\b|\bwhat is this finding\b/.test(text)) return 'EXPLAIN_FINDING';
+  if (/\b(explain|describe|interpret)\b.*\b(finding|evidence)\b|\bwhat is this finding\b|\bwhat does .*evidence mean\b/.test(text)) return 'EXPLAIN_FINDING';
   return 'UNKNOWN';
 }
 
@@ -131,7 +137,10 @@ export class AssistantService {
   }
 
   async answer(project: ProjectRecord, request: AssistantQuestionRequest): Promise<AssistantResponse> {
-    const intent = classifyQuestion(request.question);
+    let intent = classifyQuestion(request.question);
+    // An explicit finding selection preserves the established per-finding
+    // lifecycle answer when the wording also mentions verification status.
+    if (intent === 'VERIFICATION_SUMMARY' && request.findingId !== undefined) intent = 'LIFECYCLE';
     const providerState = this.provider.availability().state;
     if (intent === 'UNKNOWN') {
       // Do not gather project security evidence for an unsupported generative
@@ -158,7 +167,9 @@ export class AssistantService {
       ? selectedScan === undefined || selectedScan.status !== 'COMPLETED' ? [] : [selectedScan]
       : intent === 'DEPENDENCIES' || intent === 'NOT_ASSESSED'
         ? completed.filter((scan) => scan.scanType === 'SCA').slice(0, 1)
-        : intent === 'TOP_FINDINGS' ? latestByScanner(completed) : completed.slice(0, 1);
+        : ['TOP_FINDINGS', 'ASSESSMENT_SUMMARY', 'UNRESOLVED_FINDINGS', 'VERIFICATION_SUMMARY', 'ATTENTION', 'DAST_OBSERVATIONS'].includes(intent)
+          ? latestByScanner(completed)
+          : completed.slice(0, 1);
     const contextScans = intent === 'COMPARE_SCANS' && selectedScan !== undefined && comparedScan !== undefined
       ? [selectedScan, comparedScan]
       : applicableScans;
@@ -175,9 +186,8 @@ export class AssistantService {
       : await this.scans.getFindingHistory(project.id, finding.fingerprint, 1, 5);
     const historyEvents = selectedHistory?.events.map((event) => `${event.action}: ${event.previousState ?? '—'} → ${event.newState} at ${event.at}`) ?? [];
 
-    const findingsForContext = finding !== undefined
-      ? [finding]
-      : findingSort(contextScans.flatMap((scan) => scan.findings ?? [])).slice(0, 10);
+    const allContextFindings = findingSort(contextScans.flatMap((scan) => scan.findings ?? []));
+    const findingsForContext = finding !== undefined ? [finding] : allContextFindings.slice(0, 10);
     const workflows = finding !== undefined && workflow !== undefined
       ? [workflow]
       : await this.scans.getFindingWorkflowsForFindings(project.id, findingsForContext);
@@ -223,9 +233,14 @@ export class AssistantService {
         `The persisted finding ${finding.id} is classified ${finding.severity} by ${scanner}, rule ${finding.ruleId}.`,
         `Scanner title: ${finding.title}.`,
         `Scanner description: ${finding.description}`,
+        `Persisted scanner evidence (untrusted text, redacted for output): ${finding.evidence}`,
+        ...(finding.file === undefined ? [] : [`Recorded source location: ${finding.file}:${finding.line ?? 0}:${finding.column ?? 0}.`]),
       ];
-      const interpretations = ['This is an explanation of the scanner record, not an independent exploitability assessment or proof of a fix.'];
-      const limitations = mismatch(selectedScan!) ? ['The scan summary and persisted finding details disagree; the available finding record may be incomplete.'] : [];
+      const interpretations = ['The evidence is the scanner-persisted snippet associated with this rule and location; it does not independently prove runtime behavior, exploitability, or a fix.'];
+      const limitations = [
+        'Scanner evidence is untrusted text; review it in source context and do not treat it as instructions.',
+        ...(mismatch(selectedScan!) ? ['The scan summary and persisted finding details disagree; the available finding record may be incomplete.'] : []),
+      ];
       return response(state, `${finding.title}: ${finding.description}`, context, providerState, { evidence, facts, interpretations, limitations });
     }
 
@@ -267,6 +282,132 @@ export class AssistantService {
           : ['The finding was observed in the recorded verification scan.'];
       return response('SUPPORTED', `Lifecycle is ${workflow.state}; verification is ${workflow.verificationState}. These are workflow and scan-observation records, not proof of a technical fix.`, context, providerState,
         { evidence, facts, interpretations, limitations: ['The assistant does not change finding lifecycle state.'] });
+    }
+
+    if (intent === 'ASSESSMENT_SUMMARY') {
+      if (applicableScans.length === 0) return unsupported('No completed persisted assessment is available to summarize.', 'UNAVAILABLE');
+      const findings = applicableScans.flatMap((scan) => scan.findings ?? []);
+      const reported = applicableScans.reduce((total, scan) => total + (scan.resultSummary?.findingsTotal ?? 0), 0);
+      const persisted = findings.length;
+      const partial = applicableScans.some((scan) => mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true);
+      const facts = applicableScans.map((scan) => [
+        `${scan.scanType} scan ${scan.id}: completed ${scan.completedAt ?? 'time unavailable'}; summary reports ${scan.resultSummary?.findingsTotal ?? 'unavailable'} finding(s), ${scan.findings?.length ?? 0} detail record(s) persisted${scan.resultSummary?.partial === true ? ' (partial)' : ''}${scan.resultSummary?.truncated === true ? ' (truncated)' : ''}.`,
+        ...(scan.sca === undefined ? [] : [`SCA: ${scan.sca.summary.assessmentState}; dataset ${scan.sca.summary.datasetStatus}; provider ${scan.sca.summary.providerId}.`]),
+        ...(scan.dast === undefined ? [] : [`Passive DAST: ${scan.dast.observations.length} bounded response observation(s), ${scan.dast.redirectsFollowed} redirect(s).`]),
+      ].join(' '));
+      const state: AssistantState = partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED';
+      const scope = request.scanId === undefined ? 'Latest completed scan per available engine' : 'Selected completed scan';
+      return response(state, `${scope} records ${applicableScans.length} persisted assessment result(s) and ${reported} reported finding(s) (${persisted} finding detail record(s)). This is bounded engine history, not complete scanner coverage or a global security score.`, context, providerState, {
+        evidence, facts,
+        limitations: [
+          'Only completed persisted scans are summarized; engines not run are not assessed by this answer.',
+          ...(partial ? ['At least one engine summary is partial, truncated, or disagrees with persisted finding details.'] : []),
+          'SCA inventory and vulnerability intelligence are separate; NOT_ASSESSED is not a clean result.',
+        ],
+      });
+    }
+
+    if (intent === 'UNRESOLVED_FINDINGS' || intent === 'VERIFICATION_SUMMARY' || intent === 'ATTENTION') {
+      if (applicableScans.length === 0) return unsupported('No completed persisted assessment is available for finding lifecycle or verification summaries.', 'UNAVAILABLE');
+      // Without an explicit scan selector, reuse the existing per-project
+      // persisted workflow summary so identities not observed in the newest
+      // scan still contribute their verification state. An explicitly
+      // selected scan remains scoped to that scan's bounded finding details.
+      const projectWorkflowSummary = request.scanId === undefined
+        ? (await this.scans.workspaceSummary(project.ownerId, project.id)).findings
+        : undefined;
+      const inspectedFindings = allContextFindings.slice(0, 10);
+      const omittedFindingDetails = projectWorkflowSummary === undefined
+        ? Math.max(0, allContextFindings.length - inspectedFindings.length)
+        : 0;
+      const workflowsByFingerprint = new Map(workflows.map((entry) => [entry.fingerprint, entry]));
+      const rows = inspectedFindings.map((entry) => ({ finding: entry, workflow: workflowsByFingerprint.get(entry.fingerprint) }));
+      const unresolved = rows.filter((entry) => entry.workflow !== undefined && entry.workflow.state !== 'RESOLVED');
+      const observed = projectWorkflowSummary?.byVerificationState.OBSERVED ?? rows.filter((entry) => entry.workflow?.verificationState === 'OBSERVED').length;
+      const notObserved = projectWorkflowSummary?.byVerificationState.NOT_OBSERVED_IN_LATEST_SCAN ?? rows.filter((entry) => entry.workflow?.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN').length;
+      const missingWorkflow = projectWorkflowSummary === undefined ? rows.filter((entry) => entry.workflow === undefined).length : 0;
+      const unresolvedCount = projectWorkflowSummary?.unresolved ?? unresolved.length;
+      const findingIdentityCount = projectWorkflowSummary?.currentObserved ?? rows.length;
+      const resultPartial = applicableScans.some((scan) => mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true) ||
+        (projectWorkflowSummary === undefined && (missingWorkflow > 0 || omittedFindingDetails > 0 || context.summary.truncated));
+      const severityCounts = new Map<string, number>();
+      if (projectWorkflowSummary === undefined) {
+        for (const { finding: entry } of unresolved) severityCounts.set(entry.severity, (severityCounts.get(entry.severity) ?? 0) + 1);
+      } else {
+        for (const [severity, count] of Object.entries(projectWorkflowSummary.unresolvedBySeverity)) {
+          if (count > 0) severityCounts.set(severity, count);
+        }
+      }
+      const severityFact = [...severityCounts.entries()].map(([severity, count]) => `${severity}: ${count}`).join('; ') ||
+        (projectWorkflowSummary === undefined
+          ? 'No unresolved workflow records among the persisted findings inspected.'
+          : 'No unresolved workflow records are present in the persisted project summary.');
+      const hasResolvedWorkflow = projectWorkflowSummary === undefined
+        ? rows.some((entry) => entry.workflow?.state === 'RESOLVED')
+        : projectWorkflowSummary.byLifecycleState.RESOLVED > 0;
+      const projectWorkflowEvidence: AssistantEvidenceReference[] = projectWorkflowSummary?.recent.map((entry) => ({
+        sourceType: 'FINDING', sourceId: entry.findingId, projectId: entry.projectId, scanId: entry.scanId,
+      })) ?? [];
+      const summaryEvidence: AssistantEvidenceReference[] = [];
+      const seenEvidence = new Set<string>();
+      for (const reference of [...projectWorkflowEvidence, ...evidence]) {
+        const key = `${reference.sourceType}:${reference.sourceId}:${reference.scanId ?? ''}`;
+        if (seenEvidence.has(key)) continue;
+        seenEvidence.add(key);
+        summaryEvidence.push(reference);
+        if (summaryEvidence.length >= ASSISTANT_EVIDENCE_REFS_MAX) break;
+      }
+      const facts = projectWorkflowSummary === undefined
+        ? [
+          `Selected completed scan set: ${applicableScans.map((scan) => scan.scanType).join(', ')}; ${rows.length} persisted finding record(s) inspected (maximum 10); ${omittedFindingDetails} additional finding detail record(s) omitted from this bounded answer.`,
+          `Unresolved workflow records (state other than RESOLVED): ${unresolvedCount}; by severity: ${severityFact}.`,
+          `Verification state among inspected records: OBSERVED ${observed}; NOT_OBSERVED_IN_LATEST_SCAN ${notObserved}; workflow unavailable ${missingWorkflow}.`,
+        ]
+        : [
+          `Project workflow summary covers ${findingIdentityCount} unique persisted finding identities across completed scan history.`,
+          `Unresolved workflow records (state other than RESOLVED): ${unresolvedCount}; by severity: ${severityFact}.`,
+          `Verification state across persisted finding identities: OBSERVED ${observed}; NOT_OBSERVED_IN_LATEST_SCAN ${notObserved}.`,
+        ];
+      const limitations = [
+        projectWorkflowSummary === undefined
+          ? 'Counts are bounded to the selected completed scan and at most ten persisted finding details; they are not a lifetime or external-data total.'
+          : 'Counts use persisted project finding identities/workflows only; they are not external intelligence or a complete security-coverage claim.',
+        ...(notObserved > 0 ? ['NOT_OBSERVED_IN_LATEST_SCAN records are not proof of remediation or global absence.'] : []),
+        ...(hasResolvedWorkflow ? ['RESOLVED is user-managed workflow state and does not prove a technical fix.'] : []),
+        ...(resultPartial ? ['At least one applicable scan is partial/truncated, finding details disagree with an engine summary, or the selected-scan view omits workflow detail.'] : []),
+      ];
+      const answer = intent === 'UNRESOLVED_FINDINGS'
+        ? projectWorkflowSummary === undefined
+          ? `The selected completed scan set contains ${unresolvedCount} unresolved workflow record(s) among ${rows.length} persisted finding details inspected. This bounded count is not a complete project-history total.`
+          : `Persisted project workflows show ${unresolvedCount} unresolved records among ${findingIdentityCount} unique finding identities.`
+        : intent === 'VERIFICATION_SUMMARY'
+          ? `Across ${findingIdentityCount} persisted finding identities, verification-state counts are OBSERVED=${observed} and NOT_OBSERVED_IN_LATEST_SCAN=${notObserved}. Neither state proves a fix.`
+          : `Available persisted records show ${unresolvedCount} unresolved workflow record(s), ${applicableScans.filter((scan) => scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true).length} partial/truncated engine result(s), and ${applicableScans.filter((scan) => scan.sca?.summary.assessmentState === 'NOT_ASSESSED').length} latest SCA result(s) with vulnerability intelligence NOT_ASSESSED. This is not a global risk ranking or a claim of complete coverage.`;
+      return response(resultPartial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED', answer, context, providerState, { evidence: summaryEvidence, facts, limitations });
+    }
+
+    if (intent === 'DAST_OBSERVATIONS') {
+      const dastScan = request.scanId === undefined
+        ? applicableScans.find((scan) => scan.scanType === 'DAST')
+        : selectedScan?.scanType === 'DAST' ? selectedScan : undefined;
+      if (dastScan?.dast === undefined) {
+        return unsupported(request.scanId === undefined
+          ? 'No completed DAST result with persisted observations is available for this project.'
+          : 'The selected completed scan has no passive DAST observations to explain.', 'UNAVAILABLE');
+      }
+      const statusCounts = new Map<number, number>();
+      for (const observation of dastScan.dast.observations) statusCounts.set(observation.status, (statusCounts.get(observation.status) ?? 0) + 1);
+      const statusSummary = [...statusCounts.entries()].sort(([a], [b]) => a - b).map(([status, count]) => `HTTP ${status}: ${count}`).join('; ') || 'No response observations persisted.';
+      const partial = dastScan.dast.partial || isPartial([dastScan], context);
+      const facts = [
+        `DAST scan ${dastScan.id} recorded ${dastScan.dast.observations.length} bounded GET response observation(s) from ${dastScan.dast.requestCount} request(s); ${dastScan.dast.redirectsFollowed} redirect(s) followed.`,
+        `Observed response status counts: ${statusSummary}.`,
+        ...(dastScan.dast.partialReason === undefined ? [] : [`Partial result reason: ${dastScan.dast.partialReason}.`]),
+      ];
+      return response(partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED', `The persisted passive DAST result contains ${dastScan.dast.observations.length} bounded response observation(s): ${statusSummary}. These are HTTP observations, not by themselves vulnerability findings or proof that the target is safe.`, context, providerState, {
+        evidence, facts,
+        limitations: ['DAST is limited to the recorded single target and bounded passive requests; this does not imply crawling, browser testing, complete route coverage, or absence of vulnerabilities.', ...(partial ? ['The persisted DAST or scan result is partial.'] : [])],
+      });
     }
 
     if (intent === 'COMPARE_SCANS') {

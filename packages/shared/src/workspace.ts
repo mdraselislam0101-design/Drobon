@@ -2,6 +2,7 @@ import { FINDING_LIFECYCLE_STATES, type FindingLifecycleState } from './findings
 import { isRecord } from './guards.js';
 import { REPORT_ID_PATTERN } from './reports.js';
 import { PROJECT_ID_PATTERN, isProjectStatus, type ProjectStatus } from './projects.js';
+import { isScaAssessmentState, isScaDatasetStatus, type ScaAssessmentState, type ScaDatasetStatus } from './sca.js';
 import {
   FINDING_ID_PATTERN,
   FINDING_SEVERITIES,
@@ -47,6 +48,11 @@ export interface WorkspaceScanCard {
   /** Null when the engine did not publish partial-coverage metadata. */
   partial: boolean | null;
   reportAvailable: boolean;
+  /** Bounded passive DAST response count; null when not a DAST result. */
+  dastObservationsCount: number | null;
+  /** Explicit SCA intelligence state; null when not an SCA result. */
+  scaAssessmentState: ScaAssessmentState | null;
+  scaDatasetStatus: ScaDatasetStatus | null;
 }
 
 export interface WorkspaceScansSummary {
@@ -134,14 +140,20 @@ function isProjectCard(value: unknown): value is WorkspaceProjectCard {
 function isScanCard(value: unknown): value is WorkspaceScanCard {
   return isRecord(value) && exactKeys(value, [
     'scanId', 'projectId', 'scanType', 'status', 'createdAt', 'completedAt',
-    'findingsTotal', 'partial', 'reportAvailable',
+    'findingsTotal', 'partial', 'reportAvailable', 'dastObservationsCount',
+    'scaAssessmentState', 'scaDatasetStatus',
   ]) && typeof value['scanId'] === 'string' && SCAN_ID_PATTERN.test(value['scanId']) &&
     typeof value['projectId'] === 'string' && PROJECT_ID_PATTERN.test(value['projectId']) &&
     isScanType(value['scanType']) && isScanStatus(value['status']) && isTimestamp(value['createdAt']) &&
     (value['completedAt'] === null || isTimestamp(value['completedAt'])) &&
     (value['findingsTotal'] === null || isCount(value['findingsTotal'])) &&
     (value['partial'] === null || typeof value['partial'] === 'boolean') &&
-    typeof value['reportAvailable'] === 'boolean';
+    typeof value['reportAvailable'] === 'boolean' &&
+    (value['dastObservationsCount'] === null || isCount(value['dastObservationsCount'])) &&
+    (value['scanType'] === 'DAST' && value['status'] === 'COMPLETED' ? value['dastObservationsCount'] !== null : value['dastObservationsCount'] === null) &&
+    (value['scaAssessmentState'] === null || isScaAssessmentState(value['scaAssessmentState'])) &&
+    (value['scaDatasetStatus'] === null || isScaDatasetStatus(value['scaDatasetStatus'])) &&
+    (value['scanType'] === 'SCA' && value['status'] === 'COMPLETED' ? value['scaAssessmentState'] !== null && value['scaDatasetStatus'] !== null : value['scaAssessmentState'] === null && value['scaDatasetStatus'] === null);
 }
 
 function isFindingCard(value: unknown): value is WorkspaceFindingCard {

@@ -57,7 +57,9 @@ export function RegisterPage(): React.JSX.Element {
         ? '/dashboard'
         : registered.userType === 'STUDENT'
           ? '/student/dashboard'
-          : '/account';
+          : registered.userType === 'SECURITY_PROFESSIONAL'
+            ? '/security-professional/dashboard'
+            : '/account';
       navigate(readSafePath(location.state) ?? landing, { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {

@@ -83,6 +83,20 @@ describe('login page', () => {
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
+  test('Security Professional login lands on the professional dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'SECURITY_PROFESSIONAL' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'professional@example.test');
+    await user.type(screen.getByLabelText('Password'), 'professional-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
   test('server 401 is shown verbatim without leaking which factor failed', async () => {
     const user = userEvent.setup();
     const client = stubClient({
@@ -221,6 +235,25 @@ describe('register page', () => {
     await user.click(screen.getByRole('button', { name: 'Create account' }));
     expect(await screen.findByRole('heading', { name: 'Student security dashboard' })).toBeInTheDocument();
     expect(client.postRegister).toHaveBeenCalledWith('student@example.test', 'student-password', 'STUDENT');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Security Professional registration selects the classification and opens its overview', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'SECURITY_PROFESSIONAL' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'professional@example.test');
+    await user.type(screen.getByLabelText('Password'), 'professional-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'SECURITY_PROFESSIONAL');
+    expect(screen.getByText(/profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('professional@example.test', 'professional-password', 'SECURITY_PROFESSIONAL');
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 

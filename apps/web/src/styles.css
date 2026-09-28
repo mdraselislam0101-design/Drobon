@@ -335,7 +335,7 @@ a:focus-visible {
   margin: 0;
 }
 
-.student-workflow-nav {
+.workspace-workflow-nav {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -345,7 +345,7 @@ a:focus-visible {
   border-radius: var(--radius);
 }
 
-.student-workflow-nav a {
+.workspace-workflow-nav a {
   display: inline-block;
   padding: 0.35rem 0.6rem;
   border-radius: 6px;

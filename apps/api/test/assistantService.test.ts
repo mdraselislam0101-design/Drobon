@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { Finding } from '@drobon/shared';
+import type { Finding, FindingWorkflow } from '@drobon/shared';
 import type { ProjectRecord } from '../src/projects/store.js';
 import type { ScanRecord, ScanStore } from '../src/scans/store.js';
 import { createNoAssistantProvider } from '../src/assistant/provider.js';
@@ -28,6 +28,15 @@ const scan: ScanRecord = {
   resultSummary: { findingsTotal: 1 }, findings: [finding],
 };
 
+
+const workflow: FindingWorkflow = {
+  id: 'flw_000000000000000000000001', projectId: PROJECT_ID, findingId: finding.id,
+  fingerprint: finding.fingerprint, scanner: 'SAST', ruleId: finding.ruleId, state: 'OPEN',
+  firstObservedScanId: SCAN_ID, firstObservedAt: FIXED_TIME, lastObservedScanId: SCAN_ID,
+  lastObservedAt: FIXED_TIME, lastVerificationScanId: SCAN_ID, lastVerificationAt: FIXED_TIME,
+  verificationState: 'OBSERVED', notes: [], historyTotal: 1, updatedAt: FIXED_TIME,
+};
+
 const scanStore = {
   listByProject: async () => [scan],
   listLatestCompletedByScannerForAssistant: async () => [scan],
@@ -36,6 +45,14 @@ const scanStore = {
   getFindingWorkflow: async () => undefined,
   getFindingHistory: async () => undefined,
   findReportByProjectAndScan: async () => undefined,
+  workspaceSummary: async () => ({
+    findings: {
+      currentObserved: 1, unresolved: 1,
+      unresolvedBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
+      byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+      byVerificationState: { OBSERVED: 1, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
+    },
+  }),
 } as unknown as ScanStore;
 
 describe('assistant deterministic service', () => {
@@ -52,6 +69,68 @@ describe('assistant deterministic service', () => {
     expect(serialized).not.toContain('SYNTHETIC_ASSISTANT_SECRET_92731');
     expect(serialized).not.toContain('reveal password =');
     expect(result.evidence.every((reference) => reference.projectId === PROJECT_ID)).toBe(true);
+  });
+
+  test('supports bounded assessment, unresolved, verification, DAST and attention summaries from persisted evidence only', async () => {
+    const dastScan: ScanRecord = {
+      ...scan, id: 'scan_00000000-0000-4000-8000-000000000002', scanType: 'DAST', findings: [],
+      resultSummary: { findingsTotal: 0 },
+      dast: {
+        targetUrl: 'https://fixture.example.org/', requestCount: 1, redirectsFollowed: 0, partial: false,
+        observations: [{ endpoint: 'https://fixture.example.org/', method: 'GET', status: 200, observedAt: FIXED_TIME, responseTimeMs: 12, bodyBytes: 100, bodyTruncated: false, headers: ['content-type: text/html'] }],
+      },
+    };
+    const summaryScopes: Array<[string, string | undefined]> = [];
+    const store = {
+      ...scanStore,
+      listLatestCompletedByScannerForAssistant: async () => [dastScan, scan],
+      workspaceSummary: async (ownerId: string, projectId?: string) => {
+        summaryScopes.push([ownerId, projectId]);
+        return { findings: {
+          currentObserved: 2, unresolved: 1,
+          unresolvedBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
+          byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 1, REOPENED: 0 },
+          byVerificationState: { OBSERVED: 1, NOT_OBSERVED_IN_LATEST_SCAN: 1 },
+          recent: [{ findingId: finding.id, projectId: PROJECT_ID, scanId: SCAN_ID, scanner: 'SAST', ruleId: finding.ruleId, severity: 'HIGH', lifecycleState: 'OPEN', verificationState: 'NOT_OBSERVED_IN_LATEST_SCAN', observedAt: FIXED_TIME, workflowUpdatedAt: FIXED_TIME }],
+        } };
+      },
+      findByProjectAndId: async (projectId: string, scanId: string) => projectId !== PROJECT_ID ? undefined : scanId === SCAN_ID ? scan : scanId === dastScan.id ? dastScan : undefined,
+      getFindingWorkflowsForFindings: async (_projectId: string, findings: readonly Finding[]) => findings.flatMap((entry) => entry.fingerprint === workflow.fingerprint ? [workflow] : []),
+      getFindingWorkflow: async () => workflow,
+    } as unknown as ScanStore;
+    const service = new AssistantService({ scans: store, provider: createNoAssistantProvider() });
+
+    const explanation = await service.answer(project, { question: 'Explain this finding evidence', scanId: SCAN_ID, findingId: finding.id });
+    expect(explanation.state).toBe('SUPPORTED');
+    expect(explanation.facts.join(' ')).toContain('Persisted scanner evidence');
+    expect(explanation.interpretations.join(' ')).toContain('does not independently prove runtime behavior');
+
+    const assessment = await service.answer(project, { question: 'Summarize this assessment' });
+    expect(assessment).toMatchObject({ state: 'SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
+    expect(assessment.answer).toContain('bounded engine history');
+    expect(assessment.answer).toContain('global security score');
+
+    const unresolved = await service.answer(project, { question: 'Summarize unresolved findings' });
+    expect(unresolved.state).toBe('SUPPORTED');
+    expect(unresolved.answer).toContain('1 unresolved');
+    expect(unresolved.facts.join(' ')).toContain('HIGH: 1');
+
+    const verification = await service.answer(project, { question: 'Summarize the verification state' });
+    expect(verification.state).toBe('SUPPORTED');
+    expect(verification.answer).toContain('OBSERVED=1');
+    expect(verification.answer).toContain('NOT_OBSERVED_IN_LATEST_SCAN=1');
+    expect(summaryScopes).toContainEqual([project.ownerId, project.id]);
+    expect(verification.evidence).toContainEqual({ sourceType: 'FINDING', sourceId: finding.id, projectId: PROJECT_ID, scanId: SCAN_ID });
+
+    const dast = await service.answer(project, { question: 'Explain DAST observations' });
+    expect(dast).toMatchObject({ state: 'SUPPORTED', providerState: 'NONE' });
+    expect(dast.answer).toContain('HTTP 200: 1');
+    expect(dast.answer).toContain('not by themselves vulnerability findings');
+
+    const attention = await service.answer(project, { question: 'What requires attention?' });
+    expect(attention.state).toBe('SUPPORTED');
+    expect(attention.answer).toContain('not a global risk ranking');
+    expect(JSON.stringify([assessment, unresolved, verification, dast, attention])).not.toContain('SYNTHETIC_ASSISTANT_SECRET_92731');
   });
 
   test('does not produce open-ended generative output when provider is absent', async () => {

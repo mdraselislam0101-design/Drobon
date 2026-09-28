@@ -3,8 +3,10 @@
 Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
 plans/entitlements, quotas, projects, scans, reports, assistant, and manual
 payments), Pump 16 (restricted platform operations), Pump 17 (Developer
-workspace completion), and Pump 18 (Student presentation over the shared
-overview): an npm-workspaces monorepo with three runtime components
+workspace completion), Pump 18 (Student presentation over the shared
+overview), and Pump 19 (Security Professional presentation and bounded
+assistant summaries over the shared records):
+an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -88,8 +90,8 @@ browser bundle and the servers can all consume it:
   ordering comparator (updatedAt DESC, then id ASC) and payload guards.
 - `workspace.ts` — Pump 17 fixed-cap `WorkspaceSecurityOverview` contracts
   and strict guards for a self-only, evidence-free summary of owned project,
-  scan, finding-workflow and report metadata. Counts do not represent an
-  overall security verdict.
+  scan, finding-workflow and report metadata, including bounded DAST/SCA
+  summary states. Counts do not represent an overall security verdict.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -162,7 +164,9 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   Pump 12: integrity-checked per-scan reports; Pump 13: workflow
   observation updates atomically with completed scans and report snapshots
   refresh when their content changes), boot recovery
-  `failAllRunning`); `engines.ts` is the scanner-engine
+  `failAllRunning`); its bounded `workspaceSummary` supports both the account
+  overview and a server-filtered per-project finding/workflow summary for
+  deterministic Professional assistant answers. `engines.ts` is the scanner-engine
   boundary (server-side registry — Pumps 8–11 register the REAL SAST,
   SCA, Secrets and limited passive DAST engines; DAST's SSRF-safe target
   policy, pinned transport and passive rules live under `scans/dast/`);
@@ -229,7 +233,10 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   transitions. The Pump 14 assistant is deterministic/read-only with no
   active provider, provider calls, chat persistence, tools or quota usage;
   its bounded provenance context reuses the same project/scan/finding/report
-  stores (see `docs/ASSISTANT.md`). Payment records/audit events are held in
+  stores (see `docs/ASSISTANT.md`). Pump 19 adds assessment/DAST summaries
+  from latest completed engine records and unresolved/verification/attention
+  aggregates from the same project-filtered workflow summary; no engine or
+  store is duplicated. Payment records/audit events are held in
   one atomic JSON document; approval uses a recoverable saga over the existing
   payment and account JSON stores (see `docs/PAYMENTS.md`). Pump 16 adds
   `/api/v1/admin/dashboard`, bounded `/accounts`, `/scans`, `/findings`, and

@@ -14,6 +14,15 @@ describe('routing', () => {
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
+  test('an existing Security Professional session visiting login lands on the professional dashboard', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'SECURITY_PROFESSIONAL' as const } })),
+    });
+    await renderAt('/login', client);
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
   test('home renders the hero and foundation grid', async () => {
     await renderAt('/');
     expect(screen.getByRole('heading', { name: 'Drobon Aegis AI' })).toBeInTheDocument();
@@ -23,6 +32,8 @@ describe('routing', () => {
     );
     expect(screen.getByText('Projects & source')).toBeInTheDocument();
     expect(screen.getByText(/SCA\/SBOM inventory/)).toBeInTheDocument();
+    expect(screen.getByText('Professional assessments')).toBeInTheDocument();
+    expect(screen.getByText(/developers, students and security professionals/)).toBeInTheDocument();
   });
 
   test('unknown routes render the 404 page', async () => {

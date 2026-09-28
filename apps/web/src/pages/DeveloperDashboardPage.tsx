@@ -32,6 +32,7 @@ function countEntries<T extends Record<string, number>>(counts: T): Array<[keyof
 export function DeveloperDashboardPage(): React.JSX.Element {
   const { state: authState } = useAuth();
   const isStudent = authState.status === 'ready' && authState.user.userType === 'STUDENT';
+  const isProfessional = authState.status === 'ready' && authState.user.userType === 'SECURITY_PROFESSIONAL';
   const client = useApiClient();
   const [dashboard, setDashboard] = useState<DashboardState>({ status: 'loading' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -67,15 +68,18 @@ export function DeveloperDashboardPage(): React.JSX.Element {
   const activeProject = dashboard.status === 'ready'
     ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE')
     : undefined;
+  const classificationLabel = isStudent ? 'Student' : isProfessional ? 'Security Professional' : 'Developer';
 
   return (
     <section className="panel developer-dashboard" aria-labelledby="workspace-dashboard-title">
-      <p className="eyebrow">{isStudent ? 'Student workspace' : 'Developer workspace'}</p>
-      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : 'Security overview'}</h1>
+      <p className="eyebrow">{classificationLabel} workspace</p>
+      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : isProfessional ? 'Security Professional dashboard' : 'Security overview'}</h1>
       <p className="muted">
         {isStudent
           ? 'Follow your own projects, scan evidence, finding workflows and reports. This is persisted progress—not a grade, complete-coverage claim, or security score.'
-          : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
+          : isProfessional
+            ? 'Review your own persisted project assessments, recent engine activity, finding lifecycle, verification and reports. Recent lists are bounded; they are not global security scores or complete engine coverage.'
+            : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
       </p>
       {dashboard.status === 'loading' && <LoadingState label="Loading your security overview…" />}
       {dashboard.status === 'error' && (
@@ -108,8 +112,32 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             </article>
           </div>
 
+          {isProfessional && (
+            <nav className="workspace-workflow-nav" aria-label="Security Professional workflow">
+              <Link to="/projects">Assessments &amp; projects</Link>
+              {activeProject === undefined ? (
+                <Link to="/projects">Create a project to begin an assessment</Link>
+              ) : (
+                <>
+                  <Link to={`/projects/${activeProject.id}#source-snapshot`}>Source snapshot</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>SAST</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>SCA / SBOM</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Secrets</Link>
+                  <Link to={`/projects/${activeProject.id}#dast-target`}>Passive DAST</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Findings &amp; evidence</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Remediation &amp; verification</Link>
+                  <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Project reports</Link>
+                </>
+              )}
+              <a href="#assessment-history-summary">Assessment history</a>
+              <a href="#reports-title">Reports</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
+
           {isStudent && (
-            <nav className="student-workflow-nav" aria-label="Student security workflow">
+            <nav className="workspace-workflow-nav" aria-label="Student security workflow">
               <Link to="/projects">My projects</Link>
               {activeProject === undefined ? (
                 <Link to="/projects">Create a project to begin scanning</Link>
@@ -150,15 +178,15 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             )}
           </section>
 
-          <section id="student-progress-summary" className="dashboard-section" aria-labelledby="security-history-title">
+          <section id={isProfessional ? 'assessment-history-summary' : 'student-progress-summary'} className="dashboard-section" aria-labelledby="security-history-title">
             <div className="section-heading-row">
-              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : 'Recent security history'}</h2>
+              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : isProfessional ? 'Assessment history & engine status' : 'Recent security history'}</h2>
               <span className="muted">Updated {dashboard.overview.generatedAt}</span>
             </div>
             {dashboard.overview.scans.recent.length === 0 ? (
               <p className="form-alert" role="status">No scans have been recorded. Submit source to a project and start with a SAST scan.</p>
             ) : (
-              <ul className="projects-list" aria-label="Recent scans">
+              <ul className="projects-list" aria-label={isProfessional ? 'Recent bounded engine activity' : 'Recent scans'}>
                 {dashboard.overview.scans.recent.map((scan) => (
                   <li key={scan.scanId} className="card">
                     <div className="project-card-head">
@@ -171,6 +199,8 @@ export function DeveloperDashboardPage(): React.JSX.Element {
                       {scan.partial === true && <span className="pill">Partial coverage</span>}
                       {scan.status === 'COMPLETED' && <span className="pill">Report {scan.reportAvailable ? 'available' : 'not generated'}</span>}
                     </p>
+                    {scan.dastObservationsCount !== null && <p className="muted">Passive DAST: {scan.dastObservationsCount} bounded response observation{scan.dastObservationsCount === 1 ? '' : 's'}; this does not imply complete target coverage.</p>}
+                    {scan.scaAssessmentState !== null && <p className="muted">SCA vulnerability intelligence: {scan.scaAssessmentState} · dataset: {scan.scaDatasetStatus}. Inventory is not a vulnerability verdict.</p>}
                   </li>
                 ))}
               </ul>
@@ -229,6 +259,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
           </section>
 
           <aside className="form-alert" role="note">
+            {isProfessional && <>Recent engine activity is server-backed and bounded; open a project for its full persisted assessment history. </>}
             SCA inventory and dependency intelligence are shown per scan. When no vulnerability data provider is configured, results remain explicitly NOT_ASSESSED / NO_DATA_LOADED; this overview does not turn that into a zero-vulnerability claim.
           </aside>
         </>
