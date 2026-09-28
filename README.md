@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 20: cumulative security foundation + Pentester workspace**, adding Pentester routing and authorized passive DAST assessment presentation alongside the shared Developer, Student and Security Professional workspaces, reusing existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, and restricted read-only platform operations.
+Cybersecurity application — **Pump 21: cumulative security foundation, four UserType workspaces, and an independent capability audit**. The common Developer, Student, Security Professional and Pentester presentations reuse existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, and restricted read-only platform operations.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -84,6 +84,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/DEVELOPER.md` — Pump 17 Developer registration, account-scoped dashboard/history, shared project workflow, limits and verification
 - `docs/STUDENT.md` — Pump 18 Student capability gap matrix, shared workflow and verified limits
 - `docs/SECURITY_PROFESSIONAL.md` — Pump 19 Professional dashboard, assistant scope, FREE/PRO workflow and verified limits
+- `docs/USER_TYPE_CAPABILITY_AUDIT.md` — Pump 21 independent four-UserType capability matrix, layer-by-layer implementation states, evidence and limitations
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -233,4 +234,4 @@ multi-scan reports, PDF/signature workflows, and a database-backed report store.
 
 ## Status
 
-Pump 20 — the cumulative workflow includes Developer, Student, Security Professional and Pentester workspace presentations over the same account-owned overview and shared project, scan, finding/remediation, report and assistant features. Pentester target indicators reflect saved owner-managed settings only; UserType-first routing and persisted history do not grant authority or imply scanner completeness. FREE remains 3 scans/month per account with device anti-abuse; PRO exemptions continue to come from server entitlements. The overview is not an overall security verdict and includes only persisted, account-owned projections. No account enable/disable model, online payment gateway, separate production worker or generative provider was introduced; SCA vulnerability intelligence remains `NOT_ASSESSED` / `NO_DATA_LOADED` without a configured provider/dataset. See `docs/DEVELOPER.md`, `docs/STUDENT.md`, `docs/SECURITY_PROFESSIONAL.md`, `docs/DAST.md` and `docs/BUILD_VERIFICATION.md` for scope and limitations.
+Pump 21 audit — independently checked the common and profile-specific capabilities of Developer, Student, Security Professional and Pentester across UI, API, server authorization, persistence, security, tests, controlled API journeys and documentation. The audit found the core workflows already shared and covered; no alternate engine/store or UserType-based authority was warranted. It corrected Pentester dashboard wording and a bounded-recent-list shortcut so a saved target is never labeled or routed as independently authorized. Verified permission to assess third-party systems remains external and cannot be inferred from a target setting. See `docs/USER_TYPE_CAPABILITY_AUDIT.md` for the capability matrix and limitations; Pump 21 runtime verification results are recorded in `docs/BUILD_VERIFICATION.md`.

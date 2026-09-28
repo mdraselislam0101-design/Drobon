@@ -30,6 +30,8 @@ The write routes reuse existing authentication, project ownership, validation, a
 
 The server enforces URL and address policy when configuring a target and again immediately before each request. Only HTTP(S), canonical URLs without credentials, query strings, fragments, or custom ports are accepted. Loopback, private, link-local, carrier-grade NAT, documentation, multicast, reserved, unspecified, IPv4-mapped private, local/internal, and metadata destinations are blocked. All DNS answers must be public; the resolver is bounded and mixed public/private answers fail closed. IP literals are evaluated as literals and cannot be replaced by resolver output. The HTTP socket uses a vetted address directly (DNS pinning), while preserving the hostname for HTTP Host and TLS verification. Redirects are resolved and validated independently, must retain the original hostname, and cannot downgrade HTTPS to HTTP. DNS is rechecked before every request to reduce rebinding risk.
 
+The project UI explicitly displays target authorization as `UNVERIFIED`. Drobon verifies project ownership and network destination safety, not engagement letters or third-party legal permission. The owner must configure only targets they are permitted to assess; saving a URL does not change that state or create an authorization claim.
+
 No URL-based system can guarantee network isolation against every routing, proxy, DNS, or future address-registry edge case. Deployments should also apply network egress controls appropriate to their environment. The DAST engine itself never uses ambient proxy variables or follows redirects automatically.
 
 ## Findings and lifecycle integration

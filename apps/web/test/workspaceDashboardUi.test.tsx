@@ -196,24 +196,51 @@ describe('Developer workspace dashboard UX', () => {
     await renderAt('/pentester/dashboard', client);
     expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Pentester dashboard' })).toHaveAttribute('href', '/pentester/dashboard');
-    expect(screen.getByRole('heading', { name: 'Authorized targets' }).parentElement).toHaveTextContent('1 project target configured on the server');
+    expect(screen.getByRole('heading', { name: 'Configured project targets' }).parentElement).toHaveTextContent('1 project target configured on the server');
     expect(screen.getByText(/does not itself verify third-party authorization/)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Projects & authorized targets' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Projects & configured targets' })).toBeInTheDocument();
     expect(screen.getByText(/Server target configuration: configured/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Assessment history & recent activity' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Findings & retest status' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Assessment reports' })).toBeInTheDocument();
     expect(screen.getByText(/Passive DAST: 2 bounded response observations/)).toBeInTheDocument();
     const workflow = screen.getByRole('navigation', { name: 'Pentester assessment workflow' });
-    for (const label of ['Assessments & projects', 'Authorized targets', 'Start or review DAST', 'Observations', 'Findings & evidence', 'Remediation', 'Retest & verification', 'Reports', 'AI Security Assistant', 'Settings']) {
+    for (const label of ['Assessments & projects', 'Target configurations', 'Start or review DAST', 'Observations', 'Findings & evidence', 'Remediation', 'Retest & verification', 'Reports', 'AI Security Assistant', 'Settings']) {
       expect(within(workflow).getByRole('link', { name: label })).toBeInTheDocument();
     }
-    expect(within(workflow).getByRole('link', { name: 'Authorized targets' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#dast-target');
+    expect(within(workflow).getByRole('link', { name: 'Target configurations' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#dast-target');
     expect(within(workflow).getByRole('link', { name: 'Findings & evidence' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#security-scans');
     expect(within(workflow).getByRole('link', { name: 'AI Security Assistant' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#assistant-title');
     expect(screen.queryByRole('link', { name: 'Platform operations' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Payment review' })).toBeNull();
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Pentester target shortcuts fall back to the full project list when the bounded recent slice has no configured target', async () => {
+    const project = PENTESTER_OVERVIEW.overview.projects.recent[0]!;
+    const client = signedIn('PENTESTER', {
+      getSecurityOverview: vi.fn(async () => ({
+        overview: {
+          ...PENTESTER_OVERVIEW.overview,
+          projects: {
+            ...PENTESTER_OVERVIEW.overview.projects,
+            total: 7,
+            active: 7,
+            // The exact target count includes a project outside this six-item recent slice.
+            recent: Array.from({ length: 6 }, (_, index) => ({
+              ...project,
+              id: `prj_00000000-0000-4000-8000-00000000000${index + 1}`,
+              name: `Recent project ${index + 1}`,
+              dastTargetConfigured: false,
+            })),
+          },
+        },
+      })),
+    });
+    await renderAt('/pentester/dashboard', client);
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Target configurations' })).toHaveAttribute('href', '/projects');
+    expect(screen.getByRole('link', { name: 'Review target configurations' })).toHaveAttribute('href', '/projects');
   });
 
   test('Professional classification does not suppress role-based admin navigation', async () => {

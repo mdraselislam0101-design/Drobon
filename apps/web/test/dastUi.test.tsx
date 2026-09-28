@@ -40,6 +40,8 @@ describe('passive DAST project UI', () => {
 
     const typeSelect = await screen.findByTestId('scan-type-select');
     expect(typeSelect.querySelector('option[value="DAST"]')).toBeDisabled();
+    expect(screen.getByTestId('dast-authorization-status')).toHaveTextContent('Target authorization status: UNVERIFIED');
+    expect(screen.getByTestId('dast-authorization-status')).toHaveTextContent('does not independently verify permission to assess');
     await userEvent.type(screen.getByLabelText('Project target URL'), TARGET);
     await userEvent.click(screen.getByRole('button', { name: 'Save target' }));
     await waitFor(() => expect(setDastTarget).toHaveBeenCalledWith(PROJECT_ID, TARGET));

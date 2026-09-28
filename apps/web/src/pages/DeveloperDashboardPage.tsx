@@ -73,8 +73,12 @@ export function DeveloperDashboardPage(): React.JSX.Element {
     ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE' && project.dastTargetConfigured) ??
       dashboard.overview.projects.recent.find((project) => project.dastTargetConfigured)
     : undefined;
-  const targetProject = configuredTargetProject ?? activeProject;
-  const pentesterTargetLink = targetProject === undefined ? '/projects' : `/projects/${targetProject.id}#dast-target`;
+  // The overview includes only a bounded recent-project slice. Never send a
+  // target-settings shortcut to an arbitrary active project when no configured
+  // target is present in that slice; the full project list is the honest route.
+  const pentesterTargetLink = configuredTargetProject === undefined
+    ? '/projects'
+    : `/projects/${configuredTargetProject.id}#dast-target`;
   const pentesterActivityLink = activeProject === undefined ? '/projects' : `/projects/${activeProject.id}#security-scans`;
   const classificationLabel = isStudent ? 'Student' : isProfessional ? 'Security Professional' : isPentester ? 'Pentester' : 'Developer';
 
@@ -115,10 +119,10 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             </article>
             {isPentester && (
               <article className="card">
-                <h2>Authorized targets</h2>
+                <h2>Configured project targets</h2>
                 <p><strong>{dashboard.overview.projects.dastTargetsConfigured}</strong> project target{dashboard.overview.projects.dastTargetsConfigured === 1 ? '' : 's'} configured on the server</p>
                 <p className="muted">This counts owner-configured project settings; it does not itself verify third-party authorization.</p>
-                <Link to={targetProject === undefined ? '/projects' : `/projects/${targetProject.id}#dast-target`}>Review target configurations</Link>
+                <Link to={pentesterTargetLink}>Review target configurations</Link>
               </article>
             )}
             <article className="card">
@@ -157,7 +161,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
           {isPentester && (
             <nav className="workspace-workflow-nav" aria-label="Pentester assessment workflow">
               <Link to="/projects">Assessments &amp; projects</Link>
-              <Link to={pentesterTargetLink}>Authorized targets</Link>
+              <Link to={pentesterTargetLink}>Target configurations</Link>
               <Link to={pentesterActivityLink}>Start or review DAST</Link>
               <Link to={pentesterActivityLink}>Observations</Link>
               <Link to={pentesterActivityLink}>Findings &amp; evidence</Link>
@@ -194,7 +198,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="workspace-projects-title">
             <div className="section-heading-row">
-              <h2 id="workspace-projects-title">{isPentester ? 'Projects & authorized targets' : 'My projects'}</h2>
+              <h2 id="workspace-projects-title">{isPentester ? 'Projects & configured targets' : 'My projects'}</h2>
               <Link to="/projects">All projects</Link>
             </div>
             {dashboard.overview.projects.recent.length === 0 ? (

@@ -453,6 +453,9 @@ function DastTargetSection({
         server rejects local, private, reserved, or unsafe destinations and rechecks DNS at scan time. This is
         a bounded GET-only passive check: no browser, JavaScript execution, login, crawling, fuzzing, or exploit attempts.
       </p>
+      <p className="muted" data-testid="dast-authorization-status">
+        Target authorization status: <strong>UNVERIFIED</strong> — Drobon does not independently verify permission to assess; URL and network-safety checks are not proof of authorization.
+      </p>
       {targetUrl !== undefined && (
         <p data-testid="dast-configured-target">Configured target: <code>{targetUrl}</code></p>
       )}
