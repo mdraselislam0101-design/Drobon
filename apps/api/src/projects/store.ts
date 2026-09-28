@@ -6,6 +6,7 @@ import {
   PROJECT_ID_PATTERN,
   PROJECT_NAME_MAX_LENGTH,
   isProjectStatus,
+  isSafeDastUrl,
   type Project,
   type ProjectStatus,
 } from '@drobon/shared';
@@ -43,6 +44,7 @@ export interface ProjectRecord {
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+  dastTargetUrl?: string;
 }
 
 export interface CreateProjectInput {
@@ -78,6 +80,8 @@ export interface ProjectStore {
    * only bumped when the status actually changes).
    */
   setStatus(id: string, status: ProjectStatus): Promise<ProjectRecord | undefined>;
+  /** Set or clear the project-associated passive DAST target. */
+  setDastTargetUrl(id: string, targetUrl: string | undefined): Promise<ProjectRecord | undefined>;
 }
 
 interface StoreDocument {
@@ -124,6 +128,7 @@ function parseStoredProject(value: unknown): ProjectRecord | undefined {
     (record['description'] !== '' &&
       !isSafeProjectText(record['description'], PROJECT_DESCRIPTION_MAX_LENGTH, true)) ||
     !isProjectStatus(record['status']) ||
+    (record['dastTargetUrl'] !== undefined && !isSafeDastUrl(record['dastTargetUrl'])) ||
     typeof record['createdAt'] !== 'string' ||
     Number.isNaN(Date.parse(record['createdAt'])) ||
     typeof record['updatedAt'] !== 'string' ||
@@ -137,6 +142,7 @@ function parseStoredProject(value: unknown): ProjectRecord | undefined {
     name: record['name'],
     description: record['description'],
     status: record['status'],
+    ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
     createdAt: record['createdAt'],
     updatedAt: record['updatedAt'],
   };
@@ -284,6 +290,22 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
         byId.set(id, updated);
         return toPublic(updated);
       }),
+    setDastTargetUrl: (id, targetUrl) =>
+      runExclusive(() => {
+        const current = byId.get(id);
+        if (current === undefined) return undefined;
+        if (targetUrl !== undefined && !isSafeDastUrl(targetUrl)) {
+          throw new Error('Project DAST target must be a canonical safe URL.');
+        }
+        if (current.dastTargetUrl === targetUrl) return toPublic(current);
+        const updated: ProjectRecord = { ...current, updatedAt: new Date().toISOString() };
+        if (targetUrl === undefined) delete updated.dastTargetUrl;
+        else updated.dastTargetUrl = targetUrl;
+        const next = [...byId.values()].map((record) => (record.id === id ? updated : record));
+        internals.persistWith(next);
+        byId.set(id, updated);
+        return toPublic(updated);
+      }),
   };
 }
 
@@ -314,5 +336,6 @@ export function toProjectResponse(record: ProjectRecord): Project {
     status: record.status,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...(record.dastTargetUrl === undefined ? {} : { dastTargetUrl: record.dastTargetUrl }),
   };
 }

@@ -11,6 +11,9 @@ import {
   isScanResultSummary,
   isScanStatus,
   isScanType,
+  isDastResult,
+  isSafeDastUrl,
+  type DastResult,
   type Finding,
   compareFindings,
   isScaResult,
@@ -18,6 +21,7 @@ import {
   type ScanDetail,
   type ScanFailureCode,
   type ScanResultSummary,
+  type ScanStatus,
   type ScanType,
   type ScaResult,
 } from '@drobon/shared';
@@ -61,7 +65,9 @@ export interface ScanRecord {
   ownerId: string;
   projectId: string;
   scanType: ScanType;
-  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  status: ScanStatus;
+  /** Canonical target URL, only for DAST scans; never contains credentials/query/fragment. */
+  dastTargetUrl?: string;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -81,6 +87,8 @@ export interface ScanRecord {
    * transition. Inventory + manifest results + SBOM + assessment.
    */
   sca?: ScaResult;
+  /** Bounded, redacted HTTP observations for completed DAST scans only. */
+  dast?: DastResult;
 }
 
 /**
@@ -94,6 +102,8 @@ export interface IdempotencyEntry {
   key: string;
   projectId: string;
   scanType: ScanType;
+  /** Included in the request identity for DAST; optional on older records. */
+  targetUrl?: string;
   scanId: string;
   createdAt: string;
 }
@@ -114,6 +124,8 @@ export interface CreateScanInput {
   ownerId: string;
   projectId: string;
   scanType: ScanType;
+  /** Preflight-validated canonical target, required for new DAST scans. */
+  targetUrl?: string;
   /**
    * Optional idempotency key (already format-validated by the route).
    * Scoped to (ownerId, key) inside the store — cross-account key
@@ -132,6 +144,7 @@ export type CreateScanOutcome =
   | { outcome: 'created'; scan: ScanRecord }
   | { outcome: 'replayed'; scan: ScanRecord }
   | { outcome: 'conflict' }
+  | { outcome: 'invalid-target' }
   | { outcome: 'quota-denied'; retryAfterSec: number };
 
 export interface ScanStore {
@@ -167,6 +180,13 @@ export interface ScanStore {
     resultSummary: ScanResultSummary,
     findings?: Finding[],
     sca?: ScaResult,
+    dast?: DastResult,
+  ): Promise<ScanRecord | undefined>;
+  /** RUNNING → TIMED_OUT for bounded DAST request/scan deadlines. */
+  timeoutScan(
+    id: string,
+    failureCode: ScanFailureCode,
+    failureMessage: string,
   ): Promise<ScanRecord | undefined>;
   /**
    * RUNNING → FAILED with a closed-vocabulary failure code and a safe,
@@ -240,6 +260,14 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   ) {
     return undefined;
   }
+  if (record['dastTargetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['dastTargetUrl']))) {
+    return undefined;
+  }
+  if (
+    record['scanType'] === 'DAST' &&
+    (status === 'QUEUED' || status === 'RUNNING' || status === 'COMPLETED') &&
+    record['dastTargetUrl'] === undefined
+  ) return undefined;
   if (record['startedAt'] !== undefined && typeof record['startedAt'] !== 'string') {
     return undefined;
   }
@@ -272,6 +300,16 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     if (!record['findings'].every((finding) => finding.scanId === scanId)) {
       return undefined;
     }
+    if (record['findings'].some((finding) => {
+      if (typeof finding !== 'object' || finding === null) return true;
+      const item = finding as unknown as Record<string, unknown>;
+      const isDastFinding = item['scanner'] === 'DAST';
+      if (isDastFinding !== (record['scanType'] === 'DAST')) return true;
+      return isDastFinding && (
+        item['projectId'] !== record['projectId'] ||
+        item['targetUrl'] !== record['dastTargetUrl']
+      );
+    })) return undefined;
     // The summary must agree with the persisted findings.
     const summary = record['resultSummary'];
     if (
@@ -308,7 +346,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
         if (!hasResult || hasFailureCode || hasFailureMessage) {
           return undefined;
         }
-      } else if (!hasFailureCode || hasResult) {
+      } else if (!hasFailureCode || !hasFailureMessage || hasResult) {
         return undefined;
       }
     }
@@ -330,6 +368,18 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
       return undefined;
     }
   }
+  if (record['dast'] !== undefined) {
+    if (!isDastResult(record['dast']) || status !== 'COMPLETED' || record['scanType'] !== 'DAST') {
+      return undefined;
+    }
+    if (record['dast'].targetUrl !== record['dastTargetUrl']) return undefined;
+  }
+  if (status === 'COMPLETED' && record['scanType'] === 'DAST' && record['dast'] === undefined) {
+    return undefined;
+  }
+  if (status === 'TIMED_OUT' && record['failureCode'] !== 'DAST_REQUEST_TIMEOUT' && record['failureCode'] !== 'DAST_SCAN_TIMEOUT') {
+    return undefined;
+  }
   // Rebuild explicitly from the validated fields (no casts — the
   // optional fields exist exactly when the state machine allows).
   const built: ScanRecord = {
@@ -339,6 +389,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     scanType: record['scanType'],
     status,
     createdAt: record['createdAt'],
+    ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
     updatedAt: record['updatedAt'],
   };
   if (typeof record['startedAt'] === 'string') {
@@ -362,6 +413,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   if (record['sca'] !== undefined && isScaResult(record['sca'])) {
     built.sca = record['sca'];
   }
+  if (record['dast'] !== undefined && isDastResult(record['dast'])) {
+    built.dast = record['dast'];
+  }
   return built;
 }
 
@@ -381,6 +435,7 @@ function parseStoredIdempotencyEntry(
     typeof record['projectId'] !== 'string' ||
     !PROJECT_ID_PATTERN.test(record['projectId']) ||
     !isScanType(record['scanType']) ||
+    (record['targetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['targetUrl']))) ||
     typeof record['scanId'] !== 'string' ||
     !SCAN_ID_PATTERN.test(record['scanId']) ||
     typeof record['createdAt'] !== 'string' ||
@@ -399,6 +454,7 @@ function parseStoredIdempotencyEntry(
     key: record['key'],
     projectId: record['projectId'],
     scanType: record['scanType'],
+    ...(typeof record['targetUrl'] === 'string' ? { targetUrl: record['targetUrl'] } : {}),
     scanId: record['scanId'],
     createdAt: record['createdAt'],
   };
@@ -458,6 +514,10 @@ function loadDocument(path: string): StoreDocument {
       throw new Error(
         `Scan store at ${path} has an invalid idempotency entry at index ${index} — refusing to start.`,
       );
+    }
+    const linkedScan = scans.find((scan) => scan.id === record.scanId);
+    if (linkedScan === undefined || record.targetUrl !== linkedScan.dastTargetUrl) {
+      throw new Error(`Scan store at ${path} has a mismatched DAST idempotency target at index ${index} — refusing to start.`);
     }
     const composite = `${record.accountId}:${record.key}`;
     if (seenKeys.has(composite)) {
@@ -521,12 +581,22 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   return {
     createScanWithQuota: (input) =>
       runExclusive(async () => {
+        // Defense in depth: malformed/missing DAST targets and stray
+        // target claims on other scan types never reach quota consumption.
+        if (
+          (input.scanType === 'DAST' && !isSafeDastUrl(input.targetUrl)) ||
+          (input.scanType !== 'DAST' && input.targetUrl !== undefined)
+        ) return { outcome: 'invalid-target' };
         // 1. Idempotency replay — BEFORE consuming anything. Scoped to
         //    (ownerId, key); another account's key is simply absent.
         if (input.idempotencyKey !== undefined) {
           const existing = idempotencyByKey.get(`${input.ownerId}:${input.idempotencyKey}`);
           if (existing !== undefined) {
-            if (existing.projectId !== input.projectId || existing.scanType !== input.scanType) {
+            if (
+              existing.projectId !== input.projectId ||
+              existing.scanType !== input.scanType ||
+              existing.targetUrl !== input.targetUrl
+            ) {
               return { outcome: 'conflict' };
             }
             const scan = scansById.get(existing.scanId);
@@ -555,6 +625,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           ownerId: input.ownerId,
           projectId: input.projectId,
           scanType: input.scanType,
+          ...(input.targetUrl === undefined ? {} : { dastTargetUrl: input.targetUrl }),
           status: 'QUEUED',
           createdAt: now,
           updatedAt: now,
@@ -567,6 +638,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             key: input.idempotencyKey,
             projectId: input.projectId,
             scanType: input.scanType,
+            ...(input.targetUrl === undefined ? {} : { targetUrl: input.targetUrl }),
             scanId: record.id,
             createdAt: now,
           };
@@ -650,7 +722,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         return claimed === undefined ? undefined : toPublic(claimed);
       }),
 
-    completeScan: (id, resultSummary, findings, sca) =>
+    completeScan: (id, resultSummary, findings, sca, dast) =>
       runExclusive(() => {
         const current = scansById.get(id);
         if (current === undefined || current.status !== 'RUNNING') {
@@ -663,6 +735,10 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) {
           return undefined;
         }
+        if (dast !== undefined && !(isDastResult(dast) && current.scanType === 'DAST' && dast.targetUrl === current.dastTargetUrl)) {
+          return undefined;
+        }
+        if ((current.scanType === 'DAST') !== (dast !== undefined)) return undefined;
         // Defense in depth: findings are bounded and must belong to
         // this scan, and the summary must agree with them (the engine
         // already guarantees this; the store never trusts blindly).
@@ -677,6 +753,13 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           ) {
             return undefined;
           }
+          if (safeFindings.some((finding) => {
+            const item = finding as unknown as Record<string, unknown>;
+            const isDastFinding = item['scanner'] === 'DAST';
+            return isDastFinding !== (current.scanType === 'DAST') || (
+              isDastFinding && (item['projectId'] !== current.projectId || item['targetUrl'] !== current.dastTargetUrl)
+            );
+          })) return undefined;
           if (resultSummary.findingsTotal !== safeFindings.length) {
             return undefined;
           }
@@ -689,6 +772,25 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           resultSummary,
           ...(safeFindings === undefined ? {} : { findings: safeFindings }),
           ...(sca === undefined ? {} : { sca }),
+          ...(dast === undefined ? {} : { dast }),
+        }));
+        return updated === undefined ? undefined : toPublic(updated);
+      }),
+
+    timeoutScan: (id, failureCode, failureMessage) =>
+      runExclusive(() => {
+        const current = scansById.get(id);
+        if (
+          current === undefined || current.status !== 'RUNNING' || current.scanType !== 'DAST' ||
+          (failureCode !== 'DAST_REQUEST_TIMEOUT' && failureCode !== 'DAST_SCAN_TIMEOUT')
+        ) return undefined;
+        const updated = applyClaimPersist(current, (record) => ({
+          ...record,
+          status: 'TIMED_OUT',
+          completedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          failureCode,
+          failureMessage: failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
         }));
         return updated === undefined ? undefined : toPublic(updated);
       }),
@@ -774,6 +876,7 @@ export function toScanDetailResponse(record: ScanRecord): ScanDetail {
     // The SCA payload rides ONLY the detail route (the list stays
     // lean — counts live in resultSummary).
     ...(record.sca === undefined ? {} : { sca: record.sca }),
+    ...(record.dast === undefined ? {} : { dast: record.dast }),
   };
 }
 
@@ -784,6 +887,7 @@ export function toScanResponse(record: ScanRecord): Scan {
     projectId: record.projectId,
     scanType: record.scanType,
     status: record.status,
+    ...(record.dastTargetUrl === undefined ? {} : { targetUrl: record.dastTargetUrl }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),

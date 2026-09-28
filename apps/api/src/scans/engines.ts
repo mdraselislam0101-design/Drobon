@@ -1,4 +1,4 @@
-import type { Finding, ScaResult, ScanFailureCode, ScanResultSummary, ScanType } from '@drobon/shared';
+import type { DastResult, Finding, ScaResult, ScanFailureCode, ScanResultSummary, ScanType } from '@drobon/shared';
 import type { ScanRecord } from './store.js';
 
 /**
@@ -9,15 +9,12 @@ import type { ScanRecord } from './store.js';
  * composition time (app.ts); nothing client-facing can register,
  * discover or influence engines.
  *
- * PUMP 8 registered the first REAL engine: SAST (static analysis,
- * `sast/`). PUMP 9 registers the second: SCA (software-composition
- * analysis, `sca/` — manifests → inventory → SBOM → honest
- * assessment, see docs/SCA.md). `SECRETS` and
- * `DAST` remain unimplemented: the processor deterministically fails
- * them with `SCAN_ENGINE_NOT_IMPLEMENTED` — it NEVER fabricates
- * findings, never pretends a scan happened, and never touches
- * vulnerability datasets (the dataset lock: no CVE/NVD/GHSA/OSV/KEV/
- * EPSS data, ever, in this repository).
+ * Pumps 8–11 register real engines: SAST (`sast/`), SCA (`sca/`),
+ * SECRETS (`secrets/`), and limited passive DAST (`dast/`). Unavailable
+ * engine types fail deterministically with `SCAN_ENGINE_NOT_IMPLEMENTED`;
+ * the processor NEVER fabricates findings or pretends a scan happened.
+ * No scanner loads vulnerability datasets (the dataset lock: no
+ * CVE/NVD/GHSA/OSV/KEV/EPSS data, ever, in this repository).
  *
  * Engines are hand-written code, NOT dataset loaders.
  */
@@ -46,8 +43,11 @@ export type EngineOutcome =
        * terminal transition — COMPLETED SCA scans only.
        */
       sca?: ScaResult;
+      /** Bounded observed HTTP responses for DAST only. */
+      dast?: DastResult;
     }
-  | { kind: 'failed'; failureCode: ScanFailureCode; failureMessage: string };
+  | { kind: 'failed'; failureCode: ScanFailureCode; failureMessage: string }
+  | { kind: 'timed-out'; failureCode: ScanFailureCode; failureMessage: string };
 
 /**
  * One scanner engine for one scan type. `execute` must be side-effect

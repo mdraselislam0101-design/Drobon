@@ -7,6 +7,7 @@ import type { UserRecord, UserRepository } from '../src/auth/repositories.js';
 import type { ScanDetailResponse } from '@drobon/shared';
 import {
   cleanupTempStoreDir,
+  configureFixtureDastTarget,
   makeTempStoreDir,
   readJson,
   sessionCookieFrom,
@@ -98,7 +99,9 @@ async function createProject(server: TestServer, cookies: Cookies, name = 'Targe
     throw new Error(`Project creation failed with status ${res.status}.`);
   }
   const body = (await readJson(res)) as { data: { project: { id: string } } };
-  return body.data.project.id;
+  const projectId = body.data.project.id;
+  await configureFixtureDastTarget(server, cookieHeader(cookies), projectId);
+  return projectId;
 }
 
 interface SourceFile {
@@ -614,7 +617,7 @@ describe('SCA API: SAST regression with the SCA engine registered', () => {
     }
   });
 
-  test('SECRETS is a REAL engine now (Pump 10); DAST still honestly fails', async () => {
+  test('SECRETS and limited passive DAST are registered real engines', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test', PRO_ACTIVE);
     const server = await startTestServer({ users });
@@ -641,13 +644,15 @@ describe('SCA API: SAST regression with the SCA engine registered', () => {
       expect(secretsDetail.data.scan.resultSummary?.truncated).toBe(false);
       expect(secretsDetail.data.scan.resultSummary?.partial).toBeUndefined();
       expect(secretsDetail.data.scan.sca).toBeUndefined();
-      // DAST remains the honest engine-less control type.
+      // Pump 11 DAST uses a test-only synthetic transport fixture; it
+      // performs no real network request and keeps SCA state separate.
       const { res, body } = await requestScan(server, owner, projectId, 'DAST');
       expect(res.status).toBe(201);
       await server.scanProcessor.drain();
       const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
-      expect(detail.data.scan.status).toBe('FAILED');
-      expect(detail.data.scan.failureCode).toBe('SCAN_ENGINE_NOT_IMPLEMENTED');
+      expect(detail.data.scan.status).toBe('COMPLETED');
+      expect(detail.data.scan.dast?.requestCount).toBe(1);
+      expect(detail.data.scan.findings.every((finding) => finding.scanner === 'DAST')).toBe(true);
       expect(detail.data.scan.sca).toBeUndefined();
     } finally {
       await server.stop();

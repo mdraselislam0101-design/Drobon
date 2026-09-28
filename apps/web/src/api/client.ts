@@ -161,6 +161,9 @@ export interface ApiClient {
     input: { name?: string; description?: string },
     signal?: AbortSignal,
   ): Promise<ProjectResponse>;
+  /** Configure/clear the explicit project-associated passive DAST target. */
+  setDastTarget(projectId: string, targetUrl: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  clearDastTarget(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
   /** Archive a project (explicit lifecycle operation, owner only, idempotent). */
   archiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
   /** Unarchive a project (explicit lifecycle operation, owner only, idempotent). */
@@ -460,6 +463,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           body: JSON.stringify(input),
           ...(signal === undefined ? {} : { signal }),
         },
+        isProjectResponse,
+      ),
+    setDastTarget: (projectId: string, targetUrl: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/dast-target`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ targetUrl }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isProjectResponse,
+      ),
+    clearDastTarget: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/dast-target`,
+        { method: 'DELETE', ...(signal === undefined ? {} : { signal }) },
         isProjectResponse,
       ),
     archiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>

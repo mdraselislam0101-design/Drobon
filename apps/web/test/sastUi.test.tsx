@@ -8,8 +8,8 @@
  *   read as text, replacement semantics), server-rejected uploads shown
  *   verbatim, archived projects cannot upload;
  * - the scan form stays honest: SAST analyzes (never executes) the
- *   snapshot; SECRETS (Pump 10) is real too; DAST still fails with
- *   SCAN_ENGINE_NOT_IMPLEMENTED;
+ *   snapshot; SECRETS (Pump 10) and limited passive DAST (Pump 11) are
+ *   real engines too; DAST scope is kept explicit and bounded;
  * - findings: lazy "View findings", server-ordered rendering as TEXT
  *   (React escaping — a rule-1 command-injection payload in evidence is
  *   displayed, never executed), redacted secrets stay redacted, the
@@ -368,14 +368,15 @@ describe('SAST UI: real findings on completed scans', () => {
     expect(await screen.findAll('finding-item')).toHaveLength(3);
   });
 
-  test('the scan form stays honest about which engines exist', async () => {
+  test('the scan form states source-analysis and limited passive DAST boundaries', async () => {
     const client = clientWithCompletedScans();
     await renderAt('/projects/prj_test-sast-0001', client);
     expect(await screen.find('scan-form')).toBeTruthy();
     const formText = (document.querySelector('[data-testid="scan-form"]') as HTMLElement)
       .textContent;
     expect(formText).toContain('never executed');
-    expect(formText).toContain('SCAN_ENGINE_NOT_IMPLEMENTED');
+    expect(formText).toContain('bounded GET requests');
+    expect(formText).toContain('does not use a browser');
   });
 });
 

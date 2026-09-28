@@ -26,6 +26,9 @@ import {
 } from '../src/scans/sources.js';
 import type { ScanEngine } from '../src/scans/engines.js';
 import type { ScanProcessor } from '../src/scans/processor.js';
+import { createDastTargetPolicy } from '../src/scans/dast/target.js';
+import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
+import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -98,8 +101,33 @@ export type TestServerOverrides = Partial<ApiConfig> & {
    * the registry exactly.
    */
   scanEngines?: readonly ScanEngine[];
+  /** Safe deterministic resolver; never probes arbitrary/public targets. */
+  dastTargetPolicy?: DastTargetPolicy;
+  /** Controlled fixture transport; no real HTTP exchange by default. */
+  dastTransport?: DastTransport;
   /** Scan processor sweep interval (rarely needed in tests). */
   scanProcessorIntervalMs?: number;
+};
+
+const FIXTURE_DAST_RESPONSE: DastProbeResponse = {
+  status: 200,
+  headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'access-control-allow-origin': 'https://drobon-aegis.invalid',
+    'access-control-allow-credentials': 'true',
+    'set-cookie': ['session=FIXTURE_COOKIE_SECRET_DO_NOT_LEAK; Path=/'],
+    server: 'fixture-only/1.0',
+  },
+  body: '<!doctype html><script src="http://fixture.example.org/app.js"></script>',
+  bodyTruncated: false,
+  elapsedMs: 7,
+};
+
+const FIXTURE_DAST_TRANSPORT: DastTransport = {
+  probe: async () => ({
+    ...FIXTURE_DAST_RESPONSE,
+    headers: { ...FIXTURE_DAST_RESPONSE.headers },
+  }),
 };
 
 /**
@@ -128,6 +156,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sourceStoreDir,
     sourceStore,
     scanEngines,
+    dastTargetPolicy,
+    dastTransport,
     scanProcessorIntervalMs,
     vulnIntelProvider,
     ...configOverrides
@@ -232,6 +262,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStore: resolvedScanStore,
     sourceStore: resolvedSourceStore,
     ...(scanEngines === undefined ? {} : { scanEngines }),
+    dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
+    dastTransport: dastTransport ?? FIXTURE_DAST_TRANSPORT,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),
     // Deterministic tests: no background processing unless a suite
     // starts the processor itself.
@@ -257,6 +289,22 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
 /** Read a fetch Response as unknown JSON. */
 export async function readJson(res: Response): Promise<unknown> {
   return (await res.json()) as unknown;
+}
+
+/** Configure only a synthetic fixture hostname through the real owner-only route. */
+export async function configureFixtureDastTarget(
+  server: TestServer,
+  cookie: string,
+  projectId: string,
+): Promise<void> {
+  const response = await fetch(`${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/dast-target`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+  });
+  if (response.status !== 200) {
+    throw new Error(`Fixture DAST target configuration failed with status ${response.status}.`);
+  }
 }
 
 /** Create a throwaway directory for durable-store tests; cleaned by the caller. */

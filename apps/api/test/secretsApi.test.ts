@@ -7,6 +7,7 @@ import type { UserRecord, UserRepository } from '../src/auth/repositories.js';
 import type { Finding, ScanDetailResponse } from '@drobon/shared';
 import {
   cleanupTempStoreDir,
+  configureFixtureDastTarget,
   makeTempStoreDir,
   readJson,
   startTestServer,
@@ -98,7 +99,9 @@ async function createProject(server: TestServer, cookies: Cookies, name = 'Targe
     throw new Error(`Project creation failed: ${res.status}`);
   }
   const body = (await readJson(res)) as { data: { project: { id: string } } };
-  return body.data.project.id;
+  const projectId = body.data.project.id;
+  await configureFixtureDastTarget(server, cookieHeader(cookies), projectId);
+  return projectId;
 }
 
 async function putSources(

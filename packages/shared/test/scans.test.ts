@@ -46,7 +46,7 @@ describe('scan vocabulary', () => {
   });
 
   test('SCAN_STATUSES is the closed server-authoritative lifecycle', () => {
-    expect([...SCAN_STATUSES]).toEqual(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED']);
+    expect([...SCAN_STATUSES]).toEqual(['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'TIMED_OUT']);
   });
 
   test('SCAN_FAILURE_CODES is closed and carries no internals', () => {
@@ -72,6 +72,14 @@ describe('scan vocabulary', () => {
       'SECRETS_FILE_LIMIT_EXCEEDED',
       'SECRETS_SCAN_TIMEOUT',
       'SECRETS_INPUT_INVALID',
+      // Pump 11: passive DAST safety and bounded HTTP outcomes.
+      'DAST_TARGET_NOT_FOUND',
+      'DAST_TARGET_INVALID',
+      'DAST_TARGET_BLOCKED',
+      'DAST_DNS_FAILED',
+      'DAST_REQUEST_FAILED',
+      'DAST_REQUEST_TIMEOUT',
+      'DAST_SCAN_TIMEOUT',
     ]);
   });
 

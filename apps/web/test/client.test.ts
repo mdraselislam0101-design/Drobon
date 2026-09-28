@@ -70,6 +70,31 @@ describe('createApiClient', () => {
     expect(init.body).toBe(JSON.stringify({ message: 'hi' }));
   });
 
+  test('configures and removes a project-associated DAST target without client authority claims', async () => {
+    const project = {
+      id: 'prj_00000000-0000-4000-8000-0000000000aa',
+      name: 'Fixture app',
+      description: '',
+      status: 'ACTIVE',
+      dastTargetUrl: 'https://fixture.example.org/',
+      createdAt: '2026-09-28T10:00:00.000Z',
+      updatedAt: '2026-09-28T10:00:00.000Z',
+    };
+    const fetchImpl: FetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { project }, meta: { requestId: 'put-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { project: { ...project, dastTargetUrl: undefined } }, meta: { requestId: 'delete-1' } }));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const updated = await client.setDastTarget(project.id, 'https://fixture.example.org/');
+    expect(updated.project.dastTargetUrl).toBe('https://fixture.example.org/');
+    await client.clearDastTarget(project.id);
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe(`/api/v1/projects/${project.id}/dast-target`);
+    expect(calls[0]?.[1].method).toBe('PUT');
+    expect(calls[0]?.[1].body).toBe(JSON.stringify({ targetUrl: 'https://fixture.example.org/' }));
+    expect(calls[1]?.[1].method).toBe('DELETE');
+    expect(calls[1]?.[1].body).toBeUndefined();
+  });
+
   test('maps error envelopes to http errors with server message + request ID', async () => {
     const fetchImpl: FetchImpl = vi.fn(async () =>
       jsonResponse(

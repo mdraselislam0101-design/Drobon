@@ -307,12 +307,13 @@ describe('SCA UI: list view distinguishes the engines', () => {
     expect(await screen.find('view-findings')).toBeTruthy();
   });
 
-  test('the scan form stays honest: SCA/SECRETS analyze; DAST does not exist yet', async () => {
+  test('the scan form stays honest about the bounded passive DAST capability', async () => {
     await renderScaPage();
     const formText = (document.querySelector('[data-testid="scan-form"]') as HTMLElement)
       .textContent;
     expect(formText).toContain('never executed');
-    expect(formText).toContain('SCAN_ENGINE_NOT_IMPLEMENTED');
+    expect(formText).toContain('bounded GET requests');
+    expect(formText).toContain('vulnerability dataset');
     expect(formText).toContain('not assessed');
   });
 });

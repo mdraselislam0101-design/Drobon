@@ -32,6 +32,7 @@ import type { ScanProcessor } from '../scans/processor.js';
 import type { UserRepository } from '../auth/repositories.js';
 import type { UsageService } from '../usage/service.js';
 import { sendSuccess } from '../respond.js';
+import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '../scans/dast/target.js';
 
 /**
  * Scan-job API (Pump 7) — the secure orchestration boundary future
@@ -85,10 +86,12 @@ export interface ScanRouteDeps {
   sources: SourceSnapshotStore;
   usage: UsageService;
   processor: ScanProcessor;
+  dastTargetPolicy?: DastTargetPolicy;
 }
 
 export function createScanRoutes(deps: ScanRouteDeps): Route[] {
   const { config, users, projects, scans, sources, usage, processor } = deps;
+  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
 
   const createSchema = v.object({
@@ -159,13 +162,27 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             { path: 'scanType', message: 'Unsupported scan type.' },
           ]);
         }
-        // PUMP 8/9/10 PRE-FLIGHT (quota protection): SAST, SCA and
-        // SECRETS all need a source snapshot as their deterministic
-        // target. Rejecting the request BEFORE quota consumption keeps
-        // a FREE account from burning its monthly allowance on a scan
-        // that can only fail with a *_TARGET_NOT_FOUND code.
-        // Race-window defense: if the snapshot disappears between here
-        // and processing, the engine still fails the scan closed.
+        // PUMPS 8–11 PRE-FLIGHT (quota protection): source engines need
+        // a snapshot; DAST needs a configured, currently safe project
+        // target. Reject impossible/unsafe requests BEFORE quota
+        // consumption. Each engine repeats its target safety checks when
+        // execution begins to close the preflight race window.
+        let targetUrl: string | undefined;
+        if (parsed.value.scanType === 'DAST') {
+          if (project.dastTargetUrl === undefined) {
+            throw conflict('Configure an authorized DAST target on this project before requesting a scan.');
+          }
+          try {
+            // Revalidate DNS before quota consumption. Execution repeats
+            // this immediately before every request and pins the result.
+            targetUrl = (await dastTargetPolicy.prepare(project.dastTargetUrl)).url;
+          } catch (error) {
+            const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
+              ? 'The configured DAST target cannot currently be resolved safely.'
+              : 'The configured DAST target no longer passes the public-address safety policy.';
+            throw conflict(message);
+          }
+        }
         if (
           parsed.value.scanType === 'SAST' ||
           parsed.value.scanType === 'SCA' ||
@@ -198,9 +215,13 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           ownerId: actor.id,
           projectId: project.id,
           scanType: parsed.value.scanType,
+          ...(targetUrl === undefined ? {} : { targetUrl }),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
           consume: () => usage.consumeScan(record, deviceHash),
         });
+        if (outcome.outcome === 'invalid-target') {
+          throw conflict('The DAST target is missing or no longer passes the safety policy.');
+        }
         if (outcome.outcome === 'quota-denied') {
           // Uniform 429 QUOTA_EXCEEDED + Retry-After (next UTC month).
           // Nothing was appended; no hint which limit tripped.

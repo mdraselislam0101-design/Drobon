@@ -1,10 +1,10 @@
 # Projects Foundation (Pump 6)
 
-A Project is the primary user-owned container that future security scans,
-jobs, findings, reports, SBOMs and remediation history will attach to.
-Pump 6 establishes ONLY the secure ownership boundary and CRUD
-lifecycle — no scan engine, no findings, no per-plan limits. Everything
-here is covered by executable tests (see `docs/TESTING.md`).
+A Project is the primary user-owned container for source snapshots,
+scan jobs, findings, SBOMs, and one optional DAST target. Pump 6
+established the secure ownership boundary and CRUD lifecycle; later
+pumps add bounded scan engines without changing that ownership model.
+Everything here is covered by executable tests (see `docs/TESTING.md`).
 
 ## The model
 
@@ -15,12 +15,15 @@ here is covered by executable tests (see `docs/TESTING.md`).
 | `name` | client → validated | 1–120 chars, trimmed, NFC-normalized, no control characters (single line) |
 | `description` | client → validated | 0–2000 chars, trimmed, NFC-normalized; tabs/newlines allowed (multi-line by design), all other control characters rejected |
 | `status` | server only | `ACTIVE` (always at creation) or `ARCHIVED`; changes ONLY through the explicit archive/unarchive operations |
+| `dastTargetUrl` | server-validated, owner-configured | Optional canonical HTTP(S) URL for the limited passive DAST engine; no owner or scan request claim can set it |
 | `createdAt` / `updatedAt` | server | ISO-8601 UTC; `updatedAt` bumps on every successful mutation that changes something |
 
-The public contract (`packages/shared/src/projects.ts`) exposes exactly
-`{ id, name, description, status, createdAt, updatedAt }` — no owner, no
-storage paths, no metadata. Guards reject forged shapes, including
-cross-field junk (`status: 'DELETED'`, empty names, malformed ids).
+The public contract (`packages/shared/src/projects.ts`) exposes the
+project fields `{ id, name, description, status, createdAt, updatedAt }`
+and, only when configured, the optional `dastTargetUrl`. It never exposes
+owner IDs, storage paths, or internal metadata. Guards reject forged
+shapes, including cross-field junk (`status: 'DELETED'`, empty names,
+malformed IDs, or a target on a non-HTTP(S) URL).
 
 ## Ownership (server-authoritative, always)
 
@@ -165,10 +168,11 @@ never a fabricated result. See `docs/SCANS.md`.
 ```
 Authenticated account (ownership source — never client-supplied)
   └── Project (Pump 6 — the container)
-        └── future Scan / Job (calls UsageService for quota)
-              └── future Findings
-                    └── future Reports / SBOM
-                          └── future Remediation / audit evidence
+        ├── source snapshot (SAST/SCA/SECRETS)
+        ├── optional owner-configured DAST target (Pump 11)
+        └── Scan / Job (existing UsageService quota + scan lifecycle)
+              └── engine findings / dependency inventory / bounded observations
+                    └── future Reports / remediation / audit evidence
 ```
 
 Every future child object must derive ownership from the account →
@@ -178,13 +182,21 @@ placeholder scan records and no relational schemas for future systems
 today; the boundary is simply clean: `projectId` is a stable, opaque,
 server-validated reference.
 
+## DAST target configuration (Pump 11)
+
+An owner may configure or remove one HTTP(S) target on their project
+through the authenticated owner-only `PUT` / `DELETE
+/api/v1/projects/:projectId/dast-target` routes. The target is validated
+server-side, stored on the project, and omitted from scan request input;
+DAST scan creation rechecks it before quota use and the engine rechecks
+DNS before each bounded request. This is a limited passive HTTP feature,
+not browser DAST; see `docs/DAST.md`.
+
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-The scan engines themselves (SAST/SCA/SECRETS/DAST execution — the
-Pump 7 orchestration boundary exists, the engines do not; see
-`docs/SCANS.md`), findings, reports, SBOM generation, remediation
-history, per-plan project limits, project sharing/collaboration,
-organization accounts, project deletion (hard delete is deliberately
-absent — ARCHIVED is the lifecycle end-state until an explicit,
-authorized deletion design exists), admin/operator project visibility,
+Reports, remediation history, browser/full DAST and active testing,
+per-plan project limits, project sharing/collaboration, organization
+accounts, project deletion (hard delete is deliberately absent —
+ARCHIVED is the lifecycle end-state until an explicit, authorized
+deletion design exists), admin/operator project visibility,
 project-level usage analytics, database-backed project store.

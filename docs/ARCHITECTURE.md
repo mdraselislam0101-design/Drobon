@@ -148,10 +148,9 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   finish-once `completeScan`/`failScan` (Pump 8: findings persist
   atomically with the COMPLETED transition, COMPLETED-only), boot
   recovery `failAllRunning`); `engines.ts` is the scanner-engine
-  boundary (server-side registry — Pump 8 registers the REAL SAST
-  engine, Pump 9 the REAL SCA engine and Pump 10 the REAL secrets
-  engine; DAST stays
-  unregistered and fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED);
+  boundary (server-side registry — Pumps 8–11 register the REAL SAST,
+  SCA, Secrets and limited passive DAST engines; DAST's SSRF-safe target
+  policy, pinned transport and passive rules live under `scans/dast/`);
   `sast/` is the SAST engine (pure-data `rules.ts` + bounded
   `engine.ts` — analysis only, never executes source, see
   docs/SAST.md); `sca/` is the SCA engine — `parsers.ts` (defensive
@@ -162,9 +161,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   bounded-engine contract, see docs/SCA.md); `sources.ts` is the
   project-scoped
   source-snapshot store (path policy at rest, fail-fast load);
-  `processor.ts` is the durable worker
-  loop (claim → engine → finish, 30s engine bound, startup recovery +
-  periodic sweep). See docs/SCANS.md and docs/SAST.md.
+  `dast/` implements Pump 11's one-target passive HTTP engine (strict URL/IP policy, DNS pinning, bounded transport, redirect validation, evidence-safe rules; see `docs/DAST.md`); `processor.ts` is the durable worker loop (claim → engine → finish, 30s engine bound, startup recovery + periodic sweep). See docs/SCANS.md.
 - `projects/` — the Projects foundation store (Pump 6):
   `store.ts` is the minimum persistence boundary (one JSON document,
   serialized mutation queue, atomic temp+rename writes, fail-fast load
@@ -348,9 +345,9 @@ billing integration and any subscription mutation workflow (the
 subscription + entitlement foundation itself is DONE in Pump 4 — see
 `docs/SUBSCRIPTIONS.md`), account
 email verification, password reset, trusted-proxy support, distributed
-rate limiting, durable/persistent sessions and queues, the database phase
+rate limiting, durable/persistent sessions and out-of-process queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
-ingestion/storage, scanning/findings/reports/remediation (the scan
-engine will consume the Pump 5 usage service as its quota boundary —
-see docs/USAGE.md; the quota foundation itself is DONE), AI assistance,
+ingestion/storage, browser-based/full DAST, reports/remediation and
+active testing (the existing bounded scan engines and Pump 5 quota
+integration are DONE — see docs/SCANS.md), AI assistance,
 admin dashboard, multi-instance deployment, metrics/tracing.

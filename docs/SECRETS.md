@@ -156,8 +156,8 @@ reports findings at all.
   + CWE), redacted evidence and remediation — all as text. The raw
   value never reaches the browser in any field, attribute, tooltip,
   URL or client state (tested by whole-DOM sweeps).
-- DAST remains unregistered and fails honestly with
-  `SCAN_ENGINE_NOT_IMPLEMENTED`.
+- DAST is a separate limited passive HTTP engine (Pump 11); it does not
+  inspect source snapshots. See `docs/DAST.md`.
 
 ## Remediation wording
 

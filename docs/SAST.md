@@ -7,11 +7,9 @@ entirely server-side by deterministic code. **Analysis only: source
 files are read and matched, NEVER parsed into execution, NEVER
 imported, NEVER run.**
 
-SCA (Pump 9) and SECRETS (Pump 10) are real engines now (see
-`docs/SCA.md` and `docs/SECRETS.md`); the remaining scan type
-(`DAST`) still has no engine
-and still fail honestly with `SCAN_ENGINE_NOT_IMPLEMENTED`
-(see `docs/SCANS.md`).
+SCA (Pump 9), SECRETS (Pump 10), and limited passive DAST (Pump 11)
+are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
+`docs/DAST.md`).
 
 ## Threat model (why the design looks this way)
 

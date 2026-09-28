@@ -1,3 +1,5 @@
+import { isDastResult, isSafeDastUrl, type DastResult } from './dast.js';
+import { PROJECT_ID_PATTERN } from './projects.js';
 import { isValidSourcePath } from './sources.js';
 
 /**
@@ -7,10 +9,9 @@ import { isValidSourcePath } from './sources.js';
  * IMPORTANT — what this module is NOT:
  * - it is NOT a vulnerability database and carries no CVE/NVD/GHSA/OSV/
  *   KEV/EPSS data (the dataset lock forbids that, forever separately);
- * - it does NOT claim any scanner engine exists. `SCAN_TYPES` are the
- *   SUPPORTED job types of the orchestration layer; whether an engine
- *   is actually available is a separate, server-side registry — an
- *   unavailable engine fails a scan deterministically with
+ * - this module defines scan contracts, not scanner implementations.
+ *   `SCAN_TYPES` are supported job types; the API's server-side registry
+ *   decides which engines run. An unavailable engine fails with
  *   `SCAN_ENGINE_NOT_IMPLEMENTED` (never a fabricated result).
  *
  * Security posture (mirrors `projects.ts`):
@@ -36,7 +37,7 @@ export function isScanType(value: unknown): value is ScanType {
  * QUEUED → RUNNING → COMPLETED, with deterministic failure exits from
  * QUEUED/RUNNING. There is NO client-facing transition endpoint.
  */
-export const SCAN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
+export const SCAN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'TIMED_OUT'] as const;
 
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
@@ -51,8 +52,8 @@ export function isScanStatus(value: unknown): value is ScanStatus {
  *
  * - `SCAN_ENGINE_NOT_IMPLEMENTED` — the requested job type is supported
  *   by the orchestration layer but no real scanner engine for it exists
- *   (the honest state for SCA/SECRETS/DAST until their pumps; SAST has
- *   a real engine since Pump 8);
+ *   (used only when a real engine is unavailable; DAST is now limited
+ *   passive HTTP in Pump 11);
  * - `SCAN_INTERRUPTED` — processing was interrupted (e.g. process
  *   restart mid-run); the scan deterministically FAILED, never hung;
  * - `SCAN_ENGINE_ERROR` — an engine crashed/timed out while running;
@@ -104,6 +105,13 @@ export const SCAN_FAILURE_CODES = [
   'SECRETS_FILE_LIMIT_EXCEEDED',
   'SECRETS_SCAN_TIMEOUT',
   'SECRETS_INPUT_INVALID',
+  'DAST_TARGET_NOT_FOUND',
+  'DAST_TARGET_INVALID',
+  'DAST_TARGET_BLOCKED',
+  'DAST_DNS_FAILED',
+  'DAST_REQUEST_FAILED',
+  'DAST_REQUEST_TIMEOUT',
+  'DAST_SCAN_TIMEOUT',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -159,6 +167,10 @@ export interface ScanResultSummary {
   dependenciesTotal?: number;
   /** Direct dependencies (SCA, Pump 9) — lean list metric. */
   directDependencies?: number;
+  /** Bounded number of HTTP requests actually made by DAST. */
+  requestsMade?: number;
+  /** Same-host redirects actually followed by DAST. */
+  redirectsFollowed?: number;
   /**
    * True when the engine analyzed only PART of the snapshot because a
    * configured limit was hit (e.g. an oversize file was skipped, or
@@ -183,6 +195,8 @@ const SUMMARY_ALLOWED_KEYS = [
   // results, SBOM, advisories) lives in the scan-detail response only.
   'dependenciesTotal',
   'directDependencies',
+  'requestsMade',
+  'redirectsFollowed',
   // Secrets engine (Pump 10): explicit partial-scan honesty.
   'partial',
   'partialReason',
@@ -238,6 +252,12 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   if (record['directDependencies'] !== undefined && !isCount(record['directDependencies'])) {
     return false;
   }
+  if (record['requestsMade'] !== undefined && (!isCount(record['requestsMade']) || record['requestsMade'] > 3)) {
+    return false;
+  }
+  if (record['redirectsFollowed'] !== undefined && (!isCount(record['redirectsFollowed']) || record['redirectsFollowed'] > 2)) {
+    return false;
+  }
   if (record['partial'] !== undefined && typeof record['partial'] !== 'boolean') {
     return false;
   }
@@ -275,11 +295,13 @@ export interface Scan {
   updatedAt: string;
   /** Set once the processor claims the scan (status ≠ QUEUED). */
   startedAt?: string;
-  /** Set on a terminal status (COMPLETED or FAILED). */
+  /** Canonical target, present only for DAST scans. */
+  targetUrl?: string;
+  /** Set on a terminal status (COMPLETED, FAILED, or TIMED_OUT). */
   completedAt?: string;
-  /** Terminal failure classification (FAILED only). */
+  /** Terminal failure classification (FAILED or TIMED_OUT only). */
   failureCode?: ScanFailureCode;
-  /** Safe, bounded, human-readable failure detail (FAILED only). */
+  /** Safe, bounded, human-readable failure detail (FAILED or TIMED_OUT only). */
   failureMessage?: string;
   /** Engine-produced summary (COMPLETED only, never fabricated). */
   resultSummary?: ScanResultSummary;
@@ -349,7 +371,7 @@ export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^DG-(?:SAST|SEC)-[0-9]{3}$/;
+export const FINDING_RULE_ID_PATTERN = /^DG-(?:SAST|SEC|DAST)-[0-9]{3}$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is
@@ -419,7 +441,7 @@ function isSafeFindingText(value: unknown, maxLength: number): value is string {
  *
  * NO CVSS score is present — none is calculated, so none may be shown.
  */
-export interface Finding {
+interface FindingBase {
   /** Deterministic id derived from the fingerprint (stable across rescans). */
   id: string;
   /** The scan this finding belongs to (server-set, cross-checked at load). */
@@ -434,92 +456,117 @@ export interface Finding {
   description: string;
   /** CWE mapping, only when defensible (omitted rather than guessed). */
   cwe?: string;
-  /** Relative path inside the project's source snapshot. */
-  file: string;
-  /** 1-based line number of the match. */
-  line: number;
-  /** 1-based column of the match (reliable: regex match index). */
-  column: number;
-  /** Bounded, sanitized source evidence (credential values redacted). */
+  /** Bounded, sanitized evidence. Credential and cookie values are redacted. */
   evidence: string;
   /** Rule-specific remediation guidance (separate from evidence). */
   remediation: string;
-  /**
-   * Detection confidence (Pump 10, secrets rules): rule-defined, how
-   * certain the rule is that this is real credential material.
-   * ABSENT on SAST findings (Pump 8 contract unchanged). Never a
-   * verification claim — a HIGH-confidence finding says "this shape
-   * is a private key block", NOT "this key is valid or active".
-   */
+  /** Detection confidence (Pump 10, secrets only); never credential validity. */
   confidence?: FindingConfidence;
-  /** Deterministic identity: sha256(ruleId|file|line|evidence digest). */
+  /** Deterministic SHA-256 identity. */
   fingerprint: string;
 }
 
-/** Closed-shape + invariant guard for a finding. */
+/** Source-code finding produced by SAST or Secrets. */
+export interface SourceFinding extends FindingBase {
+  scanner?: 'SAST' | 'SECRETS';
+  /** Relative path inside the project's source snapshot. */
+  file: string;
+  /** 1-based source location. */
+  line: number;
+  column: number;
+  projectId?: never;
+  targetUrl?: never;
+  endpoint?: never;
+  method?: never;
+  responseStatus?: never;
+  responseTimeMs?: never;
+  contentType?: never;
+  observedAt?: never;
+  observedHeaders?: never;
+}
+
+/** HTTP observation finding produced by the passive DAST engine. */
+export interface DastFinding extends FindingBase {
+  scanner: 'DAST';
+  projectId: string;
+  targetUrl: string;
+  endpoint: string;
+  method: 'GET';
+  responseStatus: number;
+  responseTimeMs: number;
+  contentType?: string;
+  observedAt: string;
+  /** Allowlisted summaries only; raw Set-Cookie and arbitrary header values are excluded. */
+  observedHeaders: string[];
+  file?: never;
+  line?: never;
+  column?: never;
+}
+
+export type Finding = SourceFinding | DastFinding;
+
+/** Closed-shape + invariant guard for source and DAST findings. */
 export function isFinding(value: unknown): value is Finding {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
+  if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
-  const keys = Object.keys(record);
-  const allowed: readonly string[] = [
-    'id',
-    'scanId',
-    'ruleId',
-    'severity',
-    'title',
-    'description',
-    'cwe',
-    'file',
-    'line',
-    'column',
-    'evidence',
-    'remediation',
-    'confidence',
-    'fingerprint',
+  const allowed = [
+    'id', 'scanId', 'ruleId', 'scanner', 'severity', 'title', 'description', 'cwe',
+    'file', 'line', 'column', 'evidence', 'remediation', 'confidence', 'fingerprint',
+    'projectId', 'targetUrl', 'endpoint', 'method', 'responseStatus', 'responseTimeMs',
+    'contentType', 'observedAt', 'observedHeaders',
   ];
-  if (keys.some((key) => !allowed.includes(key))) {
-    return false;
-  }
+  if (Object.keys(record).some((key) => !allowed.includes(key))) return false;
   if (
-    typeof record['id'] !== 'string' ||
-    !FINDING_ID_PATTERN.test(record['id']) ||
-    typeof record['scanId'] !== 'string' ||
-    !SCAN_ID_PATTERN.test(record['scanId']) ||
-    typeof record['ruleId'] !== 'string' ||
-    !FINDING_RULE_ID_PATTERN.test(record['ruleId']) ||
+    typeof record['id'] !== 'string' || !FINDING_ID_PATTERN.test(record['id']) ||
+    typeof record['scanId'] !== 'string' || !SCAN_ID_PATTERN.test(record['scanId']) ||
+    typeof record['ruleId'] !== 'string' || !FINDING_RULE_ID_PATTERN.test(record['ruleId']) ||
     !isFindingSeverity(record['severity']) ||
     !isSafeFindingText(record['title'], FINDING_TITLE_MAX_LENGTH) ||
     !isSafeFindingText(record['description'], FINDING_TEXT_MAX_LENGTH) ||
     !isSafeFindingText(record['evidence'], FINDING_EVIDENCE_MAX_LENGTH) ||
     !isSafeFindingText(record['remediation'], FINDING_TEXT_MAX_LENGTH) ||
-    typeof record['file'] !== 'string' ||
-    !isValidSourcePath(record['file']) ||
-    typeof record['fingerprint'] !== 'string' ||
-    !FINDING_FINGERPRINT_PATTERN.test(record['fingerprint'])
-  ) {
-    return false;
+    typeof record['fingerprint'] !== 'string' || !FINDING_FINGERPRINT_PATTERN.test(record['fingerprint'])
+  ) return false;
+  if (record['cwe'] !== undefined && (typeof record['cwe'] !== 'string' || !FINDING_CWE_PATTERN.test(record['cwe']))) return false;
+
+  const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-');
+  if (dast) {
+    if (
+      record['scanner'] !== 'DAST' || !/^DG-DAST-[0-9]{3}$/.test(record['ruleId']) ||
+      typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']) ||
+      !isSafeDastUrl(record['targetUrl']) || !isSafeDastUrl(record['endpoint']) ||
+      record['method'] !== 'GET' ||
+      typeof record['responseStatus'] !== 'number' || !Number.isInteger(record['responseStatus']) ||
+      record['responseStatus'] < 100 || record['responseStatus'] > 599 ||
+      typeof record['responseTimeMs'] !== 'number' || !Number.isInteger(record['responseTimeMs']) ||
+      record['responseTimeMs'] < 0 || record['responseTimeMs'] > 15_000 ||
+      typeof record['observedAt'] !== 'string' || Number.isNaN(Date.parse(record['observedAt'])) ||
+      !Array.isArray(record['observedHeaders']) || record['observedHeaders'].length > 12 ||
+      !record['observedHeaders'].every((header) => isSafeFindingText(header, 120)) ||
+      record['file'] !== undefined || record['line'] !== undefined || record['column'] !== undefined ||
+      record['confidence'] !== undefined
+    ) return false;
+    if (record['contentType'] !== undefined && !isSafeFindingText(record['contentType'], 120)) return false;
+    const target = new URL(record['targetUrl']);
+    const endpoint = new URL(record['endpoint']);
+    if (
+      target.hostname !== endpoint.hostname ||
+      (target.protocol === 'https:' && endpoint.protocol !== 'https:')
+    ) return false;
+    return true;
   }
+
   if (
-    typeof record['line'] !== 'number' ||
-    !Number.isInteger(record['line']) ||
-    record['line'] < 1 ||
-    typeof record['column'] !== 'number' ||
-    !Number.isInteger(record['column']) ||
-    record['column'] < 1
-  ) {
-    return false;
-  }
-  if (typeof record['cwe'] === 'string' && !FINDING_CWE_PATTERN.test(record['cwe'])) {
-    return false;
-  }
-  if (
-    record['confidence'] !== undefined &&
-    !isFindingConfidence(record['confidence'])
-  ) {
-    return false;
-  }
+    record['scanner'] !== undefined && record['scanner'] !== 'SAST' && record['scanner'] !== 'SECRETS' ||
+    record['ruleId'].startsWith('DG-DAST-') ||
+    typeof record['file'] !== 'string' || !isValidSourcePath(record['file']) ||
+    typeof record['line'] !== 'number' || !Number.isInteger(record['line']) || record['line'] < 1 ||
+    typeof record['column'] !== 'number' || !Number.isInteger(record['column']) || record['column'] < 1 ||
+    record['projectId'] !== undefined || record['targetUrl'] !== undefined || record['endpoint'] !== undefined ||
+    record['method'] !== undefined || record['responseStatus'] !== undefined || record['responseTimeMs'] !== undefined ||
+    record['contentType'] !== undefined || record['observedAt'] !== undefined || record['observedHeaders'] !== undefined
+  ) return false;
+  if (record['confidence'] !== undefined && !isFindingConfidence(record['confidence'])) return false;
   return true;
 }
 
@@ -529,18 +576,15 @@ export function isFinding(value: unknown): value is Finding {
  * — identical on every request for identical data.
  */
 export function compareFindings(a: Finding, b: Finding): number {
-  const rank = (severity: FindingSeverity): number =>
-    FINDING_SEVERITIES.indexOf(severity);
+  const rank = (severity: FindingSeverity): number => FINDING_SEVERITIES.indexOf(severity);
   const rankDiff = rank(a.severity) - rank(b.severity);
-  if (rankDiff !== 0) {
-    return rankDiff;
-  }
-  if (a.file !== b.file) {
-    return a.file < b.file ? -1 : 1;
-  }
-  if (a.line !== b.line) {
-    return a.line - b.line;
-  }
+  if (rankDiff !== 0) return rankDiff;
+  const locationA = a.scanner === 'DAST' ? a.endpoint : a.file;
+  const locationB = b.scanner === 'DAST' ? b.endpoint : b.file;
+  if (locationA !== locationB) return locationA < locationB ? -1 : 1;
+  const lineA = a.scanner === 'DAST' ? 0 : a.line;
+  const lineB = b.scanner === 'DAST' ? 0 : b.line;
+  if (lineA !== lineB) return lineA - lineB;
   return a.ruleId < b.ruleId ? -1 : a.ruleId > b.ruleId ? 1 : 0;
 }
 
@@ -560,6 +604,8 @@ export interface ScanDetail extends Scan {
    * responses (the list stays lean — counts live in resultSummary).
    */
   sca?: ScaResult;
+  /** Bounded, redacted HTTP observations, present only on completed DAST scans. */
+  dast?: DastResult;
 }
 
 export interface ScanDetailResponse {
@@ -580,12 +626,12 @@ export function isScanDetailResponse(value: unknown): value is ScanDetailRespons
   if (Object.keys(record).length !== 1) {
     return false;
   }
-  const scan = record['scan'];
-  if (typeof scan !== 'object' || scan === null) {
+  const rawScan = record['scan'];
+  if (typeof rawScan !== 'object' || rawScan === null) {
     return false;
   }
-  const scanRecord = scan as Record<string, unknown>;
-  const { findings, sca, ...scanWithoutPayload } = scanRecord;
+  const scanRecord = rawScan as Record<string, unknown>;
+  const { findings, sca, dast, ...scanWithoutPayload } = scanRecord;
   if (!Array.isArray(findings)) {
     return false;
   }
@@ -598,10 +644,36 @@ export function isScanDetailResponse(value: unknown): value is ScanDetailRespons
   // The optional SCA payload is validated as a whole (closed shape,
   // bounded arrays, cross-field honesty — see sca.ts). A malformed or
   // forged payload fails the entire response as invalid.
-  if (sca !== undefined && !isScaResult(sca)) {
-    return false;
+  if (sca !== undefined && (
+    !isScaResult(sca) || scanWithoutPayload['scanType'] !== 'SCA' || scanWithoutPayload['status'] !== 'COMPLETED'
+  )) return false;
+  if (dast !== undefined && (
+    !isDastResult(dast) || scanWithoutPayload['scanType'] !== 'DAST' || scanWithoutPayload['status'] !== 'COMPLETED'
+  )) return false;
+  if (scanWithoutPayload['status'] !== 'COMPLETED' && findings.length > 0) return false;
+  const dastResult = dast as DastResult | undefined;
+  if (scanWithoutPayload['status'] === 'COMPLETED' && scanWithoutPayload['scanType'] === 'DAST') {
+    if (dastResult === undefined || scanWithoutPayload['targetUrl'] !== dastResult.targetUrl) return false;
+    const summary = scanWithoutPayload['resultSummary'] as ScanResultSummary;
+    if (summary.requestsMade !== dastResult.requestCount || summary.redirectsFollowed !== dastResult.redirectsFollowed) return false;
   }
-  return findings.every((finding) => isFinding(finding));
+  const detailScan = scanWithoutPayload as unknown as Scan;
+  return findings.every((finding) => {
+    if (!isFinding(finding) || finding.scanId !== detailScan.id) return false;
+    if (detailScan.scanType === 'DAST') {
+      return finding.scanner === 'DAST' &&
+        finding.projectId === detailScan.projectId &&
+        finding.targetUrl === detailScan.targetUrl &&
+        dastResult?.observations.some((observation) =>
+          observation.endpoint === finding.endpoint &&
+          observation.status === finding.responseStatus &&
+          observation.responseTimeMs === finding.responseTimeMs &&
+          observation.observedAt === finding.observedAt &&
+          observation.contentType === finding.contentType,
+        ) === true;
+    }
+    return finding.scanner !== 'DAST';
+  });
 }
 
 /**
@@ -628,6 +700,7 @@ export function isScan(value: unknown): value is Scan {
     'projectId',
     'scanType',
     'status',
+    'targetUrl',
     'createdAt',
     'updatedAt',
     'startedAt',
@@ -651,6 +724,14 @@ export function isScan(value: unknown): value is Scan {
   ) {
     return false;
   }
+  if (record['targetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['targetUrl']))) {
+    return false;
+  }
+  if (
+    record['scanType'] === 'DAST' &&
+    (record['status'] === 'QUEUED' || record['status'] === 'RUNNING' || record['status'] === 'COMPLETED') &&
+    record['targetUrl'] === undefined
+  ) return false;
   if (record['failureMessage'] !== undefined && typeof record['failureMessage'] !== 'string') {
     return false;
   }
@@ -685,5 +766,9 @@ export function isScan(value: unknown): value is Scan {
   if (status === 'COMPLETED') {
     return hasResult && !hasFailureCode && !hasFailureMessage;
   }
-  return hasFailureCode && !hasResult; // FAILED
+  if (!hasFailureCode || hasResult || !hasFailureMessage) return false;
+  if (status === 'TIMED_OUT') {
+    return record['failureCode'] === 'DAST_REQUEST_TIMEOUT' || record['failureCode'] === 'DAST_SCAN_TIMEOUT';
+  }
+  return true; // FAILED
 }

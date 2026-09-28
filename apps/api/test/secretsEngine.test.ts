@@ -130,15 +130,20 @@ describe('secrets engine: a real multi-file scan', () => {
     const outcome = await completedOutcome(engine);
     const findings = outcome.findings ?? [];
     expect(findings.length).toBe(7);
+    const sourceFindings = findings;
 
     // Deterministic order: path ASC, then line, then ruleId.
-    const ordered = [...findings].sort((a, b) =>
-      a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || (a.ruleId < b.ruleId ? -1 : 1),
+    const ordered = [...sourceFindings].sort((a, b) => {
+      const fileA = a.scanner === 'DAST' ? a.endpoint : a.file ?? '';
+      const fileB = b.scanner === 'DAST' ? b.endpoint : b.file ?? '';
+      const lineA = a.scanner === 'DAST' ? 0 : a.line ?? 0;
+      const lineB = b.scanner === 'DAST' ? 0 : b.line ?? 0;
+      return fileA < fileB ? -1 : fileA > fileB ? 1 : lineA - lineB || (a.ruleId < b.ruleId ? -1 : 1);
+    });
+    expect(sourceFindings.map((f) => [f.file ?? '', f.line ?? 0, f.ruleId])).toEqual(
+      ordered.map((f) => [f.file ?? '', f.line ?? 0, f.ruleId]),
     );
-    expect(findings.map((f) => [f.file, f.line, f.ruleId])).toEqual(
-      ordered.map((f) => [f.file, f.line, f.ruleId]),
-    );
-    expect(findings.map((f) => `${f.file}:${f.line}:${f.ruleId}`)).toEqual([
+    expect(sourceFindings.map((f) => `${f.file ?? ''}:${f.line ?? 0}:${f.ruleId}`)).toEqual([
       'config/prod.yaml:1:DG-SEC-005',
       'config/prod.yaml:2:DG-SEC-004',
       'src/aservice.py:1:DG-SEC-006',

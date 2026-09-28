@@ -299,7 +299,7 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
     expect(result.textContent).toContain('findings cap');
   });
 
-  test('a FAILED scan shows the failure code verbatim (DAST stays honestly unimplemented)', async () => {
+  test('a failed DAST scan shows its target-policy failure honestly', async () => {
     const failed: ScanResponse['scan'] = {
       id: 'scan_dast_0001',
       projectId: 'prj_test-sec-0001',
@@ -309,8 +309,8 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
       updatedAt: '2026-09-27T11:02:01.000Z',
       startedAt: '2026-09-27T11:02:00.500Z',
       completedAt: '2026-09-27T11:02:01.000Z',
-      failureCode: 'SCAN_ENGINE_NOT_IMPLEMENTED',
-      failureMessage: 'The DAST scan engine is not implemented.',
+      failureCode: 'DAST_TARGET_BLOCKED',
+      failureMessage: 'The configured target was blocked before any request was made.',
     };
     const client = signedInClient({
       getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [failed] })),
@@ -318,7 +318,7 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
     });
     await renderAt('/projects/prj_test-sec-0001', client);
     const failure = await screen.find('scan-failure');
-    expect(failure.textContent).toContain('SCAN_ENGINE_NOT_IMPLEMENTED');
+    expect(failure.textContent).toContain('DAST_TARGET_BLOCKED');
     expect(document.querySelector('[data-testid="scan-result"]')).toBeNull();
     expect(document.querySelector('[data-testid="view-findings"]')).toBeNull();
   });
@@ -334,7 +334,8 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
     expect(formText).toContain('never executed');
     expect(formText).toContain('never verified');
     expect(formText).toContain('redacted');
-    expect(formText).toContain('SCAN_ENGINE_NOT_IMPLEMENTED'); // DAST honesty stays.
+    expect(formText).toContain('bounded GET requests');
+    expect(formText).toContain('does not use a browser');
   });
 
   test('a detail-load failure renders verbatim with retry (no silent findings)', async () => {

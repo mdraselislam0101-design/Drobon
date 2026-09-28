@@ -808,3 +808,36 @@ Investigated on request: the live E2E report showed 404s next to
   stage 11 now asserts the true cross-account detail case (403 +
   FORBIDDEN + oracle-equivalence) alongside the scoped-404 cases
   (E2E: 64 main + 6 restart checks, all green).
+
+## Pump 11 — bounded passive DAST foundation (2026-09-28)
+
+### Scope delivered
+
+- Added project-owner DAST target configuration, API validation, durable project storage, and a project UI that keeps DAST disabled until the server confirms the configured target.
+- Registered the bounded passive DAST engine in the existing scan registry and lifecycle. DAST findings/observations use shared contracts, deterministic identities, redacted evidence, and the detail-only read surface; existing scan quota/idempotency paths remain authoritative.
+- SSRF defenses cover canonical HTTP(S) URLs, local/private/reserved/metadata IP and hostname classes, all-address DNS validation, resolver timeouts, literal-IP checks, DNS revalidation and pinned transport addresses. Redirects are independently resolved, same-host, limited, and cannot downgrade HTTPS.
+- Limits: GET only; at most 3 requests and 2 redirects; 32 KiB body per response; 5-second request timeout; 15-second DAST deadline. No browser, DOM/JavaScript execution, authentication, crawling, fuzzing, injection, exploit execution, or vulnerability-dataset matching.
+- Documentation: `docs/DAST.md`, plus cumulative updates to scan/project/security/testing docs and README. No security datasets or imports were added.
+
+### Verification — all gates passed
+
+`npm run verify` completed **PASS** on 2026-09-28:
+
+| Gate | Result |
+| --- | --- |
+| Scope/boundary checks (no DB/dataset/shell) | PASS |
+| Secret matcher self-test + source/build scans | PASS; 395 files scanned in each secret scan |
+| Typecheck (shared, API, worker, web) | PASS |
+| ESLint | PASS |
+| Full tests | PASS — 997 tests across 82 files (shared 158, API 625, worker 28, web 186) |
+| Production builds | PASS — shared, API, worker, production Vite bundle |
+| Dependency audit | PASS — 0 vulnerabilities |
+| `git diff --check` | PASS |
+
+DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passive-rule cases, 3 transport cases, 5 API lifecycle/persistence cases, 16 shared-contract cases, and 2 web UI cases. Existing SAST/SCA/Secrets and broader authz/quota/scan regressions passed in the full suite.
+
+### Controlled fixture verification (honest classification)
+
+- `apps/api/test/dastHttp.test.ts` uses an actual **loopback-only local HTTP server fixture** to verify the production Node transport's pinned-address lookup, one GET, absence of cookies/authorization, response cap, timeout and abort behavior. It bypasses target policy only for this local test object; production loopback/private rejection stays enabled.
+- `apps/api/test/dastApi.test.ts` exercises authenticated target configuration, scan execution, persisted observations/findings and a durable restart using the test-only resolver and **synthetic transport response**. This is an API integration/persistence E2E, **not** a real network DAST scan.
+- No arbitrary or public host was contacted; there was no public-target probe and no real DNS resolution in DAST fixtures.

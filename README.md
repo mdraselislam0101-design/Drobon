@@ -1,8 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 4: foundation + authentication +
-authorization + plans/subscriptions/entitlements**, cumulative on top of
-the verified Pump 1 + Pump 2 + Pump 3 base.
+Cybersecurity application — **Pump 11: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, and limited passive DAST**.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -16,9 +14,7 @@ state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
 store, a single server-authoritative entitlement decision point, a
 read-only self-only `GET /api/v1/subscription`, and plan/entitlement
 views on the Account page. Role and UserType never grant PRO.
-There is still **no database phase, no payment implementation, no
-security dataset, and no product features** (scanning, findings, admin
-console, etc. arrive later).
+There is still **no database phase, no payment implementation, and no bundled security dataset**. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP and is not a browser or full DAST crawler.
 
 ## Layout
 
@@ -80,12 +76,13 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/SCANS.md` — scan jobs, quota atomicity, idempotency, processor, engine boundary
 - `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
 - `docs/SCA.md` — the real SCA engine: manifest parsing, inventory, SBOM, the dataset lock
+- `docs/DAST.md` — limited passive DAST: target authorization, SSRF controls, request bounds and limitations
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 7, cumulative)
+## Scope (Pump 11, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -119,17 +116,15 @@ fail-closed states). Project CRUD never consumes a scan. See
 
 **PLUS Pump 7 (Secure scan-job foundation)**: the orchestration boundary
 future scanner engines plug into — durable scan jobs (`scan_` UUID ids,
-server-authoritative QUEUED→RUNNING→COMPLETED/FAILED lifecycle, no
+server-authoritative QUEUED→RUNNING→COMPLETED/FAILED/TIMED_OUT lifecycle, no
 client mutation path), quota consumed EXACTLY once per created scan and
 atomically with the durable append (FREE 3/month + shared-device pool
 enforced under 10-way concurrency; PRO exempt), idempotency keys scoped
 per account for retry safety, a durable worker loop with
 claim-once/finish-once semantics, crash recovery (interrupted scans →
-FAILED/SCAN_INTERRUPTED), the empty-by-design scanner-engine registry
-(every scan honestly fails SCAN_ENGINE_NOT_IMPLEMENTED — never a fake
-result; NO vulnerability datasets, the dataset lock holds), archived
+FAILED/SCAN_INTERRUPTED), and a server-only engine registry. Archived
 projects reject new scans while history stays readable, and the web
-scan experience inside the project page. See `docs/SCANS.md`.
+scan experience lives inside each project. See `docs/SCANS.md`.
 
 **PLUS Pump 8 (Real SAST engine)**: the first REAL scanner — static
 analysis of an uploaded source snapshot (project-scoped, path-policy
@@ -142,10 +137,9 @@ NEVER executed; every dimension is capped (files, bytes, findings,
 10 s deadline) with fail-closed codes. Findings persist atomically
 with COMPLETED, are readable only via the scan detail route, and
 render in the web UI as text. SECRETS (Pump 10) detects hardcoded
-secrets over the same snapshot with mandatory redaction; DAST still
-fails honestly
-with SCAN_ENGINE_NOT_IMPLEMENTED; the dataset lock holds. See
-`docs/SAST.md` and `docs/SCANS.md`.
+secrets over the same snapshot with mandatory redaction. No source code
+is executed, and the dataset lock holds. See `docs/SAST.md` and
+`docs/SCANS.md`.
 
 **PLUS Pump 9 (Real SCA engine — honest by construction)**: software-
 composition analysis of the same uploaded snapshot's dependency
@@ -167,8 +161,19 @@ real. SCA payloads persist atomically, ride the detail route only,
 survive restarts, and render distinctly from SAST in the web UI.
 See `docs/SCA.md`.
 
-**NOT included:** the remaining scan engines (DAST —
-SAST and SCA ship above), vulnerability
+**PLUS Pump 11 (limited passive DAST)**: one explicitly configured,
+project-associated HTTP(S) target, owner-authorized and validated on the
+server. A bounded GET-only engine uses SSRF-safe URL/DNS/address checks,
+pre-request DNS revalidation, pinned public addresses, independently
+validated same-host redirects, request/body/time caps, and passive
+response-header/body observations. Findings are actual observations
+with deterministic identities and redacted evidence, persisted through
+the existing scan lifecycle and rendered in the project UI. It does not
+use a browser, execute JavaScript, authenticate, crawl, fuzz, inject, or
+exploit; tests use synthetic transport responses and controlled local
+fixtures only. See `docs/DAST.md`.
+
+**NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
 UI), plan mutation workflow (`plan:manage` is granted to no one), usage
@@ -181,9 +186,8 @@ UserType-specific product features. See the NOT_IMPLEMENTED sections in
 
 ## Status
 
-Pump 9 — foundation + authentication + authorization + plans/
-subscriptions/entitlements + usage quota & device anti-abuse +
-projects + secure scan-job foundation + the REAL SAST engine + the
-REAL SCA engine (dependency inventory, SBOM, honest NOT_ASSESSED
-dataset lock). See `docs/BUILD_VERIFICATION.md` for the latest
-verification evidence and `git log` for history.
+Pump 11 — cumulative security foundation, authenticated project targets,
+secure scan lifecycle/quota, real SAST/SCA/Secrets engines, and limited
+passive DAST (single target, safe bounds, no browser or execution). See
+`docs/BUILD_VERIFICATION.md` and `docs/DAST.md` for verification evidence
+and scope.

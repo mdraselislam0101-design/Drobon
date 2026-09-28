@@ -133,6 +133,12 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     updateProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),
+    setDastTarget: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    clearDastTarget: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
     archiveProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),

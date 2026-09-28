@@ -58,6 +58,7 @@ interface ProjectView {
   status: string;
   createdAt: string;
   updatedAt: string;
+  dastTargetUrl?: string;
 }
 
 export function ProjectDetailPage(): React.JSX.Element {
@@ -220,9 +221,19 @@ export function ProjectDetailPage(): React.JSX.Element {
             )}
           </div>
 
+          <DastTargetSection
+            projectId={project.project.id}
+            targetUrl={project.project.dastTargetUrl}
+            onChanged={(updated) => setProject({ status: 'ready', project: updated })}
+          />
+
           <SourcesSection projectId={project.project.id} projectStatus={project.project.status} />
 
-          <ScansSection projectId={project.project.id} projectStatus={project.project.status} />
+          <ScansSection
+            projectId={project.project.id}
+            projectStatus={project.project.status}
+            dastTargetUrl={project.project.dastTargetUrl}
+          />
         </>
       )}
     </section>
@@ -236,21 +247,110 @@ export function ProjectDetailPage(): React.JSX.Element {
  *   only the scan type + an idempotency key that makes retries safe);
  * - SAST (Pump 8) analyzes the uploaded source snapshot server-side —
  *   real findings with evidence and remediation, rendered as text;
- * - SCA (Pump 9) and SECRETS (Pump 10) are real engines over the same
- *   snapshot; DAST does not exist yet, so those scans fail with
- *   SCAN_ENGINE_NOT_IMPLEMENTED — shown verbatim, never faked;
+ * - SCA (Pump 9), SECRETS (Pump 10), and passive DAST (Pump 11) have
+ *   dedicated honest result views; DAST is one bounded project URL only;
  * - quota/entitlement display comes from the server's usage view,
  *   never local state;
  * - archived projects cannot START new scans (the server enforces it;
  *   the form is hidden) but their historical scans stay listed;
  * - every value renders as text (React escaping) — no HTML injection.
  */
+function DastTargetSection({
+  projectId,
+  targetUrl,
+  onChanged,
+}: {
+  projectId: string;
+  targetUrl: string | undefined;
+  onChanged: (updated: ProjectView) => void;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [value, setValue] = useState(targetUrl ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const response = await client.setDastTarget(projectId, value);
+      setValue(response.project.dastTargetUrl ?? '');
+      onChanged(response.project);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'Could not configure this target.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = async (): Promise<void> => {
+    setError(null);
+    setBusy(true);
+    try {
+      const response = await client.clearDastTarget(projectId);
+      setValue('');
+      onChanged(response.project);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'Could not remove this target.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dast-target" data-testid="dast-target-section">
+      <h2>Passive DAST target</h2>
+      <p className="muted">
+        Configure one HTTP(S) URL owned or authorized for this project. The server rejects local, private,
+        reserved, or unsafe destinations and rechecks DNS at scan time. This is a bounded GET-only passive
+        check: no browser, JavaScript execution, login, crawling, fuzzing, or exploit attempts.
+      </p>
+      {targetUrl !== undefined && (
+        <p data-testid="dast-configured-target">Configured target: <code>{targetUrl}</code></p>
+      )}
+      <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
+        <div className="field">
+          <label htmlFor="dast-target-url">Authorized target URL</label>
+          <input
+            id="dast-target-url"
+            name="targetUrl"
+            type="url"
+            value={value}
+            maxLength={2048}
+            autoComplete="url"
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="https://example.org/"
+            aria-describedby="dast-target-hint"
+          />
+          <p className="muted" id="dast-target-hint">
+            No credentials, query string, fragment, custom port, or non-public address. Only the project owner can change this setting.
+          </p>
+        </div>
+        {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
+        <div className="hero-actions">
+          <button type="submit" className="button button-secondary" disabled={busy || value.length === 0} aria-busy={busy}>
+            {busy ? 'Validating…' : 'Save target'}
+          </button>
+          {targetUrl !== undefined && (
+            <button type="button" className="button button-ghost" onClick={() => void clear()} disabled={busy}>
+              Remove target
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function ScansSection({
   projectId,
   projectStatus,
+  dastTargetUrl,
 }: {
   projectId: string;
   projectStatus: string;
+  dastTargetUrl: string | undefined;
 }): React.JSX.Element {
   const client = useApiClient();
   const [scans, setScans] = useState<Scan[] | null>(null);
@@ -342,8 +442,8 @@ function ScansSection({
               data-testid="scan-type-select"
             >
               {SCAN_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
+                <option key={type} value={type} disabled={type === 'DAST' && dastTargetUrl === undefined}>
+                  {type === 'DAST' && dastTargetUrl === undefined ? 'DAST — configure target first' : type}
                 </option>
               ))}
             </select>
@@ -358,15 +458,10 @@ function ScansSection({
             {submitting ? 'Requesting…' : 'Request scan'}
           </button>
           <p className="muted">
-            SAST, SECRETS and SCA analyze the uploaded source snapshot —
-            analysis only, your code is never executed and credentials
-            are never verified against any service. Secrets findings
-            show redacted evidence (the value itself is never sent to
-            the browser). SCA reports the dependency inventory and an
-            SBOM; without a vulnerability intelligence dataset it
-            honestly reports not assessed (no fabricated advisories).
-            The DAST engine is not implemented yet: those scans fail
-            honestly with SCAN_ENGINE_NOT_IMPLEMENTED.
+            SAST, Secrets and SCA analyze the uploaded source snapshot; files are never executed, credentials are never verified, and secret evidence is redacted before persistence.
+            SCA advisories remain not assessed without a vulnerability dataset. DAST is a limited passive check of the one
+            configured project URL: bounded GET requests, validated same-host redirects and observed response headers/body only.
+            It does not use a browser, execute JavaScript, authenticate, crawl, fuzz, or exploit. Configure a target above to enable DAST.
           </p>
           {formError !== null && (
             <div className="form-alert" role="alert">
@@ -405,7 +500,7 @@ function ScansSection({
                   className={
                     scan.status === 'COMPLETED'
                       ? 'pill pill-ok'
-                      : scan.status === 'FAILED'
+                      : scan.status === 'FAILED' || scan.status === 'TIMED_OUT'
                         ? 'pill pill-danger'
                         : 'pill'
                   }
@@ -430,7 +525,7 @@ function ScansSection({
                   </div>
                 )}
               </dl>
-              {scan.status === 'FAILED' && scan.failureMessage !== undefined && (
+              {(scan.status === 'FAILED' || scan.status === 'TIMED_OUT') && scan.failureMessage !== undefined && (
                 <p className="muted" data-testid="scan-failure">
                   {scan.failureCode !== undefined ? `${scan.failureCode}: ` : ''}
                   {scan.failureMessage}
@@ -439,22 +534,20 @@ function ScansSection({
               {scan.status === 'COMPLETED' && scan.resultSummary !== undefined && (
                 <p className="muted" data-testid="scan-result">
                   {scan.scanType === 'SCA'
-                    ? `Dependencies: ${scan.resultSummary.dependenciesTotal ?? 0} (${
-                        scan.resultSummary.directDependencies ?? 0
-                      } direct)`
-                    : `Findings: ${scan.resultSummary.findingsTotal}${
-                        scan.resultSummary.partial === true
-                          ? ` — partial scan: ${
-                              scan.resultSummary.partialReason ?? 'some content was not inspected'
-                            }`
-                          : scan.resultSummary.truncated === true
-                            ? ' (findings truncated)'
-                            : ''
-                      }`}
+                    ? `Dependencies: ${scan.resultSummary.dependenciesTotal ?? 0} (${scan.resultSummary.directDependencies ?? 0} direct)`
+                    : scan.scanType === 'DAST'
+                      ? `Requests: ${scan.resultSummary.requestsMade ?? 0} · redirects: ${scan.resultSummary.redirectsFollowed ?? 0} · passive findings: ${scan.resultSummary.findingsTotal}${scan.resultSummary.partial === true ? ' · partial' : ''}`
+                      : `Findings: ${scan.resultSummary.findingsTotal}${
+                          scan.resultSummary.partial === true
+                            ? ` — partial scan: ${scan.resultSummary.partialReason ?? 'some content was not inspected'}`
+                            : scan.resultSummary.truncated === true
+                              ? ' (findings truncated)'
+                              : ''
+                        }`}
                 </p>
               )}
               {(scan.status === 'COMPLETED' &&
-                (scan.scanType === 'SAST' || scan.scanType === 'SECRETS')) && (
+                (scan.scanType === 'SAST' || scan.scanType === 'SECRETS' || scan.scanType === 'DAST')) && (
                 <FindingsView projectId={projectId} scanId={scan.id} />
               )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
@@ -713,6 +806,36 @@ function FindingsView({
       )}
       {detail !== null && (
         <>
+          {detail.scan.dast !== undefined && (
+            <section className="dast-observations" data-testid="dast-observations">
+              <h4>Observed responses</h4>
+              <p className="muted">
+                Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.
+              </p>
+              <p data-testid="dast-target-url">Target: <code>{detail.scan.dast.targetUrl}</code></p>
+              {detail.scan.dast.partial && (
+                <p className="muted" data-testid="dast-partial-note">
+                  Partial result: {detail.scan.dast.partialReason ?? 'some response checks were not completed'}
+                </p>
+              )}
+              <ul className="scan-list">
+                {detail.scan.dast.observations.map((observation, index) => (
+                  <li key={`${observation.endpoint}-${index}`} data-testid="dast-observation">
+                    <strong>{observation.method} · HTTP {observation.status}</strong>{' '}
+                    <code>{observation.endpoint}</code>
+                    <p className="muted">
+                      {observation.responseTimeMs} ms · {observation.bodyBytes} bytes inspected
+                      {observation.bodyTruncated ? ' · body truncated' : ''}
+                      {observation.contentType !== undefined ? ` · ${observation.contentType}` : ''}
+                    </p>
+                    {observation.headers.length > 0 && (
+                      <ul>{observation.headers.map((header, headerIndex) => <li key={`${header}-${headerIndex}`}>{header}</li>)}</ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <div className="field">
             <label htmlFor={`findings-filter-${scanId}`}>Severity</label>
             <select
@@ -733,7 +856,9 @@ function FindingsView({
           </div>
           {visible.length === 0 ? (
             <p className="muted" data-testid="findings-empty">
-              No findings at this severity.
+              {detail.scan.scanType === 'DAST'
+                ? 'None of the supported passive checks produced findings for the observed responses.'
+                : 'No findings at this severity.'}
             </p>
           ) : (
             <ul className="findings-list" data-testid="findings-list">
@@ -761,7 +886,9 @@ function FindingsView({
                   </div>
                   <p data-testid="finding-title">{finding.title}</p>
                   <p className="muted" data-testid="finding-location">
-                    {finding.file}:{finding.line}
+                    {finding.scanner === 'DAST'
+                      ? `${finding.method} ${finding.endpoint} · HTTP ${finding.responseStatus}`
+                      : `${finding.file}:${finding.line}`}
                     {finding.cwe !== undefined ? ` · ${finding.cwe}` : ''}
                   </p>
                   <pre>

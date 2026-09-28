@@ -60,6 +60,9 @@ import { createScanRoutes } from './routes/scans.js';
 import { createSourceRoutes } from './routes/sources.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
+import { createDastTargetPolicy, type DastTargetPolicy } from './scans/dast/target.js';
+import type { DastTransport } from './scans/dast/http.js';
+import { createDastEngine } from './scans/dast/engine.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -119,6 +122,10 @@ export interface AppDeps {
    * (including `[]`) to control the registry exactly — tests do.
    */
   scanEngines?: readonly ScanEngine[];
+  /** Production-default policy; injectable with deterministic DNS fixtures in tests. */
+  dastTargetPolicy?: DastTargetPolicy;
+  /** Test-only network seam; production uses the bounded pinned Node HTTP transport. */
+  dastTransport?: DastTransport;
   /**
    * Scan processor interval (Pump 7; default 5s, injectable for tests).
    */
@@ -210,22 +217,24 @@ export function createApp(deps: AppDeps): App {
     (config.sourceStorePath === ':memory:'
       ? createMemorySourceStore()
       : createJsonFileSourceStore(config.sourceStorePath));
-  // The engine registry (server-side composition ONLY). Pump 8: the
-  // REAL SAST engine (static analysis of the project's source
-  // snapshot — see scans/sast/). Pump 9: SCA joins as a REAL engine
-  // (manifests → inventory → SBOM → honest assessment; the
-  // intelligence provider comes from config — 'none', the only value
-  // today, enforced by the dataset lock → Null provider → honest
-  // NOT_ASSESSED). PUMP 10: SECRETS joins as a REAL engine
-  // (hardcoded-secret detection with mandatory evidence redaction —
-  // see scans/secrets/). DAST remains unregistered (honest
-  // NOT_IMPLEMENTED).
+  // One policy instance is shared by configuration preflight, scan
+  // preflight and engine execution. The engine re-resolves and pins
+  // every request independently, so saved configuration is never
+  // treated as authorization to reach a stale/private address.
+  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
+  // The engine registry (server-side composition ONLY). Pump 8: REAL
+  // SAST; Pump 9: REAL SCA; Pump 10: REAL Secrets; Pump 11: bounded,
+  // passive, single-target DAST. No browser or exploit capabilities.
   const intelligenceProvider = createNullIntelligenceProvider();
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore }),
       createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
       createSecretsEngine({ sources: sourceStore }),
+      createDastEngine({
+        targetPolicy: dastTargetPolicy,
+        ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
+      }),
     ],
   );
   const scanProcessor: ScanProcessor = createScanProcessor({
@@ -249,7 +258,7 @@ export function createApp(deps: AppDeps): App {
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
     ...createUsageRoutes({ config, users, usage }),
-    ...createProjectRoutes({ config, projects: projectStore }),
+    ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createScanRoutes({
       config,
       users,
@@ -258,6 +267,7 @@ export function createApp(deps: AppDeps): App {
       sources: sourceStore,
       usage,
       processor: scanProcessor,
+      dastTargetPolicy,
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
     ...(deps.extraRoutes ?? []),

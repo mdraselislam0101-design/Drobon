@@ -1,4 +1,4 @@
-# Scan Jobs (Pump 7 — secure orchestration; Pump 8–9 — real engines)
+# Scan Jobs (Pump 7 — secure orchestration; Pump 8–11 — real engines)
 
 A Scan Job is a request to run ONE security scan of ONE type against
 ONE project. Pump 7 established the secure orchestration boundary the
@@ -27,11 +27,13 @@ contract is unchanged:
   REDACTED evidence, remediation) — analysis only, no execution, no
   credential verification, no network. Raw secret values never leave
   the engine (see `docs/SECRETS.md`).
-- **DAST still has no engine.** The type remains a supported job type
-  of the orchestration layer with zero engines registered, so every
-  such scan deterministically FAILS with
-  `SCAN_ENGINE_NOT_IMPLEMENTED` — the system NEVER fabricates
-  findings, results or "completed" states.
+- `DAST` scans (Pump 11) perform bounded, GET-only passive checks against
+  one owner-configured project URL. DNS is revalidated and the socket is
+  pinned to a public address; redirects are independently checked and
+  restricted to the same host. Results include only observed,
+  allowlisted response metadata and deterministic findings. The engine
+  does not use a browser, execute content, authenticate, crawl, fuzz,
+  inject, or exploit (see `docs/DAST.md`).
 - **No vulnerability datasets.** No CVE/NVD/GHSA/OSV/KEV/EPSS data is
   imported, bundled or referenced — the dataset lock holds; real
   dataset integration is a separate later workstream.
@@ -44,9 +46,10 @@ contract is unchanged:
 Authenticated account (ownership source — never client-supplied)
   └── Project (Pump 6 — ACTIVE required for new scans)
         └── Scan Job (Pump 7 — this document)
-              └── source snapshot (Pump 8 — the SAST/SCA scan target)
-              └── engine results / findings (SAST findings; SCA inventory+SBOM;
-                  SECRETS/DAST future)
+              ├── source snapshot (Pump 8 — SAST/SCA/SECRETS input)
+        ├── one explicit DAST target URL (Pump 11 — owner-configured)
+        └── engine results / findings (SAST + SECRETS findings; SCA inventory+SBOM;
+            bounded DAST observations/findings)
 ```
 
 The client may submit ONLY the scan type (plus an optional idempotency
@@ -68,9 +71,11 @@ answer the SAME uniform 403 (no existence oracle). `AccountRole` and
 
 | Method | Path | Behavior |
 | ------ | ---- | -------- |
-| `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body exactly `{ scanType }`. Project must be the caller's own AND `ACTIVE` (archived → `409 PROJECT_ARCHIVED`). Consumes quota atomically with creation. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
+| `PUT` | `/api/v1/projects/:projectId/dast-target` | Set one project-owned target with exactly `{ targetUrl }`. Owner-only; validates URL and current public DNS answers before persistence. |
+| `DELETE` | `/api/v1/projects/:projectId/dast-target` | Remove the project-owned target; owner-only. |
+| `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body exactly `{ scanType }`. DAST target comes only from the project record. Project must be the caller's own AND `ACTIVE` (archived → `409 PROJECT_ARCHIVED`). Consumes quota atomically with creation. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
 | `GET` | `/api/v1/projects/:projectId/scans` | The project's scans, server-ordered `createdAt` DESC then `id` ASC. |
-| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its engine payload** (Pump 8: COMPLETED SAST scans carry the full ordered, redacted findings list — the ONLY findings read surface; Pump 9: COMPLETED SCA scans carry `scan.sca` — summary, dependency inventory, manifest outcomes, SBOM and advisories — the ONLY SCA payload read surface). Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
+| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its engine payload** (SAST/SECRETS findings; SCA summary, inventory, manifests, SBOM and advisory assessment; DAST bounded observations and findings). This is the only engine-payload read surface. Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
 
 There is deliberately **NO scan mutation endpoint** — no PATCH, no
 DELETE, no status route. `PATCH`/`DELETE` on a scan answer `405 +
@@ -119,7 +124,8 @@ Allow`. The processor owns every transition.
 
 ```
 QUEUED ──→ RUNNING ──→ COMPLETED   (engine produced a real summary)
-   │           └───→ FAILED        (deterministic failure)
+   │           ├───→ FAILED        (deterministic failure)
+   │           └───→ TIMED_OUT     (bounded DAST request/scan deadline)
    └───────────────→ FAILED        (never claimed + engine missing)
 RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
 ```
@@ -130,34 +136,28 @@ RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
   do not exist.
 - Terminal records are immutable: re-finalize attempts are no-ops.
 - `COMPLETED` requires an engine-produced `resultSummary` (e.g.
-  `{ findingsTotal: n }`); `FAILED` requires a closed-vocabulary
-  `failureCode` + a safe bounded message. The shared guard enforces
+  `{ findingsTotal: n }`); `FAILED` and `TIMED_OUT` require a
+  closed-vocabulary `failureCode` + a safe bounded message. The shared guard enforces
   these invariants on every untrusted payload.
 - Failure codes (scan-domain, stable, safe to expose):
   `SCAN_ENGINE_NOT_IMPLEMENTED`, `SCAN_INTERRUPTED`,
-  `SCAN_ENGINE_ERROR` (orchestration) plus the Pump 8 SAST engine's
-  closed set — `SAST_TARGET_NOT_FOUND`, `SAST_TARGET_TOO_LARGE`,
-  `SAST_FILE_LIMIT_EXCEEDED`, `SAST_SCAN_TIMEOUT`, `SAST_INPUT_INVALID`,
-  `SAST_UNSUPPORTED_LANGUAGE` — and the Pump 9 SCA engine's closed set
-  — `SCA_TARGET_NOT_FOUND`, `SCA_TARGET_TOO_LARGE`, `SCA_INPUT_INVALID`,
-  `SCA_MANIFEST_LIMIT_EXCEEDED`, `SCA_SCAN_TIMEOUT`,
-  `SAST_UNSUPPORTED_LANGUAGE`. A crashed engine fails closed with a
-  generic message — internals never leak.
+  `SCAN_ENGINE_ERROR` (orchestration), the closed SAST/SCA/SECRETS
+  engine vocabularies, and DAST's `DAST_TARGET_NOT_FOUND`,
+  `DAST_TARGET_INVALID`, `DAST_TARGET_BLOCKED`, `DAST_DNS_FAILED`,
+  `DAST_REQUEST_FAILED`, `DAST_REQUEST_TIMEOUT`, and `DAST_SCAN_TIMEOUT`.
+  A crashed engine fails closed with a generic message — internals never leak.
 
-## The engine boundary (Pump 8 registers the SAST engine)
+## The engine boundary (Pumps 8–11)
 
 `apps/api/src/scans/engines.ts` defines the only thing that may
 produce a result: a server-side `ScanEngine` registry entry
 (`execute(record, ctx) → completed|failed`), composed at process
 startup — nothing client-facing can register, discover or influence
-engines. Pump 8 registers the REAL SAST engine
-(`apps/api/src/scans/sast/` — rules + engine, documented in
-`docs/SAST.md`), SCA (Pump 9) and SECRETS (Pump 10) are registered
-real engines; `DAST` remains unregistered and fails
-with `SCAN_ENGINE_NOT_IMPLEMENTED`. Future engines plug in here with
-zero route/store changes. Test suites also inject synthetic engines to
-prove processor edge cases (synthetic fixtures are allowed ONLY in
-tests).
+engines. SAST, SCA, SECRETS and the limited passive DAST engine are
+registered server-side. DAST target policy, HTTP transport and rules
+are isolated under `apps/api/src/scans/dast/` and documented in
+`docs/DAST.md`. Test suites inject synthetic engines/transports only
+to verify bounded behavior; no arbitrary/public host is contacted.
 
 ## The processor (worker integration)
 

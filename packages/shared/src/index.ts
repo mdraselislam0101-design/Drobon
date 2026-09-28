@@ -2,6 +2,7 @@ export * from './api.js';
 export * from './auth.js';
 export * from './authz.js';
 export * from './config.js';
+export * from './dast.js';
 export * from './errors.js';
 export * from './guards.js';
 export * from './jobs.js';
