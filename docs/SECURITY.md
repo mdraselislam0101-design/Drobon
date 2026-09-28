@@ -250,6 +250,18 @@ test in `apps/api/test/validate.test.ts`.
 | Only bounded, allowlisted metadata and actual deterministic observations/findings persist; cookie values and arbitrary response body/header values do not; durable project target/results/findings survive restart | VERIFIED | `apps/api/test/dastRules.test.ts`, `apps/api/test/dastApi.test.ts`, `packages/shared/test/dast.test.ts` |
 | Scope label is honest: limited passive GET checks only; no browser, DOM/JavaScript execution, authentication, crawling, fuzzing, injection, exploit, CVSS or vulnerability dataset | VERIFIED | `apps/web/test/dastUi.test.tsx`, `docs/DAST.md`, `scripts/check-boundaries.mjs` |
 
+### Finding remediation lifecycle — Pump 13
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Mutations use the existing authenticated account and own-project resolver; cross-account/project IDOR, malformed finding IDs, strict body shape, archived-project mutation and unauthenticated requests fail closed | VERIFIED | `apps/api/test/findingLifecycleApi.test.ts` |
+| Server transition matrix is enforced; audit records and notes persist atomically, bounded history is paginated, and completed same-scanner reobservation reopens resolved findings by fingerprint without changing scanner evidence | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Plain-text note validation rejects HTML/control injection and redacts synthetic credential-shaped material before response/store/report; Markdown report escapes multiline notes | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Guidance is closed-rule based for SAST, Secrets and supported passive DAST; secrets are not interpolated; SCA without intelligence remains `NOT ASSESSED` and yields no invented package advice | VERIFIED | `apps/api/test/findingWorkflow.test.ts` |
+| Report snapshots include safe current workflow/verification state; content digest and persisted report update on lifecycle changes; old document migration and restart are deterministic | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Workflow operations do not consume scan quota; verification still uses normal FREE/PRO scan policy | VERIFIED | `apps/api/test/findingLifecycleApi.test.ts`, `apps/api/test/reportsApi.test.ts` |
+| Existing detail UI renders guidance, workflow state, verification, notes and bounded history as text; saved report UI identifies its point-in-time lifecycle snapshot | VERIFIED | `apps/web/test/findingsReportsUi.test.tsx` |
+
 ### Web
 
 | Control | Status | Evidence |

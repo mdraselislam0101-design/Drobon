@@ -1,6 +1,6 @@
-# Findings and security reports (Pump 12)
+# Findings and security reports (Pumps 12–13)
 
-Pump 12 completes the existing persisted Finding and scan-result surfaces. It does not introduce a parallel scan, authorization, quota, or storage system.
+Pump 12 completes the existing persisted Finding and scan-result surfaces. Pump 13 adds the lifecycle, notes, and safe rule-based guidance described in [`FINDINGS.md`](./FINDINGS.md). Neither introduces a parallel scan, authorization, quota, or storage system.
 
 ## Finding reads
 
@@ -23,7 +23,9 @@ Routes:
 - `GET /api/v1/projects/:projectId/scans/:scanId/report` retrieves an existing report without generating one.
 - `GET /api/v1/projects/:projectId/scans/:scanId/report/download?format=json|markdown` downloads the persisted report. JSON is canonical; Markdown is a human-readable escaped representation. Filenames are generated from validated report IDs. There is no PDF route.
 
-One immutable report is stored per completed scan in the existing durable scan JSON document. The store validates schema, digests, scan linkage, and size on startup; corrupt or detached report data fails startup rather than being silently served. Older scan documents without a `reports` array load as an empty report set. The store permits at most 100 reports and each canonical JSON report is capped at 512 KiB. Export bodies are separately bounded; the web client validates media type, generated filename, and streamed byte size before creating a download.
+One report record per completed scan is stored in the existing durable scan JSON document. Pump 13 adds an optional point-in-time workflow snapshot to new reports; legacy Pump 12 reports without it remain valid. The store validates schema, digests, scan linkage, and size on startup; corrupt or detached report data fails startup rather than being silently served. Older scan documents without a `reports` array load as an empty report set. The store permits at most 100 reports and each canonical JSON report is capped at 512 KiB. Export bodies are separately bounded; the web client validates media type, generated filename, and streamed byte size before creating a download.
+
+`GET .../report` returns the saved snapshot as-is. `POST .../report` rebuilds a snapshot from current persisted findings/workflows and replaces that scan's report only when the content digest changes; the report ID is derived from the new content and may therefore change. Regeneration does not consume scan quota. A workflow mutation does not silently alter an already-persisted report; explicitly regenerate it to capture the new point-in-time state.
 
 Canonical JSON sorts object keys recursively while preserving array order. SHA-256 `contentDigest` covers the report's source/result material; `reportId` is derived from that digest. `integrityDigest` is an actual SHA-256 over the persisted report fields, including its generation timestamp. These digests detect content changes; **they are not signatures and do not prove who produced a report**. Report creation/retrieval does not consume scan quota.
 
@@ -35,4 +37,4 @@ Reports do not synthesize findings, dependency versions, advisories, CWE/CVSS sc
 
 ## Limits
 
-Reports cover one completed scan at a time. Multi-scan/project-wide aggregation, PDF, digital signatures, report scheduling, remediation tracking, and a database-backed report repository are not implemented.
+Reports cover one completed scan at a time. The bounded finding lifecycle and note history are persisted in the existing scan store and summarized in point-in-time reports; the full audit history is not embedded in reports. Multi-scan/project-wide aggregation, PDF, digital signatures, report scheduling, and a database-backed report repository are not implemented.

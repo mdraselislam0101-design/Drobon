@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 12: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, and persisted reports**.
+Cybersecurity application — **Pump 13: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, and finding remediation lifecycle**.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -77,7 +77,8 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
 - `docs/SCA.md` — the real SCA engine: manifest parsing, inventory, SBOM, the dataset lock
 - `docs/DAST.md` — limited passive DAST: target authorization, SSRF controls, request bounds and limitations
-- `docs/REPORTS.md` — findings routes, persisted single-scan reports, exports, digests and honesty limits
+- `docs/FINDINGS.md` — lifecycle transitions, verification semantics, notes, guidance, authorization and persistence
+- `docs/REPORTS.md` — findings routes, persisted single-scan reports, workflow snapshots, exports, digests and honesty limits
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -188,6 +189,17 @@ SCA vulnerability intelligence remains `NO_DATA_LOADED` /
 `NOT_ASSESSED`; empty advisories do not mean zero vulnerabilities.
 Reports do not consume quota. See `docs/REPORTS.md`.
 
+**PLUS Pump 13 (finding remediation lifecycle):** authenticated owner-only
+workflow transitions, bounded audit history and safe plain-text notes are
+persisted atomically with the existing scan JSON store. Reobserved resolved
+findings reopen by deterministic fingerprint; absence is only recorded as
+not observed in the latest completed same-scanner scan with complete finding details. Rule-specific
+read-only guidance and point-in-time report snapshots never modify source
+or claim a user-marked resolution is technically fixed. Workflow changes
+do not consume scan quota; verification scans use the existing quota.
+Archived projects remain read-only for workflow mutations. See
+`docs/FINDINGS.md` and `docs/REPORTS.md`.
+
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
@@ -195,16 +207,17 @@ UI), plan mutation workflow (`plan:manage` is granted to no one), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-remediation tracking, AI assistance, admin dashboard, UserType-specific
+AI assistance, admin dashboard, UserType-specific
 product features, multi-scan reports, PDF/signature workflows, and a
 database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 12 — cumulative security foundation, authenticated project targets,
+Pump 13 — cumulative security foundation, authenticated project targets,
 secure scan lifecycle/quota, real SAST/SCA/Secrets engines, limited
-passive DAST, bounded findings, and durable single-scan reports. DAST
-remains single-target and passive; SCA vulnerability intelligence remains
-NOT ASSESSED without a loaded dataset. See `docs/BUILD_VERIFICATION.md`,
-`docs/DAST.md`, and `docs/REPORTS.md` for verification evidence and scope.
+passive DAST, bounded findings, durable single-scan reports, and persisted
+finding remediation lifecycle. DAST remains single-target and passive;
+SCA vulnerability intelligence remains NOT ASSESSED without a loaded
+dataset. See `docs/BUILD_VERIFICATION.md`, `docs/DAST.md`,
+`docs/FINDINGS.md`, and `docs/REPORTS.md` for verification evidence and scope.

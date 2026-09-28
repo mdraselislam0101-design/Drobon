@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { isFindingDetailResponse, isFindingsPageResponse } from '../src/findings.js';
-import type { Finding, Project, Scan } from '../src/index.js';
+import {
+  isFindingDetailResponse,
+  isFindingHistoryResponse,
+  isFindingWorkflow,
+  isFindingWorkflowResponse,
+  isFindingsPageResponse,
+} from '../src/findings.js';
+import type { Finding, FindingWorkflow, Project, Scan } from '../src/index.js';
 
 const project: Project = {
   id: 'prj_00000000-0000-4000-8000-000000000021',
@@ -39,6 +45,26 @@ const finding: Finding = {
   fingerprint: 'b'.repeat(64),
 };
 
+const workflow: FindingWorkflow = {
+  id: 'fwf_00000000-0000-4000-8000-000000000021',
+  projectId: project.id,
+  findingId: finding.id,
+  fingerprint: finding.fingerprint,
+  scanner: 'SAST',
+  ruleId: finding.ruleId,
+  state: 'OPEN',
+  firstObservedScanId: scan.id,
+  firstObservedAt: scan.completedAt!,
+  lastObservedScanId: scan.id,
+  lastObservedAt: scan.completedAt!,
+  lastVerificationScanId: scan.id,
+  lastVerificationAt: scan.completedAt!,
+  verificationState: 'OBSERVED',
+  notes: [],
+  historyTotal: 1,
+  updatedAt: scan.completedAt!,
+};
+
 describe('bounded findings page and detail contracts', () => {
   test('accepts consistent filtered pages and rejects cross-filter data', () => {
     const page = {
@@ -60,5 +86,36 @@ describe('bounded findings page and detail contracts', () => {
     expect(isFindingDetailResponse({ ...detail, finding: { ...finding, scanId: 'scan_00000000-0000-4000-8000-000000000022' } })).toBe(false);
     expect(isFindingDetailResponse({ ...detail, finding: { ...finding, projectId: 'prj_00000000-0000-4000-8000-000000000022' } })).toBe(false);
     expect(isFindingDetailResponse({ ...detail, scan: { ...scan, scanType: 'SECRETS' } })).toBe(false);
+  });
+
+  test('workflow, mutation, history and current finding-detail contracts stay bounded and cross-bound', () => {
+    expect(isFindingWorkflow(workflow)).toBe(true);
+    expect(isFindingWorkflow({ ...workflow, state: 'FIXED' })).toBe(false);
+    expect(isFindingWorkflowResponse({ workflow })).toBe(true);
+    expect(isFindingWorkflowResponse({ workflow, projectId: project.id })).toBe(false);
+    const currentDetail = {
+      project, scan, finding, workflow,
+      guidance: {
+        ruleId: finding.ruleId, status: 'RULE_SPECIFIC', whyItMatters: 'Rule-bound explanation.',
+        actions: ['Review the scanner rule.'], verification: 'Run the same authorized scanner again.',
+      },
+    };
+    expect(isFindingDetailResponse(currentDetail)).toBe(true);
+    expect(isFindingDetailResponse({ ...currentDetail, workflow: { ...workflow, fingerprint: 'c'.repeat(64) } })).toBe(false);
+    expect(isFindingDetailResponse({ ...currentDetail, guidance: { ...currentDetail.guidance, ruleId: 'DG-SAST-002' } })).toBe(false);
+    const history = {
+      events: [{
+        id: 'fev_00000000-0000-4000-8000-000000000021', findingId: finding.id,
+        previousState: null, newState: 'OPEN', actorId: 'system:scanner', actorType: 'SYSTEM',
+        action: 'FINDING_OBSERVED', at: scan.completedAt,
+      }],
+      page: 1, pageSize: 20, total: 1, totalPages: 1,
+    };
+    expect(isFindingHistoryResponse(history)).toBe(true);
+    expect(isFindingHistoryResponse({ ...history, total: 201 })).toBe(false);
+    expect(isFindingWorkflow({ ...workflow, notes: [{
+      id: 'fnt_00000000-0000-4000-8000-000000000021', text: '<img src=x>', actorId: 'usr_owner',
+      createdAt: scan.completedAt, redacted: false,
+    }] })).toBe(false);
   });
 });

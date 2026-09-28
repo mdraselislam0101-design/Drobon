@@ -57,8 +57,10 @@ browser bundle and the servers can all consume it:
   fixed severities, bounded evidence, redaction upstream) plus the
   findings-bearing scan-detail response guard. Pump 12 adds explicit
   project context for newly persisted source findings and the separate
-  bounded page/detail contracts in `findings.ts`; `reports.ts` defines
-  the versioned report, scanner coverage, SCA honesty, and integrity guards.
+  bounded page/detail contracts in `findings.ts`; Pump 13 extends those
+  contracts with bounded workflow, note, history, and rule-guidance shapes.
+  `reports.ts` defines the versioned report, scanner coverage, SCA honesty,
+  optional point-in-time workflow snapshots, and integrity guards.
 - `sources.ts` — source-snapshot contracts (Pump 8): the upload body
   (`{ files: [{ path, content }] }`), the single path policy
   (relative, no traversal/dotfiles, len/segment/depth caps, blocked
@@ -145,13 +147,15 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   subscription, never role/userType/client input).
 - `scans/` — the secure scan-job foundation (Pump 7): `store.ts` is
   the durable orchestration store (one JSON document with scans,
-  bounded idempotency entries and at most 100 persisted reports; THE
-  atomic `createScanWithQuota` operation linearizes idempotency lookup,
-  quota consumption via the UsageService and the durable append;
-  claim-once `claimNextQueued`, finish-once `completeScan`/`failScan`
-  (Pump 8: findings persist atomically with COMPLETED, with server-set
-  project context on new source findings; Pump 12: one immutable
-  integrity-checked report per completed scan), boot recovery
+  bounded idempotency entries, at most 100 persisted reports, and bounded
+  Pump 13 finding workflows; THE atomic `createScanWithQuota` operation
+  linearizes idempotency lookup, quota consumption via the UsageService
+  and the durable append; claim-once `claimNextQueued`, finish-once
+  `completeScan`/`failScan` (Pump 8: findings persist atomically with
+  COMPLETED, with server-set project context on new source findings;
+  Pump 12: integrity-checked per-scan reports; Pump 13: workflow
+  observation updates atomically with completed scans and report snapshots
+  refresh when their content changes), boot recovery
   `failAllRunning`); `engines.ts` is the scanner-engine
   boundary (server-side registry — Pumps 8–11 register the REAL SAST,
   SCA, Secrets and limited passive DAST engines; DAST's SSRF-safe target
@@ -204,12 +208,13 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   (atomic quota + creation, optional Idempotency-Key, archived → 409
   PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
   `GET …/scans/:scanId` (uniform 404 inside the caller's own project),
-  plus Pump 12's authenticated findings page/detail and report
-  create/retrieve/download routes scoped through the same own-project
-  resolver. Findings filters and export bodies are bounded; reports are
-  persisted with the scan store and do not consume quota. No scan
-  mutation endpoint exists — the processor owns every transition (see
-  docs/SCANS.md and `docs/REPORTS.md`).
+  plus Pump 12's authenticated findings page/detail and report routes and
+  Pump 13's authenticated lifecycle/note/history routes, all scoped through
+  the same own-project resolver. Finding filters, workflow records, history
+  and export bodies are bounded; archived projects are read-only for
+  workflow mutation. Reports share the scan store and do not consume quota.
+  No scan-job lifecycle mutation endpoint exists — the processor owns scan
+  transitions. See docs/SCANS.md, `docs/FINDINGS.md`, and `docs/REPORTS.md`.
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original

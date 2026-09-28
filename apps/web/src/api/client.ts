@@ -8,6 +8,8 @@ import {
   isScanDetailResponse,
   isFindingsPageResponse,
   isFindingDetailResponse,
+  isFindingHistoryResponse,
+  isFindingWorkflowResponse,
   isSecurityReportResponse,
   isScanResponse,
   isScansResponse,
@@ -29,6 +31,9 @@ import {
   type ScanResponse,
   type FindingsPageResponse,
   type FindingDetailResponse,
+  type FindingHistoryResponse,
+  type FindingLifecycleState,
+  type FindingWorkflowResponse,
   type FindingSeverity,
   type SecurityReportResponse,
   type ScansResponse,
@@ -217,6 +222,12 @@ export interface ApiClient {
   ): Promise<FindingsPageResponse>;
   /** Authorized detail for one finding nested under its project and scan. */
   getFinding(projectId: string, scanId: string, findingId: string, signal?: AbortSignal): Promise<FindingDetailResponse>;
+  /** Server-enforced finding workflow transition; source evidence is never sent. */
+  setFindingLifecycle(projectId: string, scanId: string, findingId: string, state: FindingLifecycleState, signal?: AbortSignal): Promise<FindingWorkflowResponse>;
+  /** Add normalized, credential-redacted plain-text remediation notes. */
+  addFindingNote(projectId: string, scanId: string, findingId: string, note: string, signal?: AbortSignal): Promise<FindingWorkflowResponse>;
+  /** Bounded, newest-first lifecycle event history. */
+  getFindingHistory(projectId: string, scanId: string, findingId: string, page?: number, pageSize?: number, signal?: AbortSignal): Promise<FindingHistoryResponse>;
   /** Create or return the persisted deterministic report for a completed scan. */
   createReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Retrieve an existing persisted report without regenerating it. */
@@ -654,6 +665,26 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isFindingDetailResponse,
       ),
+    setFindingLifecycle: (projectId: string, scanId: string, findingId: string, state: FindingLifecycleState, signal?: AbortSignal): Promise<FindingWorkflowResponse> =>
+      authRequest<FindingWorkflowResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/findings/${encodeURIComponent(findingId)}/lifecycle`,
+        { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state }), ...(signal === undefined ? {} : { signal }) },
+        isFindingWorkflowResponse,
+      ),
+    addFindingNote: (projectId: string, scanId: string, findingId: string, note: string, signal?: AbortSignal): Promise<FindingWorkflowResponse> =>
+      authRequest<FindingWorkflowResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/findings/${encodeURIComponent(findingId)}/notes`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note }), ...(signal === undefined ? {} : { signal }) },
+        isFindingWorkflowResponse,
+      ),
+    getFindingHistory: (projectId: string, scanId: string, findingId: string, page = 1, pageSize = 20, signal?: AbortSignal): Promise<FindingHistoryResponse> => {
+      const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      return authRequest<FindingHistoryResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/findings/${encodeURIComponent(findingId)}/history?${query.toString()}`,
+        signal === undefined ? {} : { signal },
+        isFindingHistoryResponse,
+      );
+    },
     createReport: (projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse> =>
       authRequest<SecurityReportResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report`,

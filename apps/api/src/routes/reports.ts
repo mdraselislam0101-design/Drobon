@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   FINDING_ID_PATTERN,
+  FINDING_LIFECYCLE_STATES,
+  FINDING_HISTORY_PAGE_MAX,
+  FINDING_HISTORY_PAGE_SIZE_MAX,
+  FINDING_NOTE_MAX_LENGTH,
   SCAN_ID_PATTERN,
   REPORT_MAX_BYTES,
   FINDINGS_PAGE_MAX,
@@ -12,12 +16,14 @@ import {
   isFindingSeverity,
   isFindingScanner,
   type FindingDetailResponse,
+  type FindingHistoryResponse,
+  type FindingLifecycleState,
   type FindingsPageResponse,
   type ScanType,
   type SecurityReport,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { badRequest, conflict, internal, notFound, unauthorized, validationError } from '../errors.js';
+import { badRequest, conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
 import type { RequestContext, Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import type { ProjectStore } from '../projects/store.js';
@@ -27,6 +33,8 @@ import type { ScanRecord, ScanStore } from '../scans/store.js';
 import { toScanResponse } from '../scans/store.js';
 import { sendSuccess } from '../respond.js';
 import { buildSecurityReport, canonicalJson, renderSecurityReportMarkdown } from '../reports/build.js';
+import { prepareFindingNote } from '../scans/findingWorkflow.js';
+import { remediationGuidanceForFinding } from '../scans/remediationGuidance.js';
 import * as v from '../lib/validate.js';
 
 export interface ReportsRouteDeps {
@@ -106,6 +114,24 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
     return { project, scan };
   };
 
+  const lifecycleSchema = v.object({ state: v.string({ minLength: 1, maxLength: 24, trim: true }) });
+  const remediationNoteSchema = v.object({ note: v.string({ minLength: 1, maxLength: FINDING_NOTE_MAX_LENGTH }) });
+
+  const resolveFinding = async (
+    rawProjectId: unknown, rawScanId: unknown, rawFindingId: unknown, actorId: string,
+  ): Promise<{ project: Awaited<ReturnType<OwnProjectResolver['ownProjectOr403']>>; scan: ScanRecord; finding: NonNullable<ScanRecord['findings']>[number] }> => {
+    const { project, scan } = await resolveCompletedScan(rawProjectId, rawScanId, actorId);
+    if (typeof rawFindingId !== 'string' || rawFindingId.length > 64 || !FINDING_ID_PATTERN.test(rawFindingId)) throw notFound('Finding not found.');
+    const finding = scan.findings?.find((candidate) => candidate.id === rawFindingId);
+    if (finding === undefined) throw notFound('Finding not found.');
+    return { project, scan, finding };
+  };
+
+  const assertProjectActive = async (projectId: string): Promise<void> => {
+    const current = await projects.findById(projectId);
+    if (current?.status === 'ARCHIVED') throw projectArchived();
+  };
+
   const projectIdFromActor = async (ctx: RequestContext): Promise<string> => {
     if (ctx.user === undefined) throw unauthorized();
     const project = await access.ownProjectOr403(ctx.params['projectId'], ctx.user.id);
@@ -169,20 +195,95 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
       handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
-        const { project, scan } = await resolveCompletedScan(ctx.params['projectId'], ctx.params['scanId'], actor.id);
+        const { project, scan, finding } = await resolveFinding(ctx.params['projectId'], ctx.params['scanId'], ctx.params['findingId'], actor.id);
         rejectUnknownQueryParameters(req);
-        const findingId = ctx.params['findingId'];
-        if (typeof findingId !== 'string' || findingId.length > 64 || !FINDING_ID_PATTERN.test(findingId)) {
-          throw notFound('Finding not found.');
-        }
-        const finding = scan.findings?.find((candidate) => candidate.id === findingId);
-        if (finding === undefined) throw notFound('Finding not found.');
+        const workflow = await scans.getFindingWorkflow(project.id, finding.fingerprint);
+        if (workflow === undefined) throw conflict('Finding lifecycle data is unavailable for this record.');
         const result: FindingDetailResponse = {
           project: toProjectResponse(project),
           scan: toScanResponse(scan),
           finding,
+          workflow,
+          guidance: remediationGuidanceForFinding(finding),
         };
         sendSuccess(res, ctx, result);
+      },
+    },
+    {
+      method: 'GET',
+      path: '/api/v1/projects/:projectId/scans/:scanId/findings/:findingId/history',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, finding } = await resolveFinding(ctx.params['projectId'], ctx.params['scanId'], ctx.params['findingId'], actor.id);
+        const url = queryUrl(req);
+        rejectUnknownQueryParameters(req, new Set(['page', 'pageSize']));
+        const page = parsePageInteger(parseSingleQuery(url, 'page'), 1, FINDING_HISTORY_PAGE_MAX, 'page');
+        const pageSize = parsePageInteger(parseSingleQuery(url, 'pageSize'), 20, FINDING_HISTORY_PAGE_SIZE_MAX, 'pageSize');
+        const result: FindingHistoryResponse | undefined = await scans.getFindingHistory(project.id, finding.fingerprint, page, pageSize);
+        if (result === undefined) throw notFound('Finding history not found.');
+        sendSuccess(res, ctx, result);
+      },
+    },
+    {
+      method: 'PATCH',
+      path: '/api/v1/projects/:projectId/scans/:scanId/findings/:findingId/lifecycle',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, finding } = await resolveFinding(ctx.params['projectId'], ctx.params['scanId'], ctx.params['findingId'], actor.id);
+        if (project.status === 'ARCHIVED') throw projectArchived();
+        rejectUnknownQueryParameters(req);
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) });
+        const parsed = lifecycleSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        if (!(FINDING_LIFECYCLE_STATES as readonly string[]).includes(parsed.value.state)) {
+          throw validationError([{ path: 'state', message: `Must be one of: ${FINDING_LIFECYCLE_STATES.join(', ')}.` }]);
+        }
+        await assertProjectActive(project.id);
+        const result = await scans.transitionFindingLifecycle(project.id, finding.fingerprint, parsed.value.state as FindingLifecycleState, actor.id, new Date(clock()).toISOString());
+        if (result.outcome !== 'updated') {
+          if (result.outcome === 'not-found') throw notFound('Finding lifecycle not found.');
+          if (result.outcome === 'invalid-transition') throw conflict('That finding lifecycle transition is not allowed.');
+          throw conflict('Finding lifecycle history reached its limit; no state was changed.');
+        }
+        sendSuccess(res, ctx, { workflow: result.workflow });
+      },
+    },
+    {
+      method: 'POST',
+      path: '/api/v1/projects/:projectId/scans/:scanId/findings/:findingId/notes',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, finding } = await resolveFinding(ctx.params['projectId'], ctx.params['scanId'], ctx.params['findingId'], actor.id);
+        if (project.status === 'ARCHIVED') throw projectArchived();
+        rejectUnknownQueryParameters(req);
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 8192) });
+        const parsed = remediationNoteSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const prepared = prepareFindingNote(parsed.value.note);
+        if (!prepared.ok) {
+          const messages = {
+            EMPTY: 'Note must contain text.',
+            TOO_LONG: `Note must be at most ${FINDING_NOTE_MAX_LENGTH} characters.`,
+            CONTROL_CHARACTER: 'Note contains unsupported control characters.',
+            HTML_NOT_ALLOWED: 'Notes are plain text; HTML markup is not allowed.',
+          } as const;
+          throw validationError([{ path: 'note', message: messages[prepared.reason] }]);
+        }
+        await assertProjectActive(project.id);
+        const result = await scans.addFindingRemediationNote(project.id, finding.fingerprint, prepared, actor.id, new Date(clock()).toISOString());
+        if (result.outcome !== 'updated') {
+          if (result.outcome === 'not-found') throw notFound('Finding lifecycle not found.');
+          if (result.outcome === 'notes-limit') throw conflict('The remediation note limit has been reached.');
+          if (result.outcome === 'invalid-note') throw validationError([{ path: 'note', message: 'Note could not be stored safely.' }]);
+          throw conflict('Finding lifecycle history reached its limit; no note was saved.');
+        }
+        sendSuccess(res, ctx, { workflow: result.workflow });
       },
     },
     {
@@ -197,14 +298,22 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) });
         const parsed = emptyBodySchema.parse(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
-        let report: SecurityReport;
+        const findings = scan.findings ?? [];
+        if (scan.resultSummary?.findingsTotal !== findings.length) throw conflict('Persisted finding details are incomplete; this scan cannot produce a complete report.');
+        let outcome: Awaited<ReturnType<ScanStore['createReport']>> | undefined;
         try {
-          report = buildSecurityReport(project, scan, new Date(clock()).toISOString());
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const workflows = await scans.getFindingWorkflowsForFindings(project.id, findings);
+            if (workflows.length !== findings.length) throw new TypeError('Finding workflow snapshots are unavailable.');
+            const report = buildSecurityReport(project, scan, new Date(clock()).toISOString(), workflows);
+            outcome = await scans.createReport(report);
+            if (outcome.outcome !== 'workflow-changed') break;
+          }
         } catch (error) {
           if (error instanceof RangeError) throw conflict('The generated report exceeds the configured size limit.');
           throw internal('The report could not be generated safely.');
         }
-        const outcome = await scans.createReport(report);
+        if (outcome === undefined || outcome.outcome === 'workflow-changed') throw conflict('Finding lifecycle changed while the report was generated; retry the request.');
         if (outcome.outcome === 'scan-unavailable') throw conflict('The scan changed before report persistence.');
         if (outcome.outcome === 'capacity-exceeded') throw conflict('Report storage capacity has been reached.');
         if (outcome.outcome === 'invalid-report') throw internal('Generated report failed store validation.');

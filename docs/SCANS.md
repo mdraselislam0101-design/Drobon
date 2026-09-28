@@ -183,10 +183,7 @@ requestId/userId/projectId/scanId only — never account material.
 ## Persistence
 
 Same minimum-persistence architecture as the account/usage/project
-stores: one JSON document (`{ version: 1, scans: [...], idempotency:
-[...] }`) at `SCAN_STORE_PATH` (default `.data/scans.json`, mode 0600,
-gitignored), atomic temp+rename writes, serialized mutations,
-persist-before-observable, fail-fast load validation:
+stores: one JSON document (`{ version: 1, scans: [...], idempotency: [...], reports: [...], findingWorkflows: [...] }`) at `SCAN_STORE_PATH` (default `.data/scans.json`, mode 0600, gitignored), atomic temp+rename writes, serialized mutations, persist-before-observable, fail-fast load validation:
 
 - a corrupt document, an invalid record (state-machine violations
   included) or a dangling idempotency entry **refuses to start** —
@@ -195,7 +192,12 @@ persist-before-observable, fail-fast load validation:
 - the stored record carries `ownerId` internally; responses never do,
   and the file contains no emails, passwords or device material;
 - scans survive restarts with their terminal states, timestamps and
-  idempotency entries intact (tested, including quota continuity).
+  idempotency entries intact (tested, including quota continuity);
+- Pump 13 finding workflows and bounded audit events share this same
+  document and serialized atomic writes. Scan completion updates workflow
+  observations with the scanner result. Older Pump 12 documents without
+  `findingWorkflows` migrate deterministically from completed findings;
+  invalid or detached workflow state refuses to start.
 
 ## Project state rule
 
@@ -220,13 +222,18 @@ The project detail page carries a **Source snapshot** section and a
   failure rendering (never a fake completion). Completed scans expose
   bounded, server-filtered findings pages and project/scan-scoped detail
   with severity, scanner, location/target, redacted evidence and
-  remediation; values render as text. SCA inventory/advisory state stays
-  in its distinct view. The project overview summarizes persisted
+  remediation; values render as text. Finding details also show the
+  server-authoritative lifecycle, rule-based remediation guidance,
+  verification wording, safe notes and paginated audit history. Workflow
+  mutations are disabled on archived projects; a user-marked RESOLVED
+  state is never presented as a verified fix. SCA inventory/advisory state
+  stays in its distinct view. The project overview summarizes persisted
   finding totals, severity counts and scanner run counts while warning
   that cross-scan counts are not deduplicated. Each completed scan can
   create/retrieve its one persisted report and download JSON or escaped
-  Markdown. See `docs/REPORTS.md` for bounds and honesty constraints.
-  Fail-closed loading errors with retry. No scan state in
+  Markdown, including a point-in-time lifecycle/verification snapshot
+  when generated under Pump 13. See `docs/REPORTS.md` for bounds and
+  honesty constraints. Fail-closed loading errors with retry. No scan state in
   localStorage/sessionStorage.
 
 ## Error contract
@@ -242,11 +249,11 @@ above, not HTTP codes.
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
 Browser/full DAST, active testing, vulnerability datasets and matching,
-project-wide/multi-scan reports, PDF/signatures, remediation history,
+project-wide/multi-scan reports, PDF/signatures, full audit-history export,
 scan cancellation (deliberately absent — a half-implemented cancel
 would be worse than none), scan scheduling/recurring scans,
 out-of-process engine workers, project-level usage analytics,
 admin/operator scan visibility, and database-backed persistence remain
-NOT_IMPLEMENTED. Findings, SBOM/inventory and bounded single-scan JSON /
-Markdown reports are implemented in the existing scan lifecycle and
-store; see `docs/REPORTS.md`.
+NOT_IMPLEMENTED. Findings, the bounded remediation lifecycle, SBOM/inventory,
+and single-scan JSON / Markdown reports are implemented in the existing
+scan lifecycle and store; see `docs/FINDINGS.md` and `docs/REPORTS.md`.

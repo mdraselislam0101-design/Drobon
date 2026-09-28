@@ -15,6 +15,17 @@ import {
   isSafeDastUrl,
   type DastResult,
   type SecurityReport,
+  FINDING_HISTORY_EVENTS_MAX,
+  FINDING_NOTES_MAX_COUNT,
+  FINDING_HISTORY_PAGE_MAX,
+  FINDING_HISTORY_PAGE_SIZE_MAX,
+  FINDING_WORKFLOWS_MAX,
+  isFindingLifecycleEvent,
+  isFindingWorkflow,
+  type FindingHistoryResponse,
+  type FindingLifecycleEvent,
+  type FindingLifecycleState,
+  type FindingWorkflow,
   REPORT_MAX_BYTES,
   REPORT_PERSISTED_MAX_COUNT,
   type Finding,
@@ -30,6 +41,18 @@ import {
   type ScaResult,
 } from '@drobon/shared';
 import { canonicalJson, verifySecurityReportIntegrity } from '../reports/build.js';
+import {
+  appendUserNote,
+  appendUserStateEvent,
+  canTransitionFinding,
+  createInitialFindingWorkflow,
+  findingWorkflowKey,
+  markFindingNotObserved,
+  observeFindingInScan,
+  prepareFindingNote,
+  type FindingWorkflowRecord,
+  type PreparedFindingNote,
+} from './findingWorkflow.js';
 
 /**
  * Durable scan-job store (Pump 7) — the minimum persistence boundary for
@@ -205,14 +228,28 @@ export interface ScanStore {
   ): Promise<ScanRecord | undefined>;
   /** Retrieve a report snapshot scoped to its project and source scan. */
   findReportByProjectAndScan(projectId: string, scanId: string): Promise<SecurityReport | undefined>;
-  /** Atomically persist exactly one immutable report per completed scan. */
+  /** Persist or refresh the single report snapshot for a completed scan. */
   createReport(report: SecurityReport): Promise<
     | { outcome: 'created'; report: SecurityReport }
     | { outcome: 'existing'; report: SecurityReport }
+    | { outcome: 'updated'; report: SecurityReport }
     | { outcome: 'invalid-report' }
     | { outcome: 'scan-unavailable' }
     | { outcome: 'capacity-exceeded' }
+    | { outcome: 'workflow-changed' }
   >;
+  /** Lifecycle is keyed by project + full fingerprint, never client identity. */
+  getFindingWorkflow(projectId: string, fingerprint: string): Promise<FindingWorkflow | undefined>;
+  getFindingWorkflowsForFindings(projectId: string, findings: readonly Finding[]): Promise<FindingWorkflow[]>;
+  transitionFindingLifecycle(
+    projectId: string, fingerprint: string, next: FindingLifecycleState, actorId: string, at: string,
+  ): Promise<{ outcome: 'updated'; workflow: FindingWorkflow } | { outcome: 'not-found' | 'invalid-transition' | 'history-limit' }>;
+  addFindingRemediationNote(
+    projectId: string, fingerprint: string, prepared: Extract<PreparedFindingNote, { ok: true }>, actorId: string, at: string,
+  ): Promise<{ outcome: 'updated'; workflow: FindingWorkflow } | { outcome: 'not-found' | 'notes-limit' | 'history-limit' | 'invalid-note' }>;
+  getFindingHistory(
+    projectId: string, fingerprint: string, page: number, pageSize: number,
+  ): Promise<FindingHistoryResponse | undefined>;
   /**
    * Startup recovery: every RUNNING scan (a crash interrupted it)
    * deterministically → FAILED with `SCAN_INTERRUPTED`. Persisted before
@@ -227,6 +264,8 @@ interface StoreDocument {
   idempotency: IdempotencyEntry[];
   /** Added in Pump 12; missing on Pump 7–11 documents is an empty report set. */
   reports: SecurityReport[];
+  /** Added in Pump 13; old documents are migrated from persisted scan findings. */
+  findingWorkflows?: FindingWorkflowRecord[];
 }
 
 /** Bounded per-account idempotency memory (oldest evicted first). */
@@ -481,6 +520,99 @@ function parseStoredIdempotencyEntry(
   return entry;
 }
 
+function workflowMatchesFinding(record: FindingWorkflow, finding: Finding, projectId: string): boolean {
+  return record.projectId === projectId && record.findingId === finding.id &&
+    record.fingerprint === finding.fingerprint && record.scanner === findingScanner(finding) &&
+    record.ruleId === finding.ruleId;
+}
+
+function parseStoredFindingWorkflow(value: unknown, scansById: ReadonlyMap<string, ScanRecord>): FindingWorkflowRecord | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 18 || !Object.prototype.hasOwnProperty.call(record, 'history') || !Array.isArray(record['history']) ||
+      !isFindingWorkflow(Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'history')))) return undefined;
+  const publicWorkflow = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'history')) as unknown as FindingWorkflow;
+  if (record['history'].length !== publicWorkflow.historyTotal || record['history'].length > FINDING_HISTORY_EVENTS_MAX ||
+      !record['history'].every(isFindingLifecycleEvent)) return undefined;
+  const history = record['history'] as FindingLifecycleEvent[];
+  const noteIds = new Set(publicWorkflow.notes.map((note) => note.id));
+  const linkedNotes = new Set(history.flatMap((event) => event.action === 'NOTE_ADDED' && event.noteId !== undefined ? [event.noteId] : []));
+  if (noteIds.size !== publicWorkflow.notes.length || linkedNotes.size !== publicWorkflow.notes.length ||
+      [...noteIds].some((id) => !linkedNotes.has(id)) || history.some((event) =>
+        event.findingId !== publicWorkflow.findingId || (event.action === 'NOTE_ADDED') !== (event.noteId !== undefined)) ||
+      new Set(history.map((event) => event.id)).size !== history.length) return undefined;
+  let state: FindingLifecycleState = 'OPEN';
+  for (const [index, event] of history.entries()) {
+    if (index === 0) {
+      if (event.previousState !== null || event.newState !== 'OPEN' || event.action !== 'FINDING_OBSERVED') return undefined;
+      state = 'OPEN';
+      continue;
+    }
+    if (event.previousState !== state) return undefined;
+    if (event.action === 'STATE_CHANGED') {
+      if (event.actorType !== 'USER' || !canTransitionFinding(state, event.newState)) return undefined;
+      state = event.newState;
+    } else if (event.action === 'FINDING_REOBSERVED') {
+      if (state === 'RESOLVED') {
+        if (event.newState !== 'REOPENED' || event.actorType !== 'SYSTEM') return undefined;
+        state = 'REOPENED';
+      } else if (event.newState !== state || event.actorType !== 'SYSTEM') return undefined;
+    } else if (event.action === 'NOT_OBSERVED' || event.action === 'NOTE_ADDED') {
+      if (event.newState !== state || (event.action === 'NOTE_ADDED' ? event.actorType !== 'USER' : event.actorType !== 'SYSTEM')) return undefined;
+    } else return undefined;
+  }
+  if (state !== publicWorkflow.state || history[0]?.at !== publicWorkflow.firstObservedAt ||
+      history[0]?.actorId !== 'system:scanner' || history[0]?.actorType !== 'SYSTEM') return undefined;
+  const firstScan = scansById.get(publicWorkflow.firstObservedScanId);
+  const lastObservedScan = scansById.get(publicWorkflow.lastObservedScanId);
+  const verificationScan = scansById.get(publicWorkflow.lastVerificationScanId);
+  const contains = (scan: ScanRecord | undefined): boolean =>
+    scan !== undefined && scan.projectId === publicWorkflow.projectId && scan.scanType === publicWorkflow.scanner &&
+    scan.status === 'COMPLETED' && (scan.findings ?? []).some((finding) => workflowMatchesFinding(publicWorkflow, finding, scan.projectId));
+  if (!contains(firstScan) || !contains(lastObservedScan) || firstScan?.completedAt !== publicWorkflow.firstObservedAt ||
+      lastObservedScan?.completedAt !== publicWorkflow.lastObservedAt || verificationScan === undefined ||
+      verificationScan.projectId !== publicWorkflow.projectId || verificationScan.scanType !== publicWorkflow.scanner ||
+      verificationScan.status !== 'COMPLETED' || verificationScan.completedAt !== publicWorkflow.lastVerificationAt ||
+      verificationScan.resultSummary?.findingsTotal !== (verificationScan.findings ?? []).length) return undefined;
+  const observedInVerification = (verificationScan.findings ?? []).some((finding) => workflowMatchesFinding(publicWorkflow, finding, verificationScan.projectId));
+  if ((publicWorkflow.verificationState === 'OBSERVED') !== observedInVerification ||
+      (publicWorkflow.verificationState === 'OBSERVED' && publicWorkflow.lastObservedScanId !== publicWorkflow.lastVerificationScanId)) return undefined;
+  return { ...publicWorkflow, history };
+}
+
+function migrateFindingWorkflows(scans: readonly ScanRecord[]): FindingWorkflowRecord[] {
+  const workflows = new Map<string, FindingWorkflowRecord>();
+  const completed = scans.filter((scan) => scan.status === 'COMPLETED' && scan.completedAt !== undefined &&
+    scan.resultSummary?.findingsTotal === (scan.findings ?? []).length)
+    .sort((a, b) => {
+      const byTime = (a.completedAt ?? '') < (b.completedAt ?? '') ? -1 : (a.completedAt ?? '') > (b.completedAt ?? '') ? 1 : 0;
+      return byTime || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+  for (const scan of completed) {
+    const scanContext = { id: scan.id, projectId: scan.projectId, scanType: scan.scanType, completedAt: scan.completedAt! };
+    const currentFindings = scan.findings ?? [];
+    const current = new Set(currentFindings.map((finding) => finding.fingerprint));
+    for (const [key, prior] of workflows) {
+      if (prior.projectId === scan.projectId && prior.scanner === scan.scanType && !current.has(prior.fingerprint)) {
+        workflows.set(key, markFindingNotObserved(prior, scanContext));
+      }
+    }
+    for (const finding of currentFindings) {
+      const key = findingWorkflowKey(scan.projectId, finding.fingerprint);
+      const existing = workflows.get(key);
+      workflows.set(key, existing === undefined
+        ? createInitialFindingWorkflow(finding, scanContext)
+        : observeFindingInScan(existing, finding, scanContext));
+      if (workflows.size > FINDING_WORKFLOWS_MAX) throw new Error('Finding workflow migration exceeded the configured record limit.');
+    }
+  }
+  return [...workflows.values()].sort((a, b) => {
+    const left = findingWorkflowKey(a.projectId, a.fingerprint);
+    const right = findingWorkflowKey(b.projectId, b.fingerprint);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+}
+
 function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
   if (
     scan.status !== 'COMPLETED' || scan.completedAt === undefined || scan.resultSummary === undefined ||
@@ -491,6 +623,7 @@ function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
     report.scan.completedAt !== scan.completedAt || report.scan.targetUrl !== scan.dastTargetUrl ||
     canonicalJson(report.scan.resultSummary) !== canonicalJson(scan.resultSummary) ||
     canonicalJson(report.findings) !== canonicalJson(scan.findings ?? []) ||
+    report.findingSummary.total !== scan.resultSummary.findingsTotal ||
     canonicalJson(report.dast ?? null) !== canonicalJson(scan.dast ?? null)
   ) return false;
   return scan.sca === undefined
@@ -525,7 +658,9 @@ function loadDocument(path: string): StoreDocument {
     !Array.isArray((parsed as Record<string, unknown>)['idempotency']) ||
     ((parsed as Record<string, unknown>)['reports'] !== undefined &&
       !Array.isArray((parsed as Record<string, unknown>)['reports'])) ||
-    (((parsed as Record<string, unknown>)['reports'] as unknown[] | undefined)?.length ?? 0) > REPORT_PERSISTED_MAX_COUNT
+    (((parsed as Record<string, unknown>)['reports'] as unknown[] | undefined)?.length ?? 0) > REPORT_PERSISTED_MAX_COUNT ||
+    ((parsed as Record<string, unknown>)['findingWorkflows'] !== undefined && !Array.isArray((parsed as Record<string, unknown>)['findingWorkflows'])) ||
+    (((parsed as Record<string, unknown>)['findingWorkflows'] as unknown[] | undefined)?.length ?? 0) > FINDING_WORKFLOWS_MAX
   ) {
     throw new Error(`Scan store at ${path} has an unexpected shape — refusing to start.`);
   }
@@ -586,15 +721,37 @@ function loadDocument(path: string): StoreDocument {
     seenReportIds.add(entry.reportId);
     reports.push(entry);
   });
-  return { version: 1, scans, idempotency, reports };
+  const workflowField = (parsed as Record<string, unknown>)['findingWorkflows'];
+  let findingWorkflows: FindingWorkflowRecord[];
+  if (workflowField === undefined) {
+    // Pump 12 findings predate workflow rows. Reconstruct only from durable
+    // completed scans, without changing any scanner evidence or reports.
+    findingWorkflows = migrateFindingWorkflows(scans);
+  } else {
+    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
+    const scansById = new Map(scans.map((scan) => [scan.id, scan]));
+    findingWorkflows = [];
+    (workflowField as unknown[]).forEach((entry, index) => {
+      const workflow = parseStoredFindingWorkflow(entry, scansById);
+      if (workflow === undefined || seenIds.has(workflow.id) || seenKeys.has(findingWorkflowKey(workflow.projectId, workflow.fingerprint))) {
+        throw new Error(`Scan store at ${path} has an invalid finding workflow at index ${index} — refusing to start.`);
+      }
+      seenIds.add(workflow.id);
+      seenKeys.add(findingWorkflowKey(workflow.projectId, workflow.fingerprint));
+      findingWorkflows.push(workflow);
+    });
+  }
+  return { version: 1, scans, idempotency, reports, findingWorkflows };
 }
 
 interface StoreInternals {
   scans: ScanRecord[];
   idempotency: IdempotencyEntry[];
   reports: SecurityReport[];
+  findingWorkflows: FindingWorkflowRecord[];
   /** Persist the full next state atomically (called inside the queue). */
-  persistWith(scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[]): void;
+  persistWith(scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[], findingWorkflows: FindingWorkflowRecord[]): void;
 }
 
 function createScanStoreFrom(internals: StoreInternals): ScanStore {
@@ -619,6 +776,21 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   }
   const reportsByScan = new Map<string, SecurityReport>();
   for (const report of internals.reports) reportsByScan.set(report.scan.id, report);
+  const findingWorkflowsByKey = new Map<string, FindingWorkflowRecord>();
+  for (const workflow of internals.findingWorkflows) {
+    findingWorkflowsByKey.set(findingWorkflowKey(workflow.projectId, workflow.fingerprint), workflow);
+  }
+  const workflowValues = (source: ReadonlyMap<string, FindingWorkflowRecord> = findingWorkflowsByKey): FindingWorkflowRecord[] =>
+    [...source.values()].sort((a, b) => {
+      const left = findingWorkflowKey(a.projectId, a.fingerprint);
+      const right = findingWorkflowKey(b.projectId, b.fingerprint);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  const copyWorkflow = (workflow: FindingWorkflowRecord): FindingWorkflow => {
+    const { history: _history, ...publicWorkflow } = workflow;
+    void _history;
+    return JSON.parse(JSON.stringify(publicWorkflow)) as FindingWorkflow;
+  };
 
   const toPublic = (record: ScanRecord): ScanRecord => ({ ...record });
 
@@ -634,7 +806,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
     const nextScans = [...scansById.values()].map((scan) =>
       scan.id === updated.id ? updated : scan,
     );
-    internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()]);
+    internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()], workflowValues());
     scansById.set(updated.id, updated);
     return toPublic(updated);
   };
@@ -728,7 +900,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             );
           }
         }
-        internals.persistWith(nextScans, nextIdempotency, [...reportsByScan.values()]);
+        internals.persistWith(nextScans, nextIdempotency, [...reportsByScan.values()], workflowValues());
         scansById.set(record.id, record);
         const nextKeys = new Set(
           nextIdempotency.map((item) => `${item.accountId}:${item.key}`),
@@ -786,57 +958,69 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
     completeScan: (id, resultSummary, findings, sca, dast) =>
       runExclusive(() => {
         const current = scansById.get(id);
-        if (current === undefined || current.status !== 'RUNNING') {
-          return undefined;
-        }
-        // Defense in depth (Pump 9): the SCA payload is a closed-shape,
-        // bounded, cross-field-checked contract AND may only exist on
-        // an SCA scan. A SAST scan completing with an SCA payload (or
-        // a malformed payload) is inconsistent state — refused.
-        if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) {
-          return undefined;
-        }
-        if (dast !== undefined && !(isDastResult(dast) && current.scanType === 'DAST' && dast.targetUrl === current.dastTargetUrl)) {
-          return undefined;
-        }
+        if (current === undefined || current.status !== 'RUNNING') return undefined;
+        if (!isScanResultSummary(resultSummary)) return undefined;
+        if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) return undefined;
+        if (dast !== undefined && !(isDastResult(dast) && current.scanType === 'DAST' && dast.targetUrl === current.dastTargetUrl)) return undefined;
         if ((current.scanType === 'DAST') !== (dast !== undefined)) return undefined;
-        // Defense in depth: findings are bounded and must belong to
-        // this scan, and the summary must agree with them (the engine
-        // already guarantees this; the store never trusts blindly).
         const contextualFindings = findings?.map((finding) =>
           finding.scanner === 'DAST' || finding.ruleId.startsWith('DG-DAST-')
             ? finding
             : { ...finding, projectId: current.projectId },
         );
-        const safeFindings =
-          contextualFindings === undefined || contextualFindings.length === 0
-            ? undefined
-            : contextualFindings.slice(0, MAX_FINDINGS_PER_SCAN);
-        if (safeFindings !== undefined) {
-          if (
-            safeFindings.length !== contextualFindings?.length ||
-            !safeFindings.every((finding) =>
-              isFinding(finding) && finding.scanId === id && finding.projectId === current.projectId &&
-              findingScanner(finding) === current.scanType)
-          ) {
-            return undefined;
-          }
-          if (safeFindings.some((finding) => finding.scanner === 'DAST' && finding.targetUrl !== current.dastTargetUrl)) return undefined;
-          if (resultSummary.findingsTotal !== safeFindings.length) {
-            return undefined;
-          }
-        }
-        const updated = applyClaimPersist(current, (record) => ({
-          ...record,
+        const safeFindings = contextualFindings === undefined || contextualFindings.length === 0
+          ? undefined
+          : contextualFindings.slice(0, MAX_FINDINGS_PER_SCAN);
+        const actualFindings = safeFindings ?? [];
+        if (contextualFindings !== undefined && contextualFindings.length !== actualFindings.length) return undefined;
+        if (!actualFindings.every((finding) =>
+          isFinding(finding) && finding.scanId === id && finding.projectId === current.projectId &&
+          findingScanner(finding) === current.scanType,
+        )) return undefined;
+        if (new Set(actualFindings.map((finding) => finding.fingerprint)).size !== actualFindings.length ||
+            (safeFindings !== undefined && resultSummary.findingsTotal !== safeFindings.length)) return undefined;
+        if (actualFindings.some((finding) => finding.scanner === 'DAST' && finding.targetUrl !== current.dastTargetUrl)) return undefined;
+
+        const completedAt = new Date().toISOString();
+        const updated: ScanRecord = {
+          ...current,
           status: 'COMPLETED',
-          completedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          completedAt,
+          updatedAt: completedAt,
           resultSummary,
           ...(safeFindings === undefined ? {} : { findings: safeFindings }),
           ...(sca === undefined ? {} : { sca }),
           ...(dast === undefined ? {} : { dast }),
-        }));
-        return updated === undefined ? undefined : toPublic(updated);
+        };
+        const scanContext = { id, projectId: current.projectId, scanType: current.scanType, completedAt };
+        const findingsAreAuthoritative = resultSummary.findingsTotal === actualFindings.length;
+        const nextWorkflows = new Map(findingWorkflowsByKey);
+        if (findingsAreAuthoritative) {
+          const observed = new Set(actualFindings.map((finding) => finding.fingerprint));
+          for (const [key, workflow] of nextWorkflows) {
+            if (workflow.projectId === current.projectId && workflow.scanner === current.scanType && !observed.has(workflow.fingerprint)) {
+              nextWorkflows.set(key, markFindingNotObserved(workflow, scanContext));
+            }
+          }
+          for (const finding of actualFindings) {
+            const key = findingWorkflowKey(current.projectId, finding.fingerprint);
+            const workflow = nextWorkflows.get(key);
+            if (workflow === undefined) {
+              if (nextWorkflows.size >= FINDING_WORKFLOWS_MAX) return undefined;
+              nextWorkflows.set(key, createInitialFindingWorkflow(finding, scanContext));
+            } else {
+              if (!workflowMatchesFinding(workflow, finding, current.projectId)) return undefined;
+              nextWorkflows.set(key, observeFindingInScan(workflow, finding, scanContext));
+            }
+          }
+        }
+        const nextScans = [...scansById.values()].map((scan) => scan.id === id ? updated : scan);
+        const nextWorkflowValues = workflowValues(nextWorkflows);
+        internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()], nextWorkflowValues);
+        scansById.set(id, updated);
+        findingWorkflowsByKey.clear();
+        for (const workflow of nextWorkflowValues) findingWorkflowsByKey.set(findingWorkflowKey(workflow.projectId, workflow.fingerprint), workflow);
+        return toPublic(updated);
       }),
 
     timeoutScan: (id, failureCode, failureMessage) =>
@@ -891,18 +1075,98 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (scan === undefined || !reportMatchesScan(report, scan)) {
           return { outcome: 'scan-unavailable' as const };
         }
+        if (report.findingWorkflows !== undefined) {
+          const currentSnapshots = report.findings.flatMap((finding) => {
+            const workflow = findingWorkflowsByKey.get(findingWorkflowKey(report.project.id, finding.fingerprint));
+            return workflow !== undefined && workflowMatchesFinding(workflow, finding, report.project.id) ? [copyWorkflow(workflow)] : [];
+          });
+          if (currentSnapshots.length !== report.findings.length || canonicalJson(currentSnapshots) !== canonicalJson(report.findingWorkflows)) {
+            return { outcome: 'workflow-changed' as const };
+          }
+        }
         const existing = reportsByScan.get(scan.id);
         if (existing !== undefined) {
-          return { outcome: 'existing' as const, report: JSON.parse(JSON.stringify(existing)) as SecurityReport };
+          if (existing.contentDigest === report.contentDigest) {
+            return { outcome: 'existing' as const, report: JSON.parse(JSON.stringify(existing)) as SecurityReport };
+          }
+          const nextReports = [...reportsByScan.values()].map((item) => item.scan.id === scan.id ? report : item)
+            .sort((a, b) => a.reportId.localeCompare(b.reportId));
+          internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], nextReports, workflowValues());
+          reportsByScan.set(scan.id, report);
+          return { outcome: 'updated' as const, report: JSON.parse(JSON.stringify(report)) as SecurityReport };
         }
         if (reportsByScan.size >= REPORT_PERSISTED_MAX_COUNT) {
           return { outcome: 'capacity-exceeded' as const };
         }
         const nextReports = [...reportsByScan.values(), report].sort((a, b) => a.reportId.localeCompare(b.reportId));
-        internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], nextReports);
+        internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], nextReports, workflowValues());
         reportsByScan.set(scan.id, report);
         return { outcome: 'created' as const, report: JSON.parse(JSON.stringify(report)) as SecurityReport };
       }),
+
+    getFindingWorkflow: (projectId, fingerprint) => {
+      const workflow = findingWorkflowsByKey.get(findingWorkflowKey(projectId, fingerprint));
+      return Promise.resolve(workflow === undefined ? undefined : copyWorkflow(workflow));
+    },
+
+    getFindingWorkflowsForFindings: (projectId, findings) => Promise.resolve(
+      findings.flatMap((finding) => {
+        const workflow = findingWorkflowsByKey.get(findingWorkflowKey(projectId, finding.fingerprint));
+        return workflow !== undefined && workflowMatchesFinding(workflow, finding, projectId) ? [copyWorkflow(workflow)] : [];
+      }),
+    ),
+
+    transitionFindingLifecycle: (projectId, fingerprint, next, actorId, at) => runExclusive(() => {
+      const key = findingWorkflowKey(projectId, fingerprint);
+      const current = findingWorkflowsByKey.get(key);
+      if (current === undefined) return { outcome: 'not-found' as const };
+      if (!canTransitionFinding(current.state, next)) return { outcome: 'invalid-transition' as const };
+      if (current.history.length >= FINDING_HISTORY_EVENTS_MAX - 1) return { outcome: 'history-limit' as const };
+      const updated = appendUserStateEvent(current, next, actorId, at);
+      if (updated === undefined) return { outcome: 'history-limit' as const };
+      const { history: _history, ...publicUpdated } = updated;
+      void _history;
+      if (!isFindingWorkflow(publicUpdated) || !updated.history.every(isFindingLifecycleEvent)) return { outcome: 'history-limit' as const };
+      const nextWorkflows = new Map(findingWorkflowsByKey);
+      nextWorkflows.set(key, updated);
+      internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], [...reportsByScan.values()], workflowValues(nextWorkflows));
+      findingWorkflowsByKey.set(key, updated);
+      return { outcome: 'updated' as const, workflow: copyWorkflow(updated) };
+    }),
+
+    addFindingRemediationNote: (projectId, fingerprint, prepared, actorId, at) => runExclusive(() => {
+      const key = findingWorkflowKey(projectId, fingerprint);
+      const current = findingWorkflowsByKey.get(key);
+      if (current === undefined) return { outcome: 'not-found' as const };
+      if (current.notes.length >= FINDING_NOTES_MAX_COUNT) return { outcome: 'notes-limit' as const };
+      if (current.history.length >= FINDING_HISTORY_EVENTS_MAX - 1) return { outcome: 'history-limit' as const };
+      const normalized = prepareFindingNote(prepared.text);
+      if (!normalized.ok) return { outcome: 'invalid-note' as const };
+      const safePrepared = { ...normalized, redacted: normalized.redacted || prepared.redacted };
+      const updated = appendUserNote(current, safePrepared, actorId, at);
+      if (updated === undefined) return { outcome: 'history-limit' as const };
+      const { history: _history, ...publicUpdated } = updated;
+      void _history;
+      if (!isFindingWorkflow(publicUpdated) || !updated.history.every(isFindingLifecycleEvent)) return { outcome: 'invalid-note' as const };
+      const nextWorkflows = new Map(findingWorkflowsByKey);
+      nextWorkflows.set(key, updated);
+      internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], [...reportsByScan.values()], workflowValues(nextWorkflows));
+      findingWorkflowsByKey.set(key, updated);
+      return { outcome: 'updated' as const, workflow: copyWorkflow(updated) };
+    }),
+
+    getFindingHistory: (projectId, fingerprint, page, pageSize) => {
+      if (!Number.isInteger(page) || page < 1 || page > FINDING_HISTORY_PAGE_MAX ||
+          !Number.isInteger(pageSize) || pageSize < 1 || pageSize > FINDING_HISTORY_PAGE_SIZE_MAX) return Promise.resolve(undefined);
+      const workflow = findingWorkflowsByKey.get(findingWorkflowKey(projectId, fingerprint));
+      if (workflow === undefined) return Promise.resolve(undefined);
+      const events = [...workflow.history].reverse();
+      const total = events.length;
+      return Promise.resolve({
+        events: events.slice((page - 1) * pageSize, page * pageSize),
+        page, pageSize, total, totalPages: Math.ceil(total / pageSize),
+      });
+    },
 
     failAllRunning: (failureCode, failureMessage) =>
       runExclusive(() => {
@@ -923,7 +1187,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           });
         }
         const nextScans = [...scansById.values()].map((record) => updatedById.get(record.id) ?? record);
-        internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()]);
+        internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()], workflowValues());
         for (const updated of updatedById.values()) {
           scansById.set(updated.id, updated);
         }
@@ -935,9 +1199,11 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
 /** Durable scan store: one JSON document, atomic writes. */
 export function createJsonFileScanStore(path: string): ScanStore {
   const document = loadDocument(path);
-  const persistWith = (scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[]): void => {
+  const persistWith = (
+    scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[], findingWorkflows: FindingWorkflowRecord[],
+  ): void => {
     mkdirSync(dirname(path), { recursive: true });
-    const payload: StoreDocument = { version: 1, scans, idempotency, reports };
+    const payload: StoreDocument = { version: 1, scans, idempotency, reports, findingWorkflows };
     const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
     writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
     renameSync(tempPath, path);
@@ -946,13 +1212,14 @@ export function createJsonFileScanStore(path: string): ScanStore {
     scans: document.scans,
     idempotency: document.idempotency,
     reports: document.reports,
+    findingWorkflows: document.findingWorkflows ?? [],
     persistWith,
   });
 }
 
 /** In-memory scan store (tests and explicit `:memory:` setups). */
 export function createMemoryScanStore(): ScanStore {
-  return createScanStoreFrom({ scans: [], idempotency: [], reports: [], persistWith: () => undefined });
+  return createScanStoreFrom({ scans: [], idempotency: [], reports: [], findingWorkflows: [], persistWith: () => undefined });
 }
 
 /**

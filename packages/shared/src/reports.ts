@@ -1,4 +1,5 @@
 import { isProjectStatus, PROJECT_ID_PATTERN, type ProjectStatus } from './projects.js';
+import { isFindingWorkflow, type FindingWorkflow } from './findings.js';
 import {
   FINDING_SEVERITIES,
   SCAN_TYPES,
@@ -78,6 +79,8 @@ export interface SecurityReport {
   findings: Finding[];
   /** Bounded response metadata/evidence for DAST reports only; no raw bodies or sensitive headers. */
   dast?: DastResult;
+  /** P13 point-in-time workflow snapshot; absent only on legacy Pump 12 reports. */
+  findingWorkflows?: FindingWorkflow[];
   dependencyIntelligence: ReportDependencyIntelligence;
   inventory: ReportInventory;
   contentDigest: string;
@@ -202,7 +205,7 @@ export function isSecurityReport(value: unknown): value is SecurityReport {
     'scannerCoverage', 'findingSummary', 'findings', 'dependencyIntelligence',
     'inventory', 'contentDigest', 'integrityDigest',
   ];
-  if (Object.keys(record).some((key) => ![...requiredKeys, 'dast'].includes(key)) ||
+  if (Object.keys(record).some((key) => ![...requiredKeys, 'dast', 'findingWorkflows'].includes(key)) ||
       requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(record, key))) return false;
   if (typeof record['reportId'] !== 'string' || !REPORT_ID_PATTERN.test(record['reportId']) ||
       record['reportVersion'] !== REPORT_VERSION || record['schemaVersion'] !== REPORT_SCHEMA_VERSION ||
@@ -224,6 +227,16 @@ export function isSecurityReport(value: unknown): value is SecurityReport {
   const findings = record['findings'] as Finding[];
   if (findings.some((finding) => finding.scanId !== scan.id ||
       (finding.projectId !== undefined && finding.projectId !== project.id))) return false;
+  if (record['findingWorkflows'] !== undefined) {
+    if (!Array.isArray(record['findingWorkflows']) || record['findingWorkflows'].length !== findings.length ||
+        !record['findingWorkflows'].every(isFindingWorkflow)) return false;
+    const workflowByFinding = new Map((record['findingWorkflows'] as FindingWorkflow[]).map((workflow) => [workflow.findingId, workflow]));
+    if (findings.some((finding) => {
+      const workflow = workflowByFinding.get(finding.id);
+      return workflow === undefined || workflow.projectId !== project.id || workflow.fingerprint !== finding.fingerprint ||
+        workflow.scanner !== findingScanner(finding) || workflow.ruleId !== finding.ruleId;
+    })) return false;
+  }
   const summary = countFindings(findings);
   const suppliedSummary = record['findingSummary'] as ReportFindingSummary;
   return summary.total === suppliedSummary.total &&

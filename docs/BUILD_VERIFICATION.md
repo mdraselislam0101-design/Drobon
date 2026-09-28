@@ -870,3 +870,34 @@ DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passiv
   process restart.
 - `git diff --check`: PASS. This is unit/integration plus controlled local
   HTTP E2E evidence; it is not a public-target security assessment.
+
+## Verification evidence (Pump 13 — production remediation + lifecycle)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green after the final code
+  changes (scope boundaries, secret matcher self-test, source secret scan,
+  typecheck, lint, full tests, production builds, build secret scan, audit).
+- Test totals: **1,024 passed, 0 failed** across 90 files:
+  - shared: 164 (14 files)
+  - API: 640 (53 files)
+  - worker: 28 (3 files)
+  - web: 192 (20 files)
+- Secret scans: **PASS**, 426 files at both source and build stages.
+  Dependency audit: **0 vulnerabilities**. Shared/API/worker and web
+  production builds all passed. Focused API lifecycle/report and web
+  workflow/report/client tests passed before the full run.
+- Lifecycle/security coverage includes bounded persistent workflows and
+  event history, notes validation/redaction, atomic scan observations,
+  immutable scanner evidence, deterministic fingerprint reobservation and
+  reopening, stale report snapshot rejection/retry, incomplete summary
+  handling, project/account isolation, archived-project authorization,
+  lifecycle transitions, quota neutrality, and report/UI redaction.
+  Existing Pump 1–12 regression suites passed in the same full run.
+- Controlled E2E is local only. `apps/api/test/reportsApi.test.ts` drives
+  authenticated HTTP routes with temporary durable JSON stores through
+  SAST, SCA, Secrets and DAST, report exports, isolation, quota, restart and
+  redaction. DAST uses a test-controlled resolver and synthetic transport;
+  no public or arbitrary host was contacted. No source is modified, no
+  credential is verified/rotated, and no external vulnerability
+  intelligence is claimed. SCA remains `NOT ASSESSED` where intelligence
+  is unavailable. This is not a public-target security assessment.

@@ -653,3 +653,56 @@ code {
 .findings .hero-actions {
   flex-wrap: wrap;
 }
+
+.workflow-guidance,
+.finding-workflow,
+.report-workflows,
+.sca-guidance {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: rgba(110, 118, 129, 0.06);
+}
+
+.workflow-guidance li,
+.workflow-history li {
+  margin: 0.35rem 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-guidance code,
+.workflow-notes,
+.workflow-history {
+  overflow-wrap: anywhere;
+}
+
+.workflow-form {
+  display: grid;
+  gap: 0.55rem;
+  max-width: 44rem;
+  margin: 1rem 0;
+}
+
+.workflow-form textarea {
+  width: 100%;
+  resize: vertical;
+  color: inherit;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 0.65rem;
+  font: inherit;
+}
+
+.workflow-notes {
+  padding-left: 1.25rem;
+}
+
+.workflow-notes li {
+  margin: 0.65rem 0;
+}
+
+.workflow-notes p {
+  white-space: pre-wrap;
+}

@@ -46,6 +46,21 @@ describe('persisted security assessment reports', () => {
     expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe('{"a":{"x":3,"y":2},"z":1}');
   });
 
+  test('refuses to generate reports when persisted finding details disagree with the scan summary', async () => {
+    const projects = createMemoryProjectStore();
+    const project = await projects.create({ ownerId: 'usr_report_owner', name: 'Incomplete details', description: '' });
+    const scans = createMemoryScanStore();
+    const created = await scans.createScanWithQuota({ ownerId: 'usr_report_owner', projectId: project.id, scanType: 'SAST', consume: async () => ({ ok: true }) });
+    if (created.outcome !== 'created') throw new Error('scan creation failed');
+    const running = await scans.claimNextQueued();
+    if (running === undefined) throw new Error('scan claim failed');
+    const incomplete = await scans.completeScan(running.id, { findingsTotal: 1 });
+    if (incomplete === undefined) throw new Error('summary-only scan completion failed');
+    expect(incomplete.findings).toBeUndefined();
+    expect(await scans.getFindingWorkflowsForFindings(project.id, [])).toEqual([]);
+    expect(() => buildSecurityReport(project, incomplete, '2026-09-28T10:00:00.000Z')).toThrow(/do not agree/);
+  });
+
   test('atomically stores one report per scan and retrieves the original after restart', async () => {
     const dir = makeTempStoreDir('report-restart');
     try {

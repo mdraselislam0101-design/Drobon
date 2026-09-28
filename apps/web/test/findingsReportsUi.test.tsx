@@ -5,6 +5,10 @@ import { describe, expect, test, vi } from 'vitest';
 import type {
   Finding,
   FindingDetailResponse,
+  FindingHistoryResponse,
+  FindingLifecycleState,
+  FindingWorkflow,
+  FindingWorkflowResponse,
   FindingsPageResponse,
   Project,
   ProjectResponse,
@@ -56,6 +60,25 @@ const finding: Finding = {
 };
 const projectResponse: ProjectResponse = { project };
 const detail: FindingDetailResponse = { project, scan, finding };
+const workflow: FindingWorkflow = {
+  id: 'fwf_00000000-0000-4000-8000-0000000000ab',
+  projectId: project.id,
+  findingId: finding.id,
+  fingerprint: finding.fingerprint,
+  scanner: 'SAST',
+  ruleId: finding.ruleId,
+  state: 'OPEN',
+  firstObservedScanId: scan.id,
+  firstObservedAt: scan.completedAt!,
+  lastObservedScanId: scan.id,
+  lastObservedAt: scan.completedAt!,
+  lastVerificationScanId: scan.id,
+  lastVerificationAt: scan.completedAt!,
+  verificationState: 'OBSERVED',
+  notes: [],
+  historyTotal: 1,
+  updatedAt: scan.completedAt!,
+};
 const report: SecurityReportResponse = {
   report: {
     reportId: 'rpt_0123456789abcdef01234567',
@@ -76,6 +99,7 @@ const report: SecurityReportResponse = {
       byScanner: { SAST: 1, SCA: 0, SECRETS: 0, DAST: 0 },
     },
     findings: [finding],
+    findingWorkflows: [workflow],
     dependencyIntelligence: { status: 'NOT_ASSESSED', reason: 'Dependency analysis was not run in this scan.' },
     inventory: { status: 'NOT_INCLUDED', reason: 'Dependency inventory was not part of this scan.' },
     contentDigest: 'c'.repeat(64),
@@ -114,6 +138,71 @@ describe('completed scan findings and report UI', () => {
     expect(findingDetail.querySelector('[onerror]')).toBeNull();
   });
 
+  test('shows workflow verification, rule guidance, bounded history, and saved remediation notes', async () => {
+    let currentWorkflow = { ...workflow };
+    const getFinding = vi.fn(async (): Promise<FindingDetailResponse> => ({
+      ...detail,
+      workflow: currentWorkflow,
+      guidance: {
+        ruleId: finding.ruleId,
+        status: 'RULE_SPECIFIC',
+        whyItMatters: 'Fixture-only explanation.',
+        actions: ['Use a safe alternative.'],
+        verification: 'Run this same scanner again; absence is not proof of a fix.',
+      },
+    }));
+    const setFindingLifecycle = vi.fn(async (_projectId: string, _scanId: string, _findingId: string, state: FindingLifecycleState): Promise<FindingWorkflowResponse> => {
+      currentWorkflow = { ...currentWorkflow, state, historyTotal: currentWorkflow.historyTotal + 1 };
+      return { workflow: currentWorkflow };
+    });
+    const addFindingNote = vi.fn(async (_projectId: string, _scanId: string, _findingId: string, note: string): Promise<FindingWorkflowResponse> => {
+      currentWorkflow = {
+        ...currentWorkflow,
+        notes: [{ id: 'fnt_00000000-0000-4000-8000-0000000000ab', text: note, actorId: TEST_USER.id, createdAt: scan.completedAt!, redacted: false }],
+        historyTotal: currentWorkflow.historyTotal + 1,
+      };
+      return { workflow: currentWorkflow };
+    });
+    const getFindingHistory = vi.fn(async (): Promise<FindingHistoryResponse> => ({
+      events: [{
+        id: 'fev_00000000-0000-4000-8000-0000000000ab', findingId: finding.id,
+        previousState: null, newState: 'OPEN', actorId: 'system:scanner', actorType: 'SYSTEM',
+        action: 'FINDING_OBSERVED', at: scan.completedAt!,
+      }],
+      page: 1, pageSize: 20, total: 1, totalPages: 1,
+    }));
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: TEST_USER })),
+      getProject: vi.fn(async () => projectResponse),
+      getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [scan] })),
+      getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [finding], page: 1, pageSize: 20, total: 1, totalPages: 1 })),
+      getFinding,
+      setFindingLifecycle,
+      addFindingNote,
+      getFindingHistory,
+    });
+    await renderProject(client);
+    await userEvent.click(await screen.findByTestId('view-findings'));
+    await userEvent.click(await screen.findByTestId('finding-detail-button'));
+    const panel = await screen.findByTestId('finding-workflow');
+    expect(within(panel).getByTestId('finding-lifecycle-state')).toHaveTextContent('OPEN');
+    expect(within(panel).getByTestId('finding-verification-state')).toHaveTextContent('Observed in latest completed same-scanner scan');
+    expect(screen.getByTestId('finding-guidance')).toHaveTextContent('RULE SPECIFIC');
+
+    await userEvent.selectOptions(within(panel).getByLabelText('Change lifecycle state'), 'ACKNOWLEDGED');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Update status' }));
+    expect(await within(await screen.findByTestId('finding-workflow')).findByTestId('finding-lifecycle-state')).toHaveTextContent('ACKNOWLEDGED');
+    expect(setFindingLifecycle).toHaveBeenCalledWith(project.id, scan.id, finding.id, 'ACKNOWLEDGED');
+
+    await userEvent.type(screen.getByLabelText('Remediation note (plain text; secrets are redacted)'), 'Reviewed safely.');
+    await userEvent.click(screen.getByRole('button', { name: 'Add note' }));
+    expect(await screen.findByTestId('finding-notes')).toHaveTextContent('Reviewed safely.');
+    expect(addFindingNote).toHaveBeenCalledWith(project.id, scan.id, finding.id, 'Reviewed safely.');
+    await userEvent.click(screen.getByTestId('load-finding-history'));
+    expect(await screen.findByTestId('finding-history')).toHaveTextContent('FINDING OBSERVED');
+    expect(getFindingHistory).toHaveBeenCalledWith(project.id, scan.id, finding.id, 1, 20);
+  });
+
   test('generates/retrieves honest saved reports and offers only JSON/Markdown exports', async () => {
     const createReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
     const getReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
@@ -132,11 +221,15 @@ describe('completed scan findings and report UI', () => {
     expect(screen.getByTestId('report-inventory-summary')).toHaveTextContent('NOT INCLUDED');
     expect(screen.getByTestId('report-scanner-coverage')).toHaveTextContent('SAST: RAN');
     expect(screen.getByTestId('report-scanner-coverage')).toHaveTextContent('SCA: NOT_RUN');
+    expect(screen.getByTestId('report-workflow-snapshot')).toHaveTextContent('OPEN');
+    expect(screen.getByTestId('report-workflow-snapshot')).toHaveTextContent('not technical verification');
     expect(createReport).toHaveBeenCalledWith(project.id, scan.id);
     expect(screen.getByTestId('download-report-json')).toBeInTheDocument();
     expect(screen.getByTestId('download-report-markdown')).toBeInTheDocument();
     expect(screen.queryByText(/PDF/i)).toBeNull();
     await userEvent.click(screen.getByTestId('refresh-report'));
     expect(getReport).toHaveBeenCalledWith(project.id, scan.id);
+    await userEvent.click(screen.getByTestId('refresh-report-snapshot'));
+    expect(createReport).toHaveBeenCalledTimes(2);
   });
 });

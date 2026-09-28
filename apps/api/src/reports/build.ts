@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { SCAN_TYPES, type Finding, type ReportScanContext } from '@drobon/shared';
+import { SCAN_TYPES, type Finding, type FindingWorkflow, type ReportScanContext } from '@drobon/shared';
 import {
   REPORT_MAX_BYTES,
   REPORT_SCHEMA_VERSION,
@@ -42,7 +42,7 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scannerCoverage' | 'findingSummary' | 'findings' | 'dast' | 'dependencyIntelligence' | 'inventory'>): unknown {
+function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scannerCoverage' | 'findingSummary' | 'findings' | 'dast' | 'findingWorkflows' | 'dependencyIntelligence' | 'inventory'>): unknown {
   return {
     reportVersion: REPORT_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -52,6 +52,7 @@ function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scan
     findingSummary: report.findingSummary,
     findings: report.findings,
     ...(report.dast === undefined ? {} : { dast: report.dast }),
+    ...(report.findingWorkflows === undefined ? {} : { findingWorkflows: report.findingWorkflows }),
     dependencyIntelligence: report.dependencyIntelligence,
     inventory: report.inventory,
   };
@@ -89,9 +90,13 @@ export function buildSecurityReport(
   project: ProjectRecord,
   scan: ScanRecord,
   generatedAt: string,
+  findingWorkflows?: readonly FindingWorkflow[],
 ): SecurityReport {
   const scanContext = scanSnapshot(scan);
   const findings: Finding[] = [...(scan.findings ?? [])];
+  if (scan.resultSummary?.findingsTotal !== findings.length) {
+    throw new TypeError('Persisted finding details do not agree with the completed scan summary.');
+  }
   const inventory: ReportInventory = scan.sca === undefined
     ? { status: 'NOT_INCLUDED', reason: 'Dependency inventory was not part of this scan.' }
     : { status: 'INCLUDED', sca: scan.sca };
@@ -114,6 +119,7 @@ export function buildSecurityReport(
       : { scanner, status: 'NOT_RUN' as const, reason: 'Not run in this single-scan assessment.' }),
     findingSummary: summarizeReportFindings(findings),
     findings,
+    ...(findingWorkflows === undefined ? {} : { findingWorkflows: [...findingWorkflows] }),
     ...(scan.dast === undefined ? {} : { dast: scan.dast }),
     dependencyIntelligence,
     inventory,
@@ -190,6 +196,7 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
     }
     lines.push('');
   }
+  const workflowByFindingId = new Map((report.findingWorkflows ?? []).map((workflow) => [workflow.findingId, workflow]));
   for (const finding of report.findings) {
     const source = finding.scanner === 'DAST'
       ? `${finding.method} ${finding.endpoint} (HTTP ${finding.responseStatus})`
@@ -210,6 +217,22 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
       quoteBlock('Evidence', finding.evidence),
       quoteBlock('Remediation', finding.remediation),
     );
+    const workflow = workflowByFindingId.get(finding.id);
+    if (workflow !== undefined) {
+      lines.push(
+        '#### Remediation workflow (snapshot)',
+        '',
+        `- User workflow state: ${workflow.state}${workflow.state === 'RESOLVED' ? ' (user-marked addressed; not proof of technical remediation)' : ''}`,
+        `- Verification: ${workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'not observed in the latest completed same-scanner scan with complete finding details; this is not proof of a fix' : 'observed in the latest completed same-scanner scan with complete finding details'}`,
+        `- Last verification scan: \`${workflow.lastVerificationScanId}\` (${escapeMarkdown(workflow.lastVerificationAt)})`,
+        `- Last observed: \`${workflow.lastObservedScanId}\` (${escapeMarkdown(workflow.lastObservedAt)})`,
+        ...workflow.notes.flatMap((note) => [
+          `- Remediation note (${escapeMarkdown(note.createdAt)}${note.redacted ? ', credential-shaped text omitted' : ''}):`,
+          ...note.text.split('\n').map((line) => `  > ${escapeMarkdown(line)}`),
+        ]),
+        '',
+      );
+    }
   }
   if (report.findings.length === 0) lines.push('No persisted findings were produced by the scanner that ran. This is not a statement about scanners that did not run or dependency vulnerabilities that were not assessed.', '');
   lines.push(

@@ -6,6 +6,8 @@ import {
   SCAN_TYPES,
   findingScanner,
   type FindingDetailResponse,
+  type FindingHistoryResponse,
+  type FindingLifecycleState,
   type FindingsPageResponse,
   type SecurityReportResponse,
   type ScanDetailResponse,
@@ -759,6 +761,14 @@ function SourcesSection({
  * API; detail retrieval is separately project/scan scoped and evidence is
  * rendered only as escaped text.
  */
+const FINDING_TRANSITIONS: Readonly<Record<FindingLifecycleState, readonly FindingLifecycleState[]>> = {
+  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
+  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED'],
+  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED'],
+  RESOLVED: [],
+  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
+};
+
 function FindingsView({
   projectId,
   scanId,
@@ -778,6 +788,12 @@ function FindingsView({
   const [opened, setOpened] = useState(false);
   const [severity, setSeverity] = useState<'ALL' | FindingSeverity>('ALL');
   const [scanner, setScanner] = useState<'ALL' | ScanType>('ALL');
+  const [workflowTarget, setWorkflowTarget] = useState<FindingLifecycleState | ''>('');
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [history, setHistory] = useState<FindingHistoryResponse | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const loadPage = async (
     nextPage: number,
@@ -811,10 +827,58 @@ function FindingsView({
 
   const openFinding = async (findingId: string): Promise<void> => {
     setDetailError(null);
+    setWorkflowError(null);
+    setHistory(null);
+    setHistoryError(null);
+    setWorkflowTarget('');
     try {
       setSelected(await client.getFinding(projectId, scanId, findingId));
     } catch (caught: unknown) {
       setDetailError(caught instanceof ApiClientError ? caught.message : 'Could not load this finding.');
+    }
+  };
+
+  const submitWorkflow = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (selected?.workflow === undefined || workflowTarget === '') return;
+    setWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      await client.setFindingLifecycle(projectId, scanId, selected.finding.id, workflowTarget);
+      setSelected(await client.getFinding(projectId, scanId, selected.finding.id));
+      setWorkflowTarget('');
+      setHistory(null);
+    } catch (caught: unknown) {
+      setWorkflowError(caught instanceof ApiClientError ? caught.message : 'Could not update finding workflow.');
+    } finally {
+      setWorkflowBusy(false);
+    }
+  };
+
+  const submitNote = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (selected?.workflow === undefined || noteDraft.trim() === '') return;
+    setWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      await client.addFindingNote(projectId, scanId, selected.finding.id, noteDraft);
+      setNoteDraft('');
+      setSelected(await client.getFinding(projectId, scanId, selected.finding.id));
+      setHistory(null);
+    } catch (caught: unknown) {
+      setWorkflowError(caught instanceof ApiClientError ? caught.message : 'Could not save this remediation note.');
+    } finally {
+      setWorkflowBusy(false);
+    }
+  };
+
+  const loadHistory = async (page = 1): Promise<void> => {
+    if (selected === null) return;
+    setHistoryError(null);
+    try {
+      setHistory(await client.getFindingHistory(projectId, scanId, selected.finding.id, page, 20));
+    } catch (caught: unknown) {
+      setHistoryError(caught instanceof ApiClientError ? caught.message : 'Could not load finding history.');
     }
   };
 
@@ -941,7 +1005,79 @@ function FindingsView({
               </dl>
               <p>{selectedFinding.description}</p>
               <p><strong>Observed evidence</strong></p><pre><code data-testid="finding-evidence">{selectedFinding.evidence}</code></pre>
-              <p><strong>Remediation</strong></p><p data-testid="finding-remediation">{selectedFinding.remediation}</p>
+              <p><strong>Scanner remediation</strong></p><p data-testid="finding-remediation">{selectedFinding.remediation}</p>
+              {selected.guidance !== undefined && (
+                <section className="workflow-guidance" aria-label="Remediation guidance" data-testid="finding-guidance">
+                  <h5>Rule-specific guidance · {selected.guidance.status.replaceAll('_', ' ')}</h5>
+                  <p>{selected.guidance.whyItMatters}</p>
+                  <ul>{selected.guidance.actions.map((action, index) => <li key={`${selected.guidance?.ruleId}-${index}`}>{action}</li>)}</ul>
+                  <p><strong>Verification:</strong> {selected.guidance.verification}</p>
+                  {selected.guidance.standardId !== undefined && <p className="muted">Scanner rule identifier: {selected.guidance.standardId}</p>}
+                  {selected.guidance.example !== undefined && (
+                    <div className="guidance-example">
+                      <p><strong>Illustrative pattern only — review in application context.</strong></p>
+                      <p>Before: <code>{selected.guidance.example.before}</code></p>
+                      <p>After: <code>{selected.guidance.example.after}</code></p>
+                      {selected.guidance.example.caveat !== undefined && <p className="muted">{selected.guidance.example.caveat}</p>}
+                    </div>
+                  )}
+                </section>
+              )}
+              {selected.workflow !== undefined && (
+                <section className="finding-workflow" aria-label="Finding remediation workflow" data-testid="finding-workflow">
+                  <h5>Remediation workflow</h5>
+                  <p className="muted">User-managed status is separate from scanner evidence. Marking a finding resolved does not verify a fix; only a later completed same-scanner scan with complete finding details updates observation status.</p>
+                  <dl className="facts">
+                    <div className="fact"><dt>Lifecycle</dt><dd data-testid="finding-lifecycle-state">{selected.workflow.state}</dd></div>
+                    <div className="fact"><dt>Verification</dt><dd data-testid="finding-verification-state">{selected.workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'Not observed in latest completed same-scanner scan with complete finding details' : 'Observed in latest completed same-scanner scan with complete finding details'}</dd></div>
+                    <div className="fact"><dt>Latest verification scan</dt><dd><code>{selected.workflow.lastVerificationScanId}</code> · {selected.workflow.lastVerificationAt}</dd></div>
+                  </dl>
+                  {selected.project.status === 'ARCHIVED' ? (
+                    <p className="muted">Archived projects are read-only; lifecycle changes and notes are disabled.</p>
+                  ) : FINDING_TRANSITIONS[selected.workflow.state].length > 0 ? (
+                    <form className="workflow-form" onSubmit={(event) => void submitWorkflow(event)}>
+                      <label htmlFor={`finding-state-${selectedFinding.id}`}>Change lifecycle state</label>
+                      <div className="hero-actions">
+                        <select id={`finding-state-${selectedFinding.id}`} value={workflowTarget} onChange={(event) => setWorkflowTarget(event.target.value as FindingLifecycleState | '')} disabled={workflowBusy}>
+                          <option value="">Select a valid next state</option>
+                          {FINDING_TRANSITIONS[selected.workflow.state].map((state) => <option key={state} value={state}>{state}</option>)}
+                        </select>
+                        <button type="submit" className="button button-secondary" disabled={workflowBusy || workflowTarget === ''}>{workflowBusy ? 'Saving…' : 'Update status'}</button>
+                      </div>
+                    </form>
+                  ) : <p className="muted">No manual transition is available from this state. A future matching scan may automatically reopen a resolved finding.</p>}
+                  {selected.project.status !== 'ARCHIVED' && (
+                    <form className="workflow-form" onSubmit={(event) => void submitNote(event)}>
+                      <label htmlFor={`finding-note-${selectedFinding.id}`}>Remediation note (plain text; secrets are redacted)</label>
+                      <textarea id={`finding-note-${selectedFinding.id}`} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} maxLength={1000} rows={3} disabled={workflowBusy} />
+                      <button type="submit" className="button button-ghost" disabled={workflowBusy || noteDraft.trim() === ''}>Add note</button>
+                    </form>
+                  )}
+                  {workflowError !== null && <div className="form-alert" role="alert"><p data-testid="finding-workflow-error">{workflowError}</p></div>}
+                  <h6>Remediation notes</h6>
+                  {selected.workflow.notes.length === 0 ? <p className="muted">No notes have been added.</p> : (
+                    <ul className="workflow-notes" data-testid="finding-notes">
+                      {selected.workflow.notes.map((note) => <li key={note.id}><p>{note.text}</p><small>{note.createdAt}{note.redacted ? ' · credential-like content redacted' : ''}</small></li>)}
+                    </ul>
+                  )}
+                  <div className="hero-actions">
+                    <button type="button" className="button button-ghost" onClick={() => void loadHistory(1)} data-testid="load-finding-history">{history === null ? 'Load workflow history' : 'Refresh workflow history'}</button>
+                    {history !== null && <span className="muted">{history.total} events · page {history.page} of {history.totalPages}</span>}
+                  </div>
+                  {historyError !== null && <div className="form-alert" role="alert"><p data-testid="finding-history-error">{historyError}</p></div>}
+                  {history !== null && (
+                    <>
+                      <ol className="workflow-history" data-testid="finding-history">
+                        {history.events.map((entry) => <li key={entry.id}><strong>{entry.action.replaceAll('_', ' ')}</strong> · {entry.previousState ?? '—'} → {entry.newState} · {entry.at}</li>)}
+                      </ol>
+                      <div className="hero-actions" aria-label="Workflow history pagination">
+                        <button type="button" className="button button-ghost" disabled={history.page <= 1} onClick={() => void loadHistory(history.page - 1)}>Previous events</button>
+                        <button type="button" className="button button-ghost" disabled={history.page >= history.totalPages} onClick={() => void loadHistory(history.page + 1)}>Next events</button>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
             </section>
           )}
         </>
@@ -1009,6 +1145,21 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
               ? `Inventory included: ${report.inventory.sca.dependencies.length} persisted of ${report.inventory.sca.summary.dependenciesTotal} observed dependencies; CycloneDX ${report.inventory.sca.sbom.specVersion} subset with ${report.inventory.sca.sbom.components.length} components.`
               : `Inventory / SBOM: NOT INCLUDED. ${report.inventory.reason}`}
           </p>
+          {report.findingWorkflows === undefined ? (
+            <p className="muted" data-testid="report-workflow-legacy">This saved Pump 12 report predates lifecycle snapshots. Regenerate it to include current remediation workflow observations.</p>
+          ) : (
+            <section className="report-workflows" data-testid="report-workflow-snapshot">
+              <h5>Point-in-time remediation workflow snapshot</h5>
+              <p className="muted">A user-selected RESOLVED state is not technical verification. Absence means only not observed in the latest completed same-scanner scan with complete finding details.</p>
+              {report.findingWorkflows.length === 0 ? <p className="muted">No findings were present in this report snapshot.</p> : (
+                <ul>{report.findingWorkflows.map((workflow) => (
+                  <li key={workflow.id}>
+                    <code>{workflow.findingId}</code> · {workflow.state} · {workflow.verificationState.replaceAll('_', ' ')} · last scan <code>{workflow.lastVerificationScanId}</code> ({workflow.lastVerificationAt})
+                  </li>
+                ))}</ul>
+              )}
+            </section>
+          )}
           <p className="muted">Severity counts: {Object.entries(report.findingSummary.bySeverity).map(([severity, count]) => `${severity} ${count}`).join(' · ')}</p>
           <ul className="report-coverage" data-testid="report-scanner-coverage">
             {report.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.status}{entry.reason === undefined ? '' : ` — ${entry.reason}`}</li>)}
@@ -1018,6 +1169,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
             <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
             <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>
             <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="refresh-report">Retrieve saved report</button>
+            <button type="button" className="button button-secondary" onClick={() => void generate()} disabled={busy} data-testid="refresh-report-snapshot">Regenerate current snapshot</button>
           </div>
         </>
       )}
@@ -1106,6 +1258,14 @@ function ScaView({
               ? `Assessed by ${sca.summary.providerId}: ${sca.summary.advisoriesTotal} advisories.`
               : 'Not assessed — vulnerability intelligence dataset unavailable. The dependency inventory and SBOM below are complete; no vulnerability claims are made without a loaded dataset.'}
           </p>
+          <section className="sca-guidance" data-testid="sca-remediation-guidance">
+            <h4>Dependency review guidance</h4>
+            {sca.summary.assessmentState === 'NOT_ASSESSED' ? (
+              <p>Vulnerability intelligence remains NOT ASSESSED; no package is declared safe or vulnerable and no upgrade is recommended. Use only the observed dependency name and version below to consult an approved provider out of band. After any intentional change, review the lockfile and rerun SCA when authorized intelligence is available.</p>
+            ) : (
+              <p>Review only advisories returned by the configured provider for the observed dependency coordinates. Drobon does not infer additional advisories or choose an unverified upgrade; after an intentional change, rerun SCA and review the new assessment and SBOM.</p>
+            )}
+          </section>
           <dl className="facts" data-testid="sca-summary">
             <div className="fact">
               <dt>Dependencies</dt>

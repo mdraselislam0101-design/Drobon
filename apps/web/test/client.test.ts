@@ -95,6 +95,40 @@ describe('createApiClient', () => {
     expect(calls[1]?.[1].body).toBeUndefined();
   });
 
+  test('uses authenticated finding lifecycle, note, and bounded history endpoints with strict request bodies', async () => {
+    const projectId = 'prj_00000000-0000-4000-8000-0000000000aa';
+    const scanId = 'scan_00000000-0000-4000-8000-0000000000aa';
+    const findingId = `fnd_${'a'.repeat(24)}`;
+    const workflow = {
+      id: 'fwf_00000000-0000-4000-8000-0000000000aa', projectId, findingId, fingerprint: 'b'.repeat(64),
+      scanner: 'SAST', ruleId: 'DG-SAST-001', state: 'ACKNOWLEDGED',
+      firstObservedScanId: scanId, firstObservedAt: '2026-09-28T10:00:00.000Z',
+      lastObservedScanId: scanId, lastObservedAt: '2026-09-28T10:00:00.000Z',
+      lastVerificationScanId: scanId, lastVerificationAt: '2026-09-28T10:00:00.000Z',
+      verificationState: 'OBSERVED', notes: [], historyTotal: 1, updatedAt: '2026-09-28T10:00:00.000Z',
+    };
+    const fetchImpl: FetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { workflow }, meta: { requestId: 'wf-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { workflow }, meta: { requestId: 'note-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { events: [], page: 1, pageSize: 20, total: 0, totalPages: 0 }, meta: { requestId: 'history-1' } }));
+    const client = createApiClient({ baseUrl: '', fetchImpl, generateId: () => 'workflow-client-test' });
+    await client.setFindingLifecycle(projectId, scanId, findingId, 'ACKNOWLEDGED');
+    await client.addFindingNote(projectId, scanId, findingId, 'reviewed');
+    await client.getFindingHistory(projectId, scanId, findingId, 1, 20);
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/scans/${scanId}/findings/${findingId}/lifecycle`);
+    expect(calls[0]?.[1].method).toBe('PATCH');
+    expect(calls[0]?.[1].body).toBe(JSON.stringify({ state: 'ACKNOWLEDGED' }));
+    expect(calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/scans/${scanId}/findings/${findingId}/notes`);
+    expect(calls[1]?.[1].method).toBe('POST');
+    expect(calls[1]?.[1].body).toBe(JSON.stringify({ note: 'reviewed' }));
+    expect(calls[2]?.[0]).toContain(`/history?page=1&pageSize=20`);
+    for (const [, init] of calls) {
+      expect(init.credentials).toBe('include');
+      expect(new Headers(init.headers).get('x-request-id')).toBe('workflow-client-test');
+    }
+  });
+
   test('downloads only bounded report media with a server-generated safe filename', async () => {
     const response = new Response('# Assessment\n', {
       status: 200,

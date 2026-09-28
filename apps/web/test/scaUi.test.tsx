@@ -336,6 +336,9 @@ describe('SCA UI: the honest dependency analysis view', () => {
     const banner = await screen.find('sca-assessment');
     expect(banner.textContent).toContain('Not assessed');
     expect(banner.textContent).toContain('dataset unavailable');
+    const guidance = await screen.find('sca-remediation-guidance');
+    expect(guidance.textContent).toContain('NOT ASSESSED');
+    expect(guidance.textContent).toContain('no upgrade is recommended');
     // The honest summary counts.
     const summary = await screen.find('sca-summary');
     expect(summary.textContent).toContain('5');
