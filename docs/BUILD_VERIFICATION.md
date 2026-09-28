@@ -549,3 +549,70 @@ hint, archived restriction, XSS-inert, no storage authority.
 code); `check:secrets` PASS over sources and builds; **DATASET LOCK
 respected** — no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; `git
 status` clean of secrets/datasets/junk after commit.
+
+## Pump 8 — Real SAST engine (VERIFIED, live E2E included)
+
+**Pipeline:** `npm run verify` — 9/9 PASS (boundaries, secret
+matcher self-test, secret scan sources + builds, typecheck, lint,
+tests, production builds, dependency audit).
+
+**Test totals:** shared 128, api 432 (incl. `sastRules` 21,
+`sastEngine` 22, `sastApi` 30), web 169 (incl. `sastUi` 9) — 729 total.
+
+### Live E2E (production build, `:4101`, fresh stores in `/tmp`)
+
+1. Boot `NODE_ENV=production node dist/index.js` → listening, plain
+   startup fatals only.
+2. Register + project create → 201s.
+3. **Pre-flight quota protection**: SAST on a snapshot-less project →
+   `409 CONFLICT` "Upload a source snapshot before requesting a SAST
+   scan." and usage stays `used=0` (nothing consumed).
+4. Snapshot upload (5 files incl. an `exec` payload + a fake
+   credential) → 200; read-back is METADATA ONLY (no content key in
+   the response); `.env`, `../traversal`, `__proto__` and `.pem`
+   uploads → 422 with the snapshot intact (replace semantics hold:
+   the last successful upload wins).
+5. **Scan 1** (SAST): QUEUED → COMPLETED via the processor sweep;
+   honest counts (filesScanned 4, filesSkipped 1).
+6. Idempotent replay (same key) → 200, same scan id, usage unchanged
+   (used=1).
+7. Snapshot REPLACED with the full 6-rule vulnerable shape → **Scan
+   2** (SAST): COMPLETED with **6 findings, severity-ordered**
+   (HIGH DG-SAST-001/003/002, MEDIUM DG-SAST-005/004, LOW
+   DG-SAST-006), CWE mappings present, **credential redacted**
+   (`<redacted>` in evidence; the literal appears nowhere in the
+   response).
+8. **Analyzed, never executed**: the uploaded payload contained
+   ``exec(`touch /tmp/drobon-pump8-marker ${dir}`)`` — the finding
+   fires with that evidence, and `/tmp/drobon-pump8-marker` DOES NOT
+   EXIST after the scan (checked before and after both SAST scans).
+9. **Scan 3** (DAST): FAILED/`SCAN_ENGINE_NOT_IMPLEMENTED` — the
+   honest no-engine path.
+10. **Quota exhaustion**: 4th request → 429 `QUOTA_EXCEEDED` +
+    `Retry-After`; usage `used=3, EXHAUSTED`.
+11. **Cross-account isolation**: second account → sources GET/PUT and
+    the foreign scan detail all 403 (uniform, no oracle).
+12. **Log hygiene**: the full server log carries ids/counts only —
+    no source content, no secret value; `scans.json` stores
+    `<redacted>` evidence (0 raw occurrences), `usage/projects/users`
+    stores clean; the uploaded content lives ONLY in the 0600
+    `sources.json` scan-target store (by design — that is the input
+    the engine reads; `.data/` is gitignored).
+13. **Restart durability**: SIGTERM → reboot on the same stores →
+    scan 2 still COMPLETED with 6 findings, **identical finding ids**
+    across the restart (deterministic fingerprints), snapshot intact,
+    quota continuity (used=3, EXHAUSTED).
+14. **Corrupt source store refuses to start** (`:4102`, garbage
+    `sources.json`): "Fatal startup error: Source store … is not
+    valid JSON — refusing to start with corrupt source data."; exit 1,
+    port never opens.
+15. Production web build carries the SAST UI (`view-findings`,
+    `source-file-input`, `findings-filter` present in the bundle).
+
+### Boundary checks
+
+`check:boundaries` PASS (no DB/dataset/shell; no payment/gateway
+code); `check:secrets` PASS over sources and builds (the fake
+credential literals in tests carry same-line fake markers);
+**DATASET LOCK respected** — no CVE/NVD/GHSA/OSV/KEV/EPSS data
+anywhere; `git status` clean of secrets/datasets/junk after commit.

@@ -3,12 +3,18 @@ import { dirname, join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   IDEMPOTENCY_KEY_PATTERN,
+  MAX_FINDINGS_PER_SCAN,
   PROJECT_ID_PATTERN,
   SCAN_ID_PATTERN,
+  isFinding,
   isScanFailureCode,
+  isScanResultSummary,
   isScanStatus,
   isScanType,
+  type Finding,
+  compareFindings,
   type Scan,
+  type ScanDetail,
   type ScanFailureCode,
   type ScanResultSummary,
   type ScanType,
@@ -61,6 +67,12 @@ export interface ScanRecord {
   failureCode?: ScanFailureCode;
   failureMessage?: string;
   resultSummary?: ScanResultSummary;
+  /**
+   * The engine's real findings (Pump 8) — COMPLETED scans only, bounded
+   * by MAX_FINDINGS_PER_SCAN, persisted with the terminal transition.
+   * Present only when the engine actually produced findings.
+   */
+  findings?: Finding[];
 }
 
 /**
@@ -136,12 +148,17 @@ export interface ScanStore {
    */
   claimNextQueued(): Promise<ScanRecord | undefined>;
   /**
-   * RUNNING → COMPLETED with the engine-produced summary. Returns
-   * `undefined` when the scan is missing or not RUNNING (a terminal
-   * scan can never be re-finalized — COMPLETED → RUNNING does not
-   * exist).
+   * RUNNING → COMPLETED with the engine-produced summary and its real
+   * findings (Pump 8: bounded, validated, persisted atomically with the
+   * terminal transition). Returns `undefined` when the scan is missing
+   * or not RUNNING (a terminal scan can never be re-finalized —
+   * COMPLETED → RUNNING does not exist).
    */
-  completeScan(id: string, resultSummary: ScanResultSummary): Promise<ScanRecord | undefined>;
+  completeScan(
+    id: string,
+    resultSummary: ScanResultSummary,
+    findings?: Finding[],
+  ): Promise<ScanRecord | undefined>;
   /**
    * RUNNING → FAILED with a closed-vocabulary failure code and a safe,
    * bounded message. Same single-transition guard as
@@ -229,15 +246,28 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   ) {
     return undefined;
   }
-  if (record['resultSummary'] !== undefined) {
+  if (record['resultSummary'] !== undefined && !isScanResultSummary(record['resultSummary'])) {
+    return undefined;
+  }
+  // Findings (Pump 8): COMPLETED scans only, bounded, individually
+  // guarded, and each finding must belong to THIS scan (a cross-scan
+  // finding would mean corrupted or transplanted state — refuse).
+  if (record['findings'] !== undefined) {
+    if (!Array.isArray(record['findings']) || record['findings'].length > MAX_FINDINGS_PER_SCAN) {
+      return undefined;
+    }
+    if (!record['findings'].every((finding) => isFinding(finding))) {
+      return undefined;
+    }
+    const scanId = record['id'];
+    if (!record['findings'].every((finding) => finding.scanId === scanId)) {
+      return undefined;
+    }
+    // The summary must agree with the persisted findings.
     const summary = record['resultSummary'];
     if (
-      typeof summary !== 'object' ||
-      summary === null ||
-      Object.keys(summary).length !== 1 ||
-      typeof (summary as Record<string, unknown>)['findingsTotal'] !== 'number' ||
-      !Number.isInteger((summary as Record<string, unknown>)['findingsTotal']) ||
-      ((summary as Record<string, unknown>)['findingsTotal'] as number) < 0
+      summary === undefined ||
+      summary.findingsTotal !== record['findings'].length
     ) {
       return undefined;
     }
@@ -248,6 +278,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   const hasFailureCode = record['failureCode'] !== undefined;
   const hasFailureMessage = record['failureMessage'] !== undefined;
   const hasResult = record['resultSummary'] !== undefined;
+  const hasFindings = record['findings'] !== undefined;
   if (status === 'QUEUED') {
     if (hasStartedAt || hasCompletedAt || hasFailureCode || hasFailureMessage || hasResult) {
       return undefined;
@@ -272,6 +303,11 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
         return undefined;
       }
     }
+  }
+  // Findings exist ONLY on COMPLETED scans (the engine produces them;
+  // QUEUED/RUNNING/FAILED scans can never carry findings).
+  if (hasFindings && status !== 'COMPLETED') {
+    return undefined;
   }
   // Rebuild explicitly from the validated fields (no casts — the
   // optional fields exist exactly when the state machine allows).
@@ -298,6 +334,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   }
   if (record['resultSummary'] !== undefined) {
     built.resultSummary = record['resultSummary'] as ScanResultSummary;
+  }
+  if (Array.isArray(record['findings'])) {
+    built.findings = record['findings'];
   }
   return built;
 }
@@ -587,11 +626,29 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         return claimed === undefined ? undefined : toPublic(claimed);
       }),
 
-    completeScan: (id, resultSummary) =>
+    completeScan: (id, resultSummary, findings) =>
       runExclusive(() => {
         const current = scansById.get(id);
         if (current === undefined || current.status !== 'RUNNING') {
           return undefined;
+        }
+        // Defense in depth: findings are bounded and must belong to
+        // this scan, and the summary must agree with them (the engine
+        // already guarantees this; the store never trusts blindly).
+        const safeFindings =
+          findings === undefined || findings.length === 0
+            ? undefined
+            : findings.slice(0, MAX_FINDINGS_PER_SCAN);
+        if (safeFindings !== undefined) {
+          if (
+            safeFindings.length !== findings?.length ||
+            !safeFindings.every((finding) => isFinding(finding) && finding.scanId === id)
+          ) {
+            return undefined;
+          }
+          if (resultSummary.findingsTotal !== safeFindings.length) {
+            return undefined;
+          }
         }
         const updated = applyClaimPersist(current, (record) => ({
           ...record,
@@ -599,6 +656,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           completedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           resultSummary,
+          ...(safeFindings === undefined ? {} : { findings: safeFindings }),
         }));
         return updated === undefined ? undefined : toPublic(updated);
       }),
@@ -668,6 +726,20 @@ export function createJsonFileScanStore(path: string): ScanStore {
 /** In-memory scan store (tests and explicit `:memory:` setups). */
 export function createMemoryScanStore(): ScanStore {
   return createScanStoreFrom({ scans: [], idempotency: [], persistWith: () => undefined });
+}
+
+/**
+ * The public scan DETAIL shape (Pump 8): the scan plus its findings,
+ * deterministically ordered (severity rank, then file, then line, then
+ * rule). Findings are only in the detail response — list responses
+ * stay lean and carry only the summary counts.
+ */
+export function toScanDetailResponse(record: ScanRecord): ScanDetail {
+  const findings = [...(record.findings ?? [])].sort(compareFindings);
+  return {
+    ...toScanResponse(record),
+    findings,
+  };
 }
 
 /** The public scan shape (no ownerId, no internals) for API responses. */

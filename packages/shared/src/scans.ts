@@ -1,3 +1,5 @@
+import { isValidSourcePath } from './sources.js';
+
 /**
  * Scan job contracts (Pump 7) — the secure orchestration boundary future
  * scanner engines (SAST/SCA/SECRETS/DAST) plug into.
@@ -49,15 +51,41 @@ export function isScanStatus(value: unknown): value is ScanStatus {
  *
  * - `SCAN_ENGINE_NOT_IMPLEMENTED` — the requested job type is supported
  *   by the orchestration layer but no real scanner engine for it exists
- *   yet (the honest Pump 7 state for every type);
+ *   (the honest state for SCA/SECRETS/DAST until their pumps; SAST has
+ *   a real engine since Pump 8);
  * - `SCAN_INTERRUPTED` — processing was interrupted (e.g. process
  *   restart mid-run); the scan deterministically FAILED, never hung;
- * - `SCAN_ENGINE_ERROR` — an engine crashed/timed out while running.
+ * - `SCAN_ENGINE_ERROR` — an engine crashed/timed out while running;
+ * - `SAST_TARGET_NOT_FOUND` — (Pump 8) a SAST scan found no source
+ *   snapshot attached to the project (the API pre-flights this, so via
+ *   HTTP this arises only from a race — the engine still fails closed);
+ * - `SAST_TARGET_TOO_LARGE` — the snapshot exceeds the engine's total
+ *   scan-byte budget (fail closed; the snapshot caps make this a
+ *   defense-in-depth path);
+ * - `SAST_FILE_LIMIT_EXCEEDED` — the snapshot has more scannable files
+ *   than the engine's hard file cap (same defense-in-depth posture);
+ * - `SAST_SCAN_TIMEOUT` — the engine's own processing deadline was
+ *   exhausted before the scan finished (deterministic, never reported
+ *   as COMPLETED; distinct from the processor-level
+ *   `SCAN_ENGINE_ERROR` timeout);
+ * - `SAST_INPUT_INVALID` — the stored snapshot failed the engine's
+ *   re-validation (fail closed; durable state is corrupt);
+ * - `SAST_UNSUPPORTED_LANGUAGE` — RESERVED (defined for stability, not
+ *   emitted in v1): a snapshot containing no supported-language files
+ *   completes honestly with `filesScanned: 0` rather than failing —
+ *   unsupported files are skipped and counted, never claimed as
+ *   scanned.
  */
 export const SCAN_FAILURE_CODES = [
   'SCAN_ENGINE_NOT_IMPLEMENTED',
   'SCAN_INTERRUPTED',
   'SCAN_ENGINE_ERROR',
+  'SAST_TARGET_NOT_FOUND',
+  'SAST_TARGET_TOO_LARGE',
+  'SAST_FILE_LIMIT_EXCEEDED',
+  'SAST_SCAN_TIMEOUT',
+  'SAST_INPUT_INVALID',
+  'SAST_UNSUPPORTED_LANGUAGE',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -86,12 +114,41 @@ export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 /**
  * Engine-produced result summary (only present on COMPLETED scans, and
- * only ever produced by a real engine — never fabricated). Deliberately
- * minimal; later engine pumps extend it behind the same guard.
+ * only ever produced by a real engine — never fabricated). The base
+ * `findingsTotal` is the Pump 7 contract; the optional SAST fields
+ * (Pump 8) extend the same shape behind one guard. NO CVSS or
+ * exploitability claims — an engine may only report what it actually
+ * measured.
  */
 export interface ScanResultSummary {
   /** Total number of findings the engine reported (0 = clean scan). */
   findingsTotal: number;
+  /**
+   * Findings per severity (SAST, Pump 8). Present only when the engine
+   * actually classified findings; all five severities are keys.
+   */
+  findingsBySeverity?: Record<FindingSeverity, number>;
+  /** Source files the engine actually analyzed (SAST). */
+  filesScanned?: number;
+  /** Source files present but skipped (unsupported/ignored) (SAST). */
+  filesSkipped?: number;
+  /**
+   * True when the per-scan findings cap truncated the finding list —
+   * the honest signal that more findings may exist (SAST).
+   */
+  truncated?: boolean;
+}
+
+const SUMMARY_ALLOWED_KEYS = [
+  'findingsTotal',
+  'findingsBySeverity',
+  'filesScanned',
+  'filesSkipped',
+  'truncated',
+] as const;
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 export function isScanResultSummary(value: unknown): value is ScanResultSummary {
@@ -99,12 +156,42 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
     return false;
   }
   const record = value as Record<string, unknown>;
-  return (
-    Object.keys(record).length === 1 &&
-    typeof record['findingsTotal'] === 'number' &&
-    Number.isInteger(record['findingsTotal']) &&
-    record['findingsTotal'] >= 0
-  );
+  const keys = Object.keys(record);
+  if (keys.length === 0 || keys.length > SUMMARY_ALLOWED_KEYS.length) {
+    return false;
+  }
+  if (keys.some((key) => !(SUMMARY_ALLOWED_KEYS as readonly string[]).includes(key))) {
+    return false;
+  }
+  if (!isCount(record['findingsTotal'])) {
+    return false;
+  }
+  if (record['findingsBySeverity'] !== undefined) {
+    const bySeverity = record['findingsBySeverity'];
+    if (typeof bySeverity !== 'object' || bySeverity === null) {
+      return false;
+    }
+    const severityKeys = Object.keys(bySeverity);
+    if (severityKeys.length !== FINDING_SEVERITIES.length) {
+      return false;
+    }
+    if (severityKeys.some((key) => !isFindingSeverity(key))) {
+      return false;
+    }
+    if (severityKeys.some((key) => !isCount((bySeverity as Record<string, unknown>)[key]))) {
+      return false;
+    }
+  }
+  if (record['filesScanned'] !== undefined && !isCount(record['filesScanned'])) {
+    return false;
+  }
+  if (record['filesSkipped'] !== undefined && !isCount(record['filesSkipped'])) {
+    return false;
+  }
+  if (record['truncated'] !== undefined && typeof record['truncated'] !== 'boolean') {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -161,6 +248,240 @@ export function isScanResponse(value: unknown): value is ScanResponse {
   }
   const record = value as Record<string, unknown>;
   return Object.keys(record).length === 1 && isScan(record['scan']);
+}
+
+// ---------------------------------------------------------------------------
+// Findings (Pump 8 — the real SAST engine's output)
+// ---------------------------------------------------------------------------
+
+/**
+ * The documented severity scale. Determined by the RULE definition —
+ * never by user input, never client-modifiable, never inflated. A
+ * severity describes the rule's worst realistic class, not proven
+ * exploitability (no dataflow → conservative, e.g. raw-HTML sinks are
+ * MEDIUM, not HIGH).
+ */
+export const FINDING_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+
+export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+
+export function isFindingSeverity(value: unknown): value is FindingSeverity {
+  return (
+    typeof value === 'string' && (FINDING_SEVERITIES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Rule identifiers: `DG-SAST-###` — stable, documented in docs/SAST.md,
+ * never reused. `DG` is the product prefix (Drobon).
+ */
+export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
+
+/**
+ * Finding ids: `fnd_` + the first 24 hex chars of the finding's
+ * fingerprint — DETERMINISTIC (derived from rule + file + line +
+ * evidence), so repeated scans of unchanged source reproduce identical
+ * finding ids. Never random.
+ */
+export const FINDING_ID_PATTERN = /^fnd_[0-9a-f]{24}$/;
+
+/** Finding fingerprints: a full lowercase SHA-256 hex digest. */
+export const FINDING_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
+
+/** CWE references, only where a rule has a defensible mapping. */
+export const FINDING_CWE_PATTERN = /^CWE-[1-9][0-9]{0,5}$/;
+
+/** Hard cap on findings persisted per scan (engine + store agree). */
+export const MAX_FINDINGS_PER_SCAN = 200;
+
+/** Bound on a finding's evidence snippet (characters). */
+export const FINDING_EVIDENCE_MAX_LENGTH = 200;
+
+/** Bound on a finding's text fields (characters). */
+export const FINDING_TEXT_MAX_LENGTH = 400;
+
+/** Bound on a finding's title (characters). */
+export const FINDING_TITLE_MAX_LENGTH = 80;
+
+/** Bound on the finding's file path — the shared source-path policy. */
+export const FINDING_FILE_PATH_MAX_LENGTH = 160;
+
+function isSafeFindingText(value: unknown, maxLength: number): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
+    return false;
+  }
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * One real, engine-produced finding. Every field is server-authored:
+ * the client can never create, mutate or delete findings (there is no
+ * findings mutation endpoint, and evidence/text guards reject injected
+ * control characters — evidence renders as text everywhere).
+ *
+ * NO CVSS score is present — none is calculated, so none may be shown.
+ */
+export interface Finding {
+  /** Deterministic id derived from the fingerprint (stable across rescans). */
+  id: string;
+  /** The scan this finding belongs to (server-set, cross-checked at load). */
+  scanId: string;
+  /** The stable rule identifier (e.g. `DG-SAST-001`). */
+  ruleId: string;
+  /** Rule-fixed severity — never client-influenced. */
+  severity: FindingSeverity;
+  /** Short human title. */
+  title: string;
+  /** What matched and why it matters (bounded). */
+  description: string;
+  /** CWE mapping, only when defensible (omitted rather than guessed). */
+  cwe?: string;
+  /** Relative path inside the project's source snapshot. */
+  file: string;
+  /** 1-based line number of the match. */
+  line: number;
+  /** 1-based column of the match (reliable: regex match index). */
+  column: number;
+  /** Bounded, sanitized source evidence (credential values redacted). */
+  evidence: string;
+  /** Rule-specific remediation guidance (separate from evidence). */
+  remediation: string;
+  /** Deterministic identity: sha256(ruleId|file|line|evidence digest). */
+  fingerprint: string;
+}
+
+/** Closed-shape + invariant guard for a finding. */
+export function isFinding(value: unknown): value is Finding {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  const allowed: readonly string[] = [
+    'id',
+    'scanId',
+    'ruleId',
+    'severity',
+    'title',
+    'description',
+    'cwe',
+    'file',
+    'line',
+    'column',
+    'evidence',
+    'remediation',
+    'fingerprint',
+  ];
+  if (keys.some((key) => !allowed.includes(key))) {
+    return false;
+  }
+  if (
+    typeof record['id'] !== 'string' ||
+    !FINDING_ID_PATTERN.test(record['id']) ||
+    typeof record['scanId'] !== 'string' ||
+    !SCAN_ID_PATTERN.test(record['scanId']) ||
+    typeof record['ruleId'] !== 'string' ||
+    !SAST_RULE_ID_PATTERN.test(record['ruleId']) ||
+    !isFindingSeverity(record['severity']) ||
+    !isSafeFindingText(record['title'], FINDING_TITLE_MAX_LENGTH) ||
+    !isSafeFindingText(record['description'], FINDING_TEXT_MAX_LENGTH) ||
+    !isSafeFindingText(record['evidence'], FINDING_EVIDENCE_MAX_LENGTH) ||
+    !isSafeFindingText(record['remediation'], FINDING_TEXT_MAX_LENGTH) ||
+    typeof record['file'] !== 'string' ||
+    !isValidSourcePath(record['file']) ||
+    typeof record['fingerprint'] !== 'string' ||
+    !FINDING_FINGERPRINT_PATTERN.test(record['fingerprint'])
+  ) {
+    return false;
+  }
+  if (
+    typeof record['line'] !== 'number' ||
+    !Number.isInteger(record['line']) ||
+    record['line'] < 1 ||
+    typeof record['column'] !== 'number' ||
+    !Number.isInteger(record['column']) ||
+    record['column'] < 1
+  ) {
+    return false;
+  }
+  if (typeof record['cwe'] === 'string' && !FINDING_CWE_PATTERN.test(record['cwe'])) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Deterministic finding order (documented contract): severity rank
+ * (CRITICAL first), then file path ASC, then line ASC, then ruleId ASC
+ * — identical on every request for identical data.
+ */
+export function compareFindings(a: Finding, b: Finding): number {
+  const rank = (severity: FindingSeverity): number =>
+    FINDING_SEVERITIES.indexOf(severity);
+  const rankDiff = rank(a.severity) - rank(b.severity);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+  if (a.file !== b.file) {
+    return a.file < b.file ? -1 : 1;
+  }
+  if (a.line !== b.line) {
+    return a.line - b.line;
+  }
+  return a.ruleId < b.ruleId ? -1 : a.ruleId > b.ruleId ? 1 : 0;
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/scans/:scanId` (Pump 8): the scan
+ * plus its findings (bounded by {@link MAX_FINDINGS_PER_SCAN} by
+ * construction — the engine truncates and flags `truncated` in the
+ * summary). Findings are a DETAIL-response field: list responses stay
+ * lean and carry only the summary counts.
+ */
+export interface ScanDetail extends Scan {
+  findings: Finding[];
+}
+
+export interface ScanDetailResponse {
+  scan: ScanDetail;
+}
+
+/**
+ * Closed-shape guard for the scan-detail response: the envelope is
+ * exactly `{ scan }`, and `scan` is a public Scan PLUS a bounded
+ * `findings` array (validated by stripping it and re-checking the
+ * Scan shape — no hardcoded key counts).
+ */
+export function isScanDetailResponse(value: unknown): value is ScanDetailResponse {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 1) {
+    return false;
+  }
+  const scan = record['scan'];
+  if (typeof scan !== 'object' || scan === null) {
+    return false;
+  }
+  const scanRecord = scan as Record<string, unknown>;
+  const { findings, ...scanWithoutFindings } = scanRecord;
+  if (!Array.isArray(findings)) {
+    return false;
+  }
+  if (findings.length > MAX_FINDINGS_PER_SCAN) {
+    return false;
+  }
+  if (!isScan(scanWithoutFindings)) {
+    return false;
+  }
+  return findings.every((finding) => isFinding(finding));
 }
 
 /**

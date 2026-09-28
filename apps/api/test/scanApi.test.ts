@@ -149,11 +149,31 @@ interface ScanCallResult {
   body: unknown;
 }
 
+/** Upload (replace) a project's source snapshot — the SAST scan target. */
+async function uploadSources(
+  server: TestServer,
+  cookies: Cookies,
+  projectId: string,
+  files: Array<{ path: string; content: string }>,
+): Promise<void> {
+  const res = await fetch(
+    `${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/sources`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: cookieHeader(cookies) },
+      body: JSON.stringify({ files }),
+    },
+  );
+  if (res.status !== 200) {
+    throw new Error(`Source upload failed with status ${res.status}.`);
+  }
+}
+
 async function requestScan(
   server: TestServer,
   cookies: Cookies,
   projectId: string,
-  body: unknown = { scanType: 'SAST' },
+  body: unknown = { scanType: 'SCA' },
   idempotencyKey?: string,
 ): Promise<ScanCallResult> {
   const res = await fetch(
@@ -217,7 +237,7 @@ describe('scan routes: authentication', () => {
         const res = await fetch(`${server.baseUrl}${path}`, {
           method,
           headers: { 'content-type': 'application/json' },
-          ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SAST' }) } : {}),
+          ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SCA' }) } : {}),
         });
         expect(res.status).toBe(401);
         expect(errorOf(await readJson(res)).code).toBe('UNAUTHORIZED');
@@ -267,7 +287,7 @@ describe('scan routes: project policy (no existence oracle)', () => {
                 'content-type': 'application/json',
                 cookie: cookieHeader(cookies),
               },
-              ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SAST' }) } : {}),
+              ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SCA' }) } : {}),
             },
           );
           expect(res.status).toBe(403);
@@ -406,6 +426,11 @@ describe('scan creation: strict input validation', () => {
     try {
       const pro = await login(server, 'pro@example.test');
       const projectId = await createProject(server, pro);
+      // Pump 8: SAST creation pre-flights the scan target — attach a
+      // snapshot so ALL FOUR job types are accepted.
+      await uploadSources(server, pro, projectId, [
+        { path: 'src/app.ts', content: 'export const version = 1;\n' },
+      ]);
       for (const scanType of ['SAST', 'SCA', 'SECRETS', 'DAST'] as const) {
         const outcome = await requestScan(server, pro, projectId, { scanType });
         expect(outcome.res.status).toBe(201);
@@ -593,7 +618,7 @@ describe('scan creation: quota consumed exactly once (atomicity)', () => {
             'x-role': 'ADMIN',
             'x-entitlements': 'feature:pro',
           },
-          body: JSON.stringify({ scanType: 'SAST', plan: 'PRO', role: 'ADMIN' }),
+          body: JSON.stringify({ scanType: 'SCA', plan: 'PRO', role: 'ADMIN' }),
         },
       );
       expect(res.status).toBe(422); // plan/role in the body are unknown props.
@@ -606,7 +631,7 @@ describe('scan creation: quota consumed exactly once (atomicity)', () => {
             cookie: `${cookieHeader(owner)}; plan=PRO; role=ADMIN`,
             'x-plan': 'PRO',
           },
-          body: JSON.stringify({ scanType: 'SAST' }),
+          body: JSON.stringify({ scanType: 'SCA' }),
         },
       );
       expect(retry.status).toBe(429); // Still FREE/exhausted.
@@ -704,7 +729,7 @@ describe('idempotency keys', () => {
             ['idempotency-key', 'duplicate-key-1'],
             ['idempotency-key', 'duplicate-key-2'],
           ],
-          body: JSON.stringify({ scanType: 'SAST' }),
+          body: JSON.stringify({ scanType: 'SCA' }),
         },
       );
       expect(dup.status).toBe(422);
@@ -725,14 +750,14 @@ describe('idempotency keys', () => {
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
-      const first = await requestScan(server, owner, projectId, { scanType: 'SAST' }, 'key-1234');
+      const first = await requestScan(server, owner, projectId, { scanType: 'SCA' }, 'key-1234');
       expect(first.res.status).toBe(201);
       const otherProject = await createProject(server, owner, 'Other');
       const conflictProject = await requestScan(
         server,
         owner,
         otherProject,
-        { scanType: 'SAST' },
+        { scanType: 'SCA' },
         'key-1234',
       );
       expect(conflictProject.res.status).toBe(409);
@@ -795,7 +820,7 @@ describe('scan reads', () => {
       const projectId = await createProject(server, owner);
       const otherProject = await createProject(server, other, 'Foreign');
       const created: Scan[] = [];
-      for (const scanType of ['SAST', 'SCA', 'SECRETS'] as const) {
+      for (const scanType of ['SCA', 'SECRETS', 'DAST'] as const) {
         const outcome = await requestScan(server, owner, projectId, { scanType });
         created.push(scanOf(outcome.body));
       }
@@ -968,7 +993,12 @@ describe('scan processor lifecycle', () => {
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
-      const created = await requestScan(server, owner, projectId);
+      // The injected engine is the SAST one; the Pump 8 pre-flight
+      // needs a snapshot attached (the synthetic engine ignores it).
+      await uploadSources(server, owner, projectId, [
+        { path: 'src/index.ts', content: 'console.log(1);\n' },
+      ]);
+      const created = await requestScan(server, owner, projectId, { scanType: 'SAST' });
       const scanId = scanOf(created.body).id;
       // Two CONCURRENT drains (duplicate worker delivery): the claim is
       // serialized — the job executes exactly once.
@@ -1006,7 +1036,10 @@ describe('scan processor lifecycle', () => {
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
-      await requestScan(server, owner, projectId);
+      await uploadSources(server, owner, projectId, [
+        { path: 'src/index.ts', content: 'console.log(1);\n' },
+      ]);
+      await requestScan(server, owner, projectId, { scanType: 'SAST' });
       await server.scanProcessor.drain();
       const scan = (await listScans(server, owner, projectId))[0];
       expect(scan?.status).toBe('FAILED');
@@ -1025,6 +1058,7 @@ describe('scan processor lifecycle', () => {
     const first = await startTestServer({
       users,
       scanStoreDir: dir,
+      sourceStoreDir: dir, // The SAST target must survive the restart too.
       projectStoreDir: dir, // The project must survive the restart too.
     });
     let cookie: Cookies;
@@ -1032,7 +1066,10 @@ describe('scan processor lifecycle', () => {
     try {
       cookie = await login(first, 'owner@example.test');
       projectId = await createProject(first, cookie);
-      await requestScan(first, cookie, projectId); // → QUEUED (no auto-processing).
+      await uploadSources(first, cookie, projectId, [
+        { path: 'src/index.ts', content: 'export const ok = true;\n' },
+      ]);
+      await requestScan(first, cookie, projectId, { scanType: 'SAST' }); // → QUEUED (no auto-processing).
       await requestScan(first, cookie, projectId, { scanType: 'SCA' });
       // Simulate a crash mid-execution: claim one scan (→ RUNNING), then
       // "die" without finishing it.
@@ -1044,6 +1081,7 @@ describe('scan processor lifecycle', () => {
     const second = await startTestServer({
       users,
       scanStoreDir: dir,
+      sourceStoreDir: dir,
       projectStoreDir: dir,
     });
     try {

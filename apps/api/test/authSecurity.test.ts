@@ -240,6 +240,7 @@ describe('auth security controls', () => {
             usageConsumeRoutes: true,
             projectStorePath: `${dir}/projects.json`,
             scanStorePath: `${dir}/scans.json`,
+            sourceStorePath: ':memory:',
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

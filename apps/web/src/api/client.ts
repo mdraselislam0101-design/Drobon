@@ -5,8 +5,10 @@ import {
   isLogoutResponse,
   isProjectResponse,
   isProjectsResponse,
+  isScanDetailResponse,
   isScanResponse,
   isScansResponse,
+  isSourceSnapshotResponse,
   isSubscriptionResponse,
   isUsageResponse,
   parseApiResponse,
@@ -20,9 +22,12 @@ import {
   type LogoutResponse,
   type ProjectResponse,
   type ProjectsResponse,
+  type ScanDetailResponse,
   type ScanResponse,
   type ScansResponse,
   type ScanType,
+  type SourceFileInput,
+  type SourceSnapshotResponse,
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
@@ -178,6 +183,30 @@ export interface ApiClient {
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<ScanResponse>;
+  /**
+   * One scan's detail (Pump 8): the scan AND its real findings (bounded,
+   * server-ordered) — the only read surface for findings.
+   */
+  getScan(
+    projectId: string,
+    scanId: string,
+    signal?: AbortSignal,
+  ): Promise<ScanDetailResponse>;
+  /**
+   * The project's source-snapshot metadata (Pump 8) — the SAST scan
+   * target. Content never travels back; 404 means no snapshot yet.
+   */
+  getSources(projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse>;
+  /**
+   * Replace (or clear) the project's source snapshot — the deterministic
+   * SAST input. Paths and content are validated by the server's single
+   * path policy; the client sends exactly { files: [{ path, content }] }.
+   */
+  uploadSources(
+    projectId: string,
+    files: SourceFileInput[],
+    signal?: AbortSignal,
+  ): Promise<SourceSnapshotResponse>;
 }
 
 /**
@@ -469,6 +498,37 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           ...(signal === undefined ? {} : { signal }),
         },
         isScanResponse,
+      ),
+    getScan: (
+      projectId: string,
+      scanId: string,
+      signal?: AbortSignal,
+    ): Promise<ScanDetailResponse> =>
+      authRequest<ScanDetailResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}`,
+        signal === undefined ? {} : { signal },
+        isScanDetailResponse,
+      ),
+    getSources: (projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse> =>
+      authRequest<SourceSnapshotResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/sources`,
+        signal === undefined ? {} : { signal },
+        isSourceSnapshotResponse,
+      ),
+    uploadSources: (
+      projectId: string,
+      files: SourceFileInput[],
+      signal?: AbortSignal,
+    ): Promise<SourceSnapshotResponse> =>
+      authRequest<SourceSnapshotResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/sources`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ files }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isSourceSnapshotResponse,
       ),
   };
 }

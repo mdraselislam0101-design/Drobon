@@ -52,6 +52,19 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ USAGE_STORE_PATH: '  ' })).toThrow(ConfigError);
   });
 
+  test('source-snapshot storage is configurable and must be durable in production', () => {
+    expect(loadConfig({ SOURCE_STORE_PATH: '/var/lib/drobon/sources.json' }).sourceStorePath).toBe(
+      '/var/lib/drobon/sources.json',
+    );
+    expect(loadConfig({ NODE_ENV: 'test', SOURCE_STORE_PATH: ':memory:' }).sourceStorePath).toBe(
+      ':memory:',
+    );
+    expect(() => loadConfig({ NODE_ENV: 'production', SOURCE_STORE_PATH: ':memory:' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ SOURCE_STORE_PATH: '  ' })).toThrow(ConfigError);
+  });
+
   test('scan storage is configurable and must be durable in production', () => {
     expect(loadConfig({}).scanStorePath).toBe('.data/scans.json');
     expect(loadConfig({ SCAN_STORE_PATH: '/var/lib/drobon/scans.json' }).scanStorePath).toBe(
@@ -123,6 +136,7 @@ describe('loadConfig', () => {
       USAGE_STORE_PATH: '/var/lib/drobon/usage.json',
       PROJECT_STORE_PATH: '/var/lib/drobon/projects.json',
       SCAN_STORE_PATH: '/var/lib/drobon/scans.json',
+      SOURCE_STORE_PATH: '/var/lib/drobon/sources.json',
     });
     expect(config.env).toBe('production');
     expect(config.host).toBe('0.0.0.0');
@@ -139,6 +153,7 @@ describe('loadConfig', () => {
     expect(config.usageConsumeRoutes).toBe(false);
     expect(config.projectStorePath).toBe('/var/lib/drobon/projects.json');
     expect(config.scanStorePath).toBe('/var/lib/drobon/scans.json');
+    expect(config.sourceStorePath).toBe('/var/lib/drobon/sources.json');
   });
 
   test('normalizes and dedupes origins', () => {

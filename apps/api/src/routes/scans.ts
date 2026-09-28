@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import {
   IDEMPOTENCY_KEY_PATTERN,
-  PROJECT_ID_PATTERN,
+  type ScanDetailResponse,
   type ScanResponse,
   type ScansResponse,
   isScanType,
@@ -10,7 +10,6 @@ import type { ApiConfig } from '../config.js';
 import {
   badRequest,
   conflict,
-  forbidden,
   internal,
   notFound,
   projectArchived,
@@ -18,13 +17,17 @@ import {
   unauthorized,
   validationError,
 } from '../errors.js';
-import { AUTHZ_DENIED_MESSAGE } from '../auth/authorization.js';
 import type { RequestContext, Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
-import type { ProjectRecord, ProjectStore } from '../projects/store.js';
+import type { ProjectStore } from '../projects/store.js';
+import {
+  createOwnProjectResolver,
+  type OwnProjectResolver,
+} from '../projects/access.js';
 import type { ScanRecord, ScanStore } from '../scans/store.js';
-import { toScanResponse } from '../scans/store.js';
+import { toScanDetailResponse, toScanResponse } from '../scans/store.js';
+import type { SourceSnapshotStore } from '../scans/sources.js';
 import type { ScanProcessor } from '../scans/processor.js';
 import type { UserRepository } from '../auth/repositories.js';
 import type { UsageService } from '../usage/service.js';
@@ -78,38 +81,19 @@ export interface ScanRouteDeps {
   users: UserRepository;
   projects: ProjectStore;
   scans: ScanStore;
+  /** Source snapshots (Pump 8) — the SAST scan target, for pre-flight. */
+  sources: SourceSnapshotStore;
   usage: UsageService;
   processor: ScanProcessor;
 }
 
 export function createScanRoutes(deps: ScanRouteDeps): Route[] {
-  const { config, users, projects, scans, usage, processor } = deps;
+  const { config, users, projects, scans, sources, usage, processor } = deps;
+  const access: OwnProjectResolver = createOwnProjectResolver(projects);
 
   const createSchema = v.object({
     scanType: v.string({ maxLength: 16, trim: true }),
   });
-
-  /**
-   * Resolve the path's projectId to the caller's OWN project, or throw
-   * the uniform 403 (unknown, malformed, or someone else's — identical,
-   * no existence oracle; the exact Pump 6 policy).
-   */
-  const ownProjectOr403 = async (
-    rawId: unknown,
-    actorId: string,
-  ): Promise<ProjectRecord> => {
-    if (typeof rawId !== 'string' || rawId.length === 0 || rawId.length > 64) {
-      throw forbidden(AUTHZ_DENIED_MESSAGE);
-    }
-    if (!PROJECT_ID_PATTERN.test(rawId)) {
-      throw forbidden(AUTHZ_DENIED_MESSAGE);
-    }
-    const record = await projects.findById(rawId);
-    if (record === undefined || record.ownerId !== actorId) {
-      throw forbidden(AUTHZ_DENIED_MESSAGE);
-    }
-    return record;
-  };
 
   /**
    * Read + strictly validate the optional Idempotency-Key header.
@@ -154,7 +138,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
         // Project ownership first — the uniform Pump 6 policy.
-        const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // ACTIVE projects only: archived projects cannot START new
         // scans (their historical scans stay readable below). Safe to
         // answer distinctly — the caller already owns this project.
@@ -174,6 +158,21 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           throw validationError([
             { path: 'scanType', message: 'Unsupported scan type.' },
           ]);
+        }
+        // PUMP 8 PRE-FLIGHT (quota protection): a SAST scan needs a
+        // source snapshot as its deterministic target. Rejecting the
+        // request BEFORE quota consumption keeps a FREE account from
+        // burning its monthly allowance on a scan that can only fail
+        // with SAST_TARGET_NOT_FOUND. Race-window defense: if the
+        // snapshot disappears between here and processing, the engine
+        // still fails the scan closed.
+        if (parsed.value.scanType === 'SAST') {
+          const snapshot = await sources.findByProject(project.id);
+          if (snapshot === undefined || snapshot.files.length === 0) {
+            throw conflict(
+              'Upload a source snapshot before requesting a SAST scan.',
+            );
+          }
         }
         const idempotencyKey = idempotencyKeyFrom(req.headers);
         // Quota decision + creation are ONE atomic operation (the
@@ -243,7 +242,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
-        const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         const records = await scans.listByProject(project.id);
         const body: ScansResponse = {
           scans: records.map((record) => toScanResponse(record)),
@@ -260,7 +259,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
-        const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // Scan lookup is scoped to the caller's OWN project. Unknown,
         // malformed (pattern-fail/oversized — can never exist) and
         // foreign scan ids all answer the SAME 404: probing another
@@ -274,7 +273,11 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (record === undefined) {
           throw notFound('Scan not found.');
         }
-        sendScan(res, ctx, record);
+        // Pump 8: the detail response carries the scan AND its real
+        // findings (bounded by MAX_FINDINGS_PER_SCAN by construction;
+        // deterministically ordered). List responses stay lean.
+        const body: ScanDetailResponse = { scan: toScanDetailResponse(record) };
+        sendSuccess(res, ctx, body);
       },
     },
   ];

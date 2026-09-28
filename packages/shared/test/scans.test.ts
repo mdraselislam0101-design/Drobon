@@ -1,17 +1,24 @@
 import { describe, expect, test } from 'vitest';
 import {
   IDEMPOTENCY_KEY_PATTERN,
+  MAX_FINDINGS_PER_SCAN,
   SCAN_FAILURE_CODES,
   SCAN_ID_PATTERN,
   SCAN_STATUSES,
   SCAN_TYPES,
+  compareFindings,
   compareScansDesc,
+  isFinding,
+  isFindingSeverity,
   isScan,
+  isScanDetailResponse,
   isScanFailureCode,
   isScanResponse,
+  isScanResultSummary,
   isScanStatus,
   isScanType,
   isScansResponse,
+  type Finding,
   type Scan,
 } from '../src/scans.js';
 
@@ -47,6 +54,12 @@ describe('scan vocabulary', () => {
       'SCAN_ENGINE_NOT_IMPLEMENTED',
       'SCAN_INTERRUPTED',
       'SCAN_ENGINE_ERROR',
+      'SAST_TARGET_NOT_FOUND',
+      'SAST_TARGET_TOO_LARGE',
+      'SAST_FILE_LIMIT_EXCEEDED',
+      'SAST_SCAN_TIMEOUT',
+      'SAST_INPUT_INVALID',
+      'SAST_UNSUPPORTED_LANGUAGE',
     ]);
   });
 
@@ -258,5 +271,138 @@ describe('compareScansDesc ordering contract', () => {
     ]);
     // Identical createdAt → id ASC.
     expect(compareScansDesc(a, { ...a, id: `z${a.id}` }) < 0).toBe(true);
+  });
+});
+
+describe('findings (Pump 8)', () => {
+  const finding: Finding = {
+    id: 'fnd_' + 'a'.repeat(24),
+    scanId: 'scan_00000000-0000-4000-8000-000000000000',
+    ruleId: 'DG-SAST-001',
+    severity: 'HIGH',
+    title: 'OS command built from dynamic input',
+    description: 'A shell command is constructed with interpolated values.',
+    cwe: 'CWE-78',
+    file: 'src/run.ts',
+    line: 12,
+    column: 7,
+    evidence: 'exec(`rm -rf ${dir}`)',
+    remediation: 'Use execFile with an argument array.',
+    fingerprint: 'b'.repeat(64),
+  };
+
+  test('isFinding accepts the exact closed shape', () => {
+    expect(isFinding(finding)).toBe(true);
+    expect(compareFindings(finding, { ...finding, severity: 'HIGH' as const })).toBe(0);
+  });
+
+  test('isFinding rejects unknown/injected fields (closed shape)', () => {
+    expect(isFinding({ ...finding, ownerId: 'usr_1' })).toBe(false);
+    expect(isFinding({ ...finding, cvss: 9.8 })).toBe(false); // NEVER fabricated scores.
+    expect(isFinding({ ...finding, exploitability: 'high' })).toBe(false);
+    expect(isFinding({ ...finding, status: 'OPEN' })).toBe(false);
+  });
+
+  test('isFinding enforces id/fingerprint/rule/CWE patterns', () => {
+    expect(isFinding({ ...finding, id: 'fnd_short' })).toBe(false);
+    expect(isFinding({ ...finding, id: 'scan_' + 'a'.repeat(24) })).toBe(false);
+    expect(isFinding({ ...finding, fingerprint: 'z'.repeat(64) })).toBe(false);
+    expect(isFinding({ ...finding, ruleId: 'SAST-001' })).toBe(false);
+    expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(false);
+    expect(isFinding({ ...finding, cwe: 'CWE-0' })).toBe(false);
+    expect(isFinding({ ...finding, cwe: 'CWE-7x' })).toBe(false);
+    expect(isFinding({ ...finding, cwe: 'CWE-78' })).toBe(true);
+  });
+
+  test('isFinding enforces severity vocabulary and rejects client input shapes', () => {
+    for (const severity of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']) {
+      expect(isFinding({ ...finding, severity })).toBe(true);
+      expect(isFindingSeverity(severity)).toBe(true);
+    }
+    for (const severity of ['critical', 'EXTREME', 'NONE', '', 5, null, undefined]) {
+      expect(isFinding({ ...finding, severity })).toBe(false);
+      expect(isFindingSeverity(severity)).toBe(false);
+    }
+  });
+
+  test('isFinding enforces line/column bounds and safe text', () => {
+    expect(isFinding({ ...finding, line: 0 })).toBe(false);
+    expect(isFinding({ ...finding, line: -1 })).toBe(false);
+    expect(isFinding({ ...finding, line: 1.5 })).toBe(false);
+    expect(isFinding({ ...finding, column: 0 })).toBe(false);
+    expect(isFinding({ ...finding, column: 1.5 })).toBe(false);
+    expect(isFinding({ ...finding, evidence: '' })).toBe(false);
+    expect(isFinding({ ...finding, evidence: 'x'.repeat(201) })).toBe(false);
+    expect(isFinding({ ...finding, evidence: 'a\nb' })).toBe(false); // control chars rejected
+    expect(isFinding({ ...finding, evidence: 'a\tb' })).toBe(false);
+    expect(isFinding({ ...finding, title: 'x'.repeat(81) })).toBe(false);
+    expect(isFinding({ ...finding, file: '../escape.ts' })).toBe(false); // traversal-shaped file path
+    expect(isFinding({ ...finding, file: 'x'.repeat(161) })).toBe(false);
+  });
+
+  test('compareFindings orders by severity rank then file/line/rule deterministically', () => {
+    const base = { ...finding };
+    const critical = { ...base, severity: 'CRITICAL' as const };
+    const low = { ...base, severity: 'LOW' as const, ruleId: 'DG-SAST-006' };
+    const laterFile = { ...base, file: 'src/zzz.ts' };
+    const laterLine = { ...base, line: 13 };
+    const otherRule = { ...base, ruleId: 'DG-SAST-002' };
+    expect(compareFindings(critical, base)).toBeLessThan(0);
+    expect(compareFindings(low, base)).toBeGreaterThan(0);
+    expect(compareFindings(laterFile, base)).toBeGreaterThan(0);
+    expect(compareFindings(laterLine, base)).toBeGreaterThan(0);
+    expect(compareFindings(otherRule, base)).toBeGreaterThan(0);
+    // The documented severity order.
+    const order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+    for (let i = 1; i < order.length; i += 1) {
+      expect(compareFindings(
+        { ...base, severity: order[i] as Finding['severity'] },
+        { ...base, severity: order[i - 1] as Finding['severity'] },
+      )).toBeGreaterThan(0);
+    }
+  });
+
+  test('ScanResultSummary keeps the Pump 7 base shape and adds SAST fields behind one guard', () => {
+    expect(isScanResultSummary({ findingsTotal: 2 })).toBe(true);
+    expect(isScanResultSummary({
+      findingsTotal: 2,
+      findingsBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 1, LOW: 0, INFO: 0 },
+      filesScanned: 10,
+      filesSkipped: 2,
+      truncated: false,
+    })).toBe(true);
+    expect(isScanResultSummary({})).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: -1 })).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: 2, filesScanned: -1 })).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: 2, findingsBySeverity: { HIGH: 1 } })).toBe(false); // all five keys
+    expect(isScanResultSummary({ findingsTotal: 2, cvss: 4.2 })).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: 2, truncated: 'no' })).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: 2, extra: 1 })).toBe(false);
+  });
+
+  test('scan detail response guard accepts scan+findings and stays bounded', () => {
+    const scan = {
+      id: 'scan_00000000-0000-4000-8000-000000000000',
+      projectId: 'prj_00000000-0000-4000-8000-000000000000',
+      scanType: 'SAST',
+      status: 'COMPLETED',
+      createdAt: '2026-09-28T10:00:00.000Z',
+      updatedAt: '2026-09-28T10:00:01.000Z',
+      startedAt: '2026-09-28T10:00:00.500Z',
+      completedAt: '2026-09-28T10:00:01.000Z',
+      resultSummary: { findingsTotal: 1 },
+    };
+    const detail = { ...scan, findings: [finding] };
+    expect(isScanDetailResponse({ scan: detail })).toBe(true);
+    // List-shaped scan (no findings key) is NOT a detail response.
+    expect(isScanDetailResponse({ scan })).toBe(false);
+    // Over the hard findings cap: rejected.
+    expect(isScanDetailResponse({
+      scan: { ...detail, findings: Array.from({ length: MAX_FINDINGS_PER_SCAN + 1 }, () => finding) },
+    })).toBe(false);
+    // A findings list containing a non-finding: rejected.
+    expect(isScanDetailResponse({ scan: { ...detail, findings: [finding, { bad: 1 }] } })).toBe(false);
+    // Extra envelope fields: rejected (closed shape).
+    expect(isScanDetailResponse({ scan: detail, extra: true })).toBe(false);
   });
 });

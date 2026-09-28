@@ -45,9 +45,16 @@ import {
   createMemoryScanStore,
   type ScanStore,
 } from './scans/store.js';
+import {
+  createJsonFileSourceStore,
+  createMemorySourceStore,
+  type SourceSnapshotStore,
+} from './scans/sources.js';
+import { createSastEngine } from './scans/sast/engine.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
+import { createSourceRoutes } from './routes/sources.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 
@@ -95,9 +102,18 @@ export interface AppDeps {
    */
   scanStore?: ScanStore;
   /**
-   * Scanner engines (Pump 7). The registry is EMPTY by default — no
-   * engine is implemented yet, so every scan deterministically fails
-   * with SCAN_ENGINE_NOT_IMPLEMENTED. Tests inject synthetic engines.
+   * Source-snapshot store (Pump 8) — the SAST scan target. Defaults to
+   * the durable JSON store at `config.sourceStorePath` (`:memory:` for
+   * explicitly ephemeral setups). Tests inject their own instance to
+   * control persistence.
+   */
+  sourceStore?: SourceSnapshotStore;
+  /**
+   * Scanner engines. DEFAULT (Pump 8): the REAL SAST engine is
+   * registered — SAST scans actually analyze the project's source
+   * snapshot and produce real findings. SCA/SECRETS/DAST remain
+   * unimplemented (SCAN_ENGINE_NOT_IMPLEMENTED). Pass an explicit list
+   * (including `[]`) to control the registry exactly — tests do.
    */
   scanEngines?: readonly ScanEngine[];
   /**
@@ -183,9 +199,20 @@ export function createApp(deps: AppDeps): App {
     (config.scanStorePath === ':memory:'
       ? createMemoryScanStore()
       : createJsonFileScanStore(config.scanStorePath));
-  // The engine registry is EMPTY by default (Pump 7 ships zero
-  // engines — see scans/engines.ts). Server-side composition only.
-  const scanEngines: ScanEngineRegistry = createEngineRegistry(deps.scanEngines ?? []);
+  // Source-snapshot store (Pump 8): durable by default (fail-fast on a
+  // corrupt document — the process refuses to start). Tests inject
+  // their own store; `:memory:` is the ephemeral dev opt-in.
+  const sourceStore: SourceSnapshotStore =
+    deps.sourceStore ??
+    (config.sourceStorePath === ':memory:'
+      ? createMemorySourceStore()
+      : createJsonFileSourceStore(config.sourceStorePath));
+  // The engine registry (server-side composition ONLY). Pump 8 default:
+  // the REAL SAST engine (static analysis of the project's source
+  // snapshot — see scans/sast/). SCA/SECRETS/DAST ship no engine.
+  const scanEngines: ScanEngineRegistry = createEngineRegistry(
+    deps.scanEngines ?? [createSastEngine({ sources: sourceStore })],
+  );
   const scanProcessor: ScanProcessor = createScanProcessor({
     store: scanStore,
     engines: scanEngines,
@@ -213,9 +240,11 @@ export function createApp(deps: AppDeps): App {
       users,
       projects: projectStore,
       scans: scanStore,
+      sources: sourceStore,
       usage,
       processor: scanProcessor,
     }),
+    ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
     ...(deps.extraRoutes ?? []),
   ];
 

@@ -185,6 +185,24 @@ test in `apps/api/test/validate.test.ts`.
 | Web: honest FAILED rendering (never a fake completion), server-derived quota hint, archived restriction, XSS-inert scan text, no storage authority, fail-closed errors | VERIFIED | `apps/web/test/scanUi.test.tsx` |
 | Dataset lock: no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; synthetic engines exist only in tests | VERIFIED | `check:boundaries`, `check:secrets` |
 
+### Static analysis — SAST engine (Pump 8)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Analysis only: source snapshots are read and regex-matched, NEVER executed/imported/sandboxed — `exec('touch /tmp/…')` in uploaded code is REPORTED (DG-SAST-001), never run (marker file absent after scans) | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s processing deadline / 10 000 lines per file; every limit breach fails closed with a closed code | VERIFIED | `apps/api/test/sastEngine.test.ts` |
+| Linear-time rules only (ReDoS-shaped patterns rejected by the rule suite); whole-corpus timing pinned | VERIFIED | `apps/api/test/sastRules.test.ts` |
+| Deterministic findings (content fingerprints → stable ids; identical rescans yield identical ids) ordered most-severe-first; severities rule-fixed, never client-influenced | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Evidence discipline: ≤ 200-char windowed, control-character-free (no CRLF/tab/NUL), credential values redacted BEFORE persistence (length-neutral) | VERIFIED | `apps/api/test/sastEngine.test.ts` |
+| No content exfiltration: sources read API returns metadata only; logs carry counts/ids, never content or secret values | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Snapshot upload policy: single server-side path policy (no traversal/absolute/dotfiles, len/seg/depth caps), blocked key-material extensions (.env/.pem/.key/...), binary rejection, duplicate/unknown/proto-key rejection → 422/413 with nothing stored | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| SAST pre-flight: no snapshot → 409 BEFORE quota consumption (a FREE account cannot burn allowance on an impossible scan) | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Findings persist only with the terminal COMPLETED transition (atomic); findings on any other state = corrupt store → refuses to start; the detail route is the only findings read surface | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Snapshot/scan ownership: snapshot is project-scoped, owner-checked at scan time; cross-account answers stay uniform (403/404 — no oracle) | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Corrupt/poisoned stores (invalid JSON, traversal-shaped stored paths, findings injected into non-terminal records) refuse to start — no silent repair | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Web: findings render as literal text (injection payloads displayed, never executed), secrets stay redacted client-side, lazy detail loading, archived projects cannot replace snapshots | VERIFIED | `apps/web/test/sastUi.test.tsx` |
+| Static safety: no eval/Function/child_process surface in engine code; rules are pure data (the forbidden-pattern scan exempts nothing by suppression — rules.ts patterns are data, not matchers) | VERIFIED | `apps/api/test/staticSafety.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -234,7 +252,10 @@ foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
 project sharing/collaboration, admin/operator project visibility,
 scan cancellation (deliberately absent until explicitly designed —
 the scan-job foundation itself is DONE in Pump 7 — see
-`docs/SCANS.md`), scan engines/findings/reports, admin/operator scan
+`docs/SCANS.md`), the remaining engines SCA/SECRETS/DAST and
+findings-aggregation reports (the REAL SAST engine is DONE in Pump 8 —
+see `docs/SAST.md`; source "upload" is a JSON-body snapshot, NOT
+multipart file storage), admin/operator scan
 visibility,
 account email
 verification, password reset, MFA, account lockout (deliberate — rate

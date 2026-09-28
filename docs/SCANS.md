@@ -1,15 +1,19 @@
-# Scan Jobs (Pump 7 — secure orchestration foundation)
+# Scan Jobs (Pump 7 — secure orchestration; Pump 8 — first real engine)
 
 A Scan Job is a request to run ONE security scan of ONE type against
-ONE project. Pump 7 establishes the secure orchestration boundary the
-future scanner engines plug into — **it is NOT a scanner**:
+ONE project. Pump 7 established the secure orchestration boundary the
+scanner engines plug into. **Pump 8 registers the first REAL engine:
+SAST** (static analysis of the uploaded source snapshot — see
+`docs/SAST.md`). The boundary contract is unchanged:
 
-- **No real SAST/SCA/DAST engine exists yet.** `SAST`, `SCA`, `SECRETS`
-  and `DAST` are the SUPPORTED job types of the orchestration layer;
-  engine availability is a separate server-side registry. With zero
-  engines registered (the current, honest state), every scan
-  deterministically FAILS with `SCAN_ENGINE_NOT_IMPLEMENTED` — the
-  system NEVER fabricates findings, results or "completed" states.
+- `SAST` scans complete with genuine, deterministic findings
+  (rule id, severity, CWE, bounded redacted evidence, remediation) —
+  analysis only, source files are never executed.
+- **SCA, SECRETS and DAST still have no engine.** Those types remain
+  supported job types of the orchestration layer with zero engines
+  registered, so every such scan deterministically FAILS with
+  `SCAN_ENGINE_NOT_IMPLEMENTED` — the system NEVER fabricates
+  findings, results or "completed" states.
 - **No vulnerability datasets.** No CVE/NVD/GHSA/OSV/KEV/EPSS data is
   imported, bundled or referenced — the dataset lock holds; real
   dataset integration is a separate later workstream.
@@ -22,7 +26,8 @@ future scanner engines plug into — **it is NOT a scanner**:
 Authenticated account (ownership source — never client-supplied)
   └── Project (Pump 6 — ACTIVE required for new scans)
         └── Scan Job (Pump 7 — this document)
-              └── future: engine results / findings / reports
+              └── source snapshot (Pump 8 — the SAST scan target)
+              └── engine results / findings (SAST today; SCA/SECRETS/DAST future)
 ```
 
 The client may submit ONLY the scan type (plus an optional idempotency
@@ -46,7 +51,7 @@ answer the SAME uniform 403 (no existence oracle). `AccountRole` and
 | ------ | ---- | -------- |
 | `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body exactly `{ scanType }`. Project must be the caller's own AND `ACTIVE` (archived → `409 PROJECT_ARCHIVED`). Consumes quota atomically with creation. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
 | `GET` | `/api/v1/projects/:projectId/scans` | The project's scans, server-ordered `createdAt` DESC then `id` ASC. |
-| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project. Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
+| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its findings** (Pump 8: COMPLETED SAST scans carry the full ordered, redacted findings list — the ONLY findings read surface). Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
 
 There is deliberately **NO scan mutation endpoint** — no PATCH, no
 DELETE, no status route. `PATCH`/`DELETE` on a scan answer `405 +
@@ -111,21 +116,25 @@ RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
   these invariants on every untrusted payload.
 - Failure codes (scan-domain, stable, safe to expose):
   `SCAN_ENGINE_NOT_IMPLEMENTED`, `SCAN_INTERRUPTED`,
-  `SCAN_ENGINE_ERROR`. A crashed engine fails closed with a generic
-  message — internals never leak.
+  `SCAN_ENGINE_ERROR` (orchestration) plus the Pump 8 SAST engine's
+  closed set — `SAST_TARGET_NOT_FOUND`, `SAST_TARGET_TOO_LARGE`,
+  `SAST_FILE_LIMIT_EXCEEDED`, `SAST_SCAN_TIMEOUT`, `SAST_INPUT_INVALID`,
+  `SAST_UNSUPPORTED_LANGUAGE`. A crashed engine fails closed with a
+  generic message — internals never leak.
 
-## The engine boundary (Pump 7 ships zero engines)
+## The engine boundary (Pump 8 registers the SAST engine)
 
 `apps/api/src/scans/engines.ts` defines the only thing that may
 produce a result: a server-side `ScanEngine` registry entry
 (`execute(record, ctx) → completed|failed`), composed at process
 startup — nothing client-facing can register, discover or influence
-engines. The registry is EMPTY today; the processor looks up the
-engine for the scan's type and, finding none, fails the scan with
-`SCAN_ENGINE_NOT_IMPLEMENTED`. When a real engine arrives in a later
-pump it plugs in here with zero route/store changes. Test suites
-inject synthetic engines to prove the COMPLETED path (synthetic
-fixtures are allowed ONLY in tests).
+engines. Pump 8 registers the REAL SAST engine
+(`apps/api/src/scans/sast/` — rules + engine, documented in
+`docs/SAST.md`); `SCA`/`SECRETS`/`DAST` remain unregistered and fail
+with `SCAN_ENGINE_NOT_IMPLEMENTED`. Future engines plug in here with
+zero route/store changes. Test suites also inject synthetic engines to
+prove processor edge cases (synthetic fixtures are allowed ONLY in
+tests).
 
 ## The processor (worker integration)
 
@@ -135,8 +144,9 @@ fixtures are allowed ONLY in tests).
    observable);
 2. **execute** — only the registered engine boundary (30s defensive
    timeout; a hung engine fails the scan closed);
-3. **finish** — COMPLETED with the engine's summary or FAILED with a
-   closed code (persisted);
+3. **finish** — COMPLETED with the engine's summary **and findings**
+   (Pump 8: persisted atomically with the terminal transition) or
+   FAILED with a closed code (persisted);
 4. **recover** — on boot, every RUNNING scan (a crash interrupted it)
    deterministically becomes FAILED/`SCAN_INTERRUPTED`, then QUEUED
    scans drain; a periodic sweep (5s, unref'd) backs the loop.
@@ -173,14 +183,25 @@ persist-before-observable, fail-fast load validation:
 
 ## Web
 
-The project detail page gained a **Security scans** section (no
-separate dashboard): server-ordered scan list with honest status pills,
-a scan-type selector + request button (ACTIVE projects only), the
-quota/entitlement hint from the server's usage view, honest
-`FAILED/SCAN_ENGINE_NOT_IMPLEMENTED` rendering (never a fake
-completion), fail-closed loading errors with retry, and a clear note
-that engines are not implemented yet. All text renders as text (React
-escaping); no scan state in localStorage/sessionStorage.
+The project detail page carries a **Source snapshot** section and a
+**Security scans** section (no separate dashboard):
+
+- **Source snapshot (Pump 8):** honest empty state (no snapshot yet),
+  metadata after upload (file count, bytes, timestamp — content is
+  never read back), file picker → `PUT` (file names become paths; the
+  server's path policy is the only policy), server-rejected uploads
+  shown verbatim, archived projects cannot replace the snapshot.
+- **Scans:** server-ordered scan list with honest status pills, a
+  scan-type selector + request button (ACTIVE projects only), the
+  quota/entitlement hint from the server's usage view, honest
+  `FAILED/SCAN_ENGINE_NOT_IMPLEMENTED` rendering for engine-less types
+  (never a fake completion), and — for COMPLETED SAST scans — a lazy
+  **View findings** view: server-ordered findings with severity,
+  rule, location, redacted evidence and remediation, all rendered as
+  text (React escaping — an injection payload in evidence is
+  displayed, never executed), plus a client-side severity filter that
+  never triggers a second request. Fail-closed loading errors with
+  retry. No scan state in localStorage/sessionStorage.
 
 ## Error contract
 

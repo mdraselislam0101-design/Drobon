@@ -146,12 +146,22 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
         throw error;
       }
       if (outcome.kind === 'completed') {
-        const completed = await store.completeScan(scan.id, outcome.resultSummary);
+        // Pump 8: real findings (when the engine produced any) persist
+        // atomically with the terminal transition.
+        const completed = await store.completeScan(
+          scan.id,
+          outcome.resultSummary,
+          outcome.findings,
+        );
         if (completed === undefined) {
           logger.error('Scan finalize failed after completion', { scanId: scan.id });
           return true;
         }
-        logger.info('Scan completed', { scanId: completed.id, projectId: completed.projectId });
+        logger.info('Scan completed', {
+          scanId: completed.id,
+          projectId: completed.projectId,
+          findingsTotal: completed.resultSummary?.findingsTotal,
+        });
         return true;
       }
       const failed = await store.failScan(scan.id, outcome.failureCode, outcome.failureMessage);

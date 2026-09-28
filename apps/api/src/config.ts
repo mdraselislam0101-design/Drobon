@@ -78,6 +78,12 @@ export interface ApiConfig {
    * survive restarts).
    */
   scanStorePath: string;
+  /**
+   * Durable source-snapshot store path (Pump 8 — the SAST scan
+   * target). `:memory:` is the explicitly ephemeral dev/test opt-in —
+   * rejected in production (scan targets must survive restarts).
+   */
+  sourceStorePath: string;
 }
 
 export class ConfigError extends Error {
@@ -262,6 +268,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     );
   }
 
+  // --- Sources (Pump 8) -----------------------------------------------------
+  const sourceStorePath = (env['SOURCE_STORE_PATH'] ?? '.data/sources.json').trim();
+  const sourceMemoryStore = sourceStorePath === ':memory:';
+  if (sourceStorePath.length === 0) {
+    issues.push('SOURCE_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (sourceMemoryStore && environment === 'production') {
+    issues.push(
+      'SOURCE_STORE_PATH=":memory:" is not allowed in production (scan targets would not persist)',
+    );
+  }
+
   // --- Projects (Pump 6) ----------------------------------------------------
   const projectStorePath = (env['PROJECT_STORE_PATH'] ?? '.data/projects.json').trim();
   const projectMemoryStore = projectStorePath === ':memory:';
@@ -298,5 +315,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     usageConsumeRoutes: environment !== 'production',
     projectStorePath,
     scanStorePath,
+    sourceStorePath,
   };
 }

@@ -78,6 +78,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/USAGE.md` — usage quota, UTC periods, device policy, consume boundary
 - `docs/PROJECTS.md` — project model, ownership, CRUD, lifecycle, scan boundary
 - `docs/SCANS.md` — scan jobs, quota atomicity, idempotency, processor, engine boundary
+- `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -129,8 +130,22 @@ result; NO vulnerability datasets, the dataset lock holds), archived
 projects reject new scans while history stays readable, and the web
 scan experience inside the project page. See `docs/SCANS.md`.
 
-**NOT included:** the scan engines themselves (SAST/SCA/DAST execution —
-the boundary exists, the engines arrive in later pumps), vulnerability
+**PLUS Pump 8 (Real SAST engine)**: the first REAL scanner — static
+analysis of an uploaded source snapshot (project-scoped, path-policy
+validated, 200 files / 256 KiB / 768 KiB caps, key material rejected).
+Six deterministic rules (command injection, SQL injection, raw-HTML
+sinks, eval, hardcoded credentials, weak hashes) produce genuine
+findings: stable rule ids, fixed severities, CWE mappings, bounded
+redacted evidence and remediation. Analysis only — source files are
+NEVER executed; every dimension is capped (files, bytes, findings,
+10 s deadline) with fail-closed codes. Findings persist atomically
+with COMPLETED, are readable only via the scan detail route, and
+render in the web UI as text. SCA/SECRETS/DAST still fail honestly
+with SCAN_ENGINE_NOT_IMPLEMENTED; the dataset lock holds. See
+`docs/SAST.md` and `docs/SCANS.md`.
+
+**NOT included:** the remaining scan engines (SCA/SECRETS/DAST —
+SAST ships above), vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
 UI), plan mutation workflow (`plan:manage` is granted to no one), usage

@@ -4,8 +4,12 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_NAME_MAX_LENGTH,
   SCAN_TYPES,
+  type Finding,
+  type ScanDetailResponse,
   type ScanType,
   type Scan,
+  type FindingSeverity,
+  type SourceSnapshotResponse,
   type UsageResponse,
 } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
@@ -24,8 +28,9 @@ import { LoadingState } from '../components/LoadingState.js';
  * - edits are limited to name/description; the lifecycle status changes
  *   ONLY through the explicit archive/unarchive operations below;
  * - all project text renders as text (React escaping) — never HTML;
- * - nothing here consumes a scan (that is the future scan engine's
- *   boundary);
+ * - the SAST engine (Pump 8) analyzes the project's uploaded source
+ *   snapshot — analysis only, sources are never executed; findings come
+ *   from the scan detail route and render as text.
  * - no localStorage, no URL-derived project state beyond the id.
  */
 
@@ -203,6 +208,8 @@ export function ProjectDetailPage(): React.JSX.Element {
             )}
           </div>
 
+          <SourcesSection projectId={project.project.id} projectStatus={project.project.status} />
+
           <ScansSection projectId={project.project.id} projectStatus={project.project.status} />
         </>
       )}
@@ -211,13 +218,14 @@ export function ProjectDetailPage(): React.JSX.Element {
 }
 
 /**
- * Security scans (Pump 7) — the orchestration surface, honestly:
+ * Security scans (Pump 7 + 8) — the orchestration surface, honestly:
  * - scans are requested for THIS project only; the server derives
  *   ownership, quota, ids, status and timestamps (the client sends
  *   only the scan type + an idempotency key that makes retries safe);
- * - NO scanner engine exists yet, so requested scans fail with
- *   SCAN_ENGINE_NOT_IMPLEMENTED — shown verbatim, never faked as
- *   complete, no fabricated findings;
+ * - SAST (Pump 8) analyzes the uploaded source snapshot server-side —
+ *   real findings with evidence and remediation, rendered as text;
+ * - SCA/SECRETS/DAST engines do not exist yet, so those scans fail
+ *   with SCAN_ENGINE_NOT_IMPLEMENTED — shown verbatim, never faked;
  * - quota/entitlement display comes from the server's usage view,
  *   never local state;
  * - archived projects cannot START new scans (the server enforces it;
@@ -337,8 +345,10 @@ function ScansSection({
             {submitting ? 'Requesting…' : 'Request scan'}
           </button>
           <p className="muted">
-            Scanner engines are not implemented yet — requested scans are
-            recorded and fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED.
+            SAST analyzes the uploaded source snapshot (analysis only —
+            your code is never executed). SCA, SECRETS and DAST engines
+            are not implemented yet: those scans fail honestly with
+            SCAN_ENGINE_NOT_IMPLEMENTED.
           </p>
           {formError !== null && (
             <div className="form-alert" role="alert">
@@ -413,6 +423,9 @@ function ScansSection({
                   Findings: {scan.resultSummary.findingsTotal}
                 </p>
               )}
+              {scan.status === 'COMPLETED' && scan.scanType === 'SAST' && (
+                <FindingsView projectId={projectId} scanId={scan.id} />
+              )}
             </li>
           ))}
         </ul>
@@ -429,6 +442,311 @@ function ScansSection({
       </div>
     </>
   );
+}
+
+/**
+ * Source snapshot (Pump 8) — the SAST scan target:
+ * - the snapshot is PROJECT-scoped, server-validated and replaces
+ *   wholesale on upload (the last upload is the scan target);
+ * - the client sends exactly { files: [{ path, content }] } — file
+ *   NAMES become paths; the server's path policy is the only policy
+ *   (invalid uploads are rejected and reported verbatim);
+ * - metadata only ever comes back (file count, bytes, updatedAt) —
+ *   uploaded source content is never re-fetched or rendered;
+ * - a missing snapshot is the honest 404: "no snapshot yet";
+ * - archived projects cannot replace the snapshot (server-enforced;
+ *   the form is hidden) but the metadata stays visible.
+ */
+function SourcesSection({
+  projectId,
+  projectStatus,
+}: {
+  projectId: string;
+  projectStatus: string;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [snapshot, setSnapshot] = useState<SourceSnapshotResponse['snapshot'] | null>(
+    null,
+  );
+  const [missing, setMissing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
+    setMissing(false);
+    client
+      .getSources(projectId)
+      .then((data) => {
+        if (!cancelled) {
+          setSnapshot(data.snapshot);
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        if (error instanceof ApiClientError && error.status === 404) {
+          // No snapshot yet — the honest empty state, not an error.
+          setMissing(true);
+          setSnapshot(null);
+        } else {
+          setLoadError(
+            error instanceof ApiClientError
+              ? error.message
+              : 'Could not load the source snapshot.',
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, projectId, reloadToken]);
+
+  const upload = async (fileList: FileList | null): Promise<void> => {
+    if (fileList === null || fileList.length === 0) {
+      return;
+    }
+    setUploadError(null);
+    setUploading(true);
+    try {
+      // Read each picked file as text; the FILE NAME becomes the path
+      // and the server's path policy validates it. Binary files are
+      // rejected below — the API is text-only by design. (FileReader,
+      // not File.text(): the oldest, most portable read in browsers.)
+      const files: Array<{ path: string; content: string }> = [];
+      for (const file of Array.from(fileList)) {
+        files.push({ path: file.name, content: await readFileAsText(file) });
+      }
+      await client.uploadSources(projectId, files);
+      setReloadToken((token) => token + 1);
+    } catch (error: unknown) {
+      setUploadError(
+        error instanceof ApiClientError
+          ? error.message
+          : 'Could not upload the source snapshot. Please try again.',
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <>
+      <h2>Source snapshot</h2>
+      {loadError !== null ? (
+        <div className="form-alert" role="alert">
+          <p>{loadError}</p>
+        </div>
+      ) : missing ? (
+        <p className="muted" data-testid="snapshot-empty">
+          No source snapshot uploaded yet. Upload one to enable SAST scans.
+        </p>
+      ) : snapshot !== null ? (
+        <p className="muted" data-testid="snapshot-meta">
+          {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
+          {snapshot.totalBytes} bytes — uploaded{' '}
+          <code>{snapshot.updatedAt}</code>. The latest upload replaces the
+          previous snapshot and is what a SAST scan analyzes.
+        </p>
+      ) : (
+        <LoadingState label="Loading the source snapshot…" />
+      )}
+      {projectStatus !== 'ACTIVE' ? (
+        <p className="muted" data-testid="archived-source-note">
+          Archived projects cannot replace the source snapshot. Unarchive
+          the project to upload a new one.
+        </p>
+      ) : (
+        <form
+          className="scan-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+          }}
+          data-testid="source-form"
+        >
+          <div className="field">
+            <label htmlFor="source-files">Source files (text only)</label>
+            <input
+              id="source-files"
+              name="files"
+              type="file"
+              multiple
+              onChange={(event) => void upload(event.target.files)}
+              disabled={uploading}
+              data-testid="source-file-input"
+            />
+            <p className="muted">
+              At most 200 files, 256 KiB per file, 768 KiB total. Paths are
+              file names; .env and key files are rejected by the server.
+            </p>
+          </div>
+          {uploading && (
+            <p className="muted" data-testid="source-uploading">
+              Uploading…
+            </p>
+          )}
+          {uploadError !== null && (
+            <div className="form-alert" role="alert">
+              <p data-testid="source-upload-error">{uploadError}</p>
+            </div>
+          )}
+        </form>
+      )}
+    </>
+  );
+}
+
+/**
+ * One completed scan's findings (Pump 8) — the only findings read
+ * surface. Lazy: the list stays cheap until the user asks.
+ * - server-ordered (most severe first), rendered as text;
+ * - the severity filter is display-only (client-side over the SAME
+ *   bounded response) — it never triggers another request;
+ * - evidence is ALREADY redacted server-side; rendering it as text
+ *   (never HTML) keeps it non-executing on both ends.
+ */
+function FindingsView({
+  projectId,
+  scanId,
+}: {
+  projectId: string;
+  scanId: string;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [detail, setDetail] = useState<ScanDetailResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [severity, setSeverity] = useState<'ALL' | FindingSeverity>('ALL');
+
+  const load = async (): Promise<void> => {
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await client.getScan(projectId, scanId);
+      setDetail(data);
+    } catch (error: unknown) {
+      setError(
+        error instanceof ApiClientError
+          ? error.message
+          : 'Could not load the findings.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const findings: Finding[] = detail?.scan.findings ?? [];
+  const visible =
+    severity === 'ALL' ? findings : findings.filter((f) => f.severity === severity);
+
+  return (
+    <div className="findings">
+      {detail === null && error === null && !loading && (
+        <button
+          type="button"
+          className="button button-ghost"
+          onClick={() => void load()}
+          data-testid="view-findings"
+        >
+          View findings
+        </button>
+      )}
+      {loading && <LoadingState label="Loading the findings…" />}
+      {error !== null && (
+        <div>
+          <div className="form-alert" role="alert">
+            <p data-testid="findings-error">{error}</p>
+          </div>
+          <button
+            type="button"
+            className="button button-ghost"
+            onClick={() => void load()}
+            data-testid="findings-retry"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {detail !== null && (
+        <>
+          <div className="field">
+            <label htmlFor={`findings-filter-${scanId}`}>Severity</label>
+            <select
+              id={`findings-filter-${scanId}`}
+              value={severity}
+              onChange={(event) =>
+                setSeverity(event.target.value as 'ALL' | FindingSeverity)
+              }
+              data-testid="findings-filter"
+            >
+              <option value="ALL">All severities</option>
+              <option value="CRITICAL">CRITICAL</option>
+              <option value="HIGH">HIGH</option>
+              <option value="MEDIUM">MEDIUM</option>
+              <option value="LOW">LOW</option>
+              <option value="INFO">INFO</option>
+            </select>
+          </div>
+          {visible.length === 0 ? (
+            <p className="muted" data-testid="findings-empty">
+              No findings at this severity.
+            </p>
+          ) : (
+            <ul className="findings-list" data-testid="findings-list">
+              {visible.map((finding) => (
+                <li key={finding.id} className="finding-item" data-testid="finding-item">
+                  <div className="scan-item-head">
+                    <span
+                      className={
+                        finding.severity === 'CRITICAL' || finding.severity === 'HIGH'
+                          ? 'pill pill-danger'
+                          : finding.severity === 'MEDIUM'
+                            ? 'pill'
+                            : 'pill pill-ok'
+                      }
+                      data-testid="finding-severity"
+                    >
+                      {finding.severity}
+                    </span>
+                    <strong data-testid="finding-rule">{finding.ruleId}</strong>
+                  </div>
+                  <p data-testid="finding-title">{finding.title}</p>
+                  <p className="muted" data-testid="finding-location">
+                    {finding.file}:{finding.line}
+                    {finding.cwe !== undefined ? ` · ${finding.cwe}` : ''}
+                  </p>
+                  <pre>
+                    <code data-testid="finding-evidence">{finding.evidence}</code>
+                  </pre>
+                  <p className="muted" data-testid="finding-remediation">
+                    {finding.remediation}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Read a File as text via the classic API (portable everywhere). */
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      resolve(typeof reader.result === 'string' ? reader.result : '');
+    });
+    reader.addEventListener('error', () => {
+      reject(new Error(`Could not read ${file.name}.`));
+    });
+    reader.readAsText(file);
+  });
 }
 
 /** Edit form: name/description only — status and ownership are not editable. */

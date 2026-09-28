@@ -46,11 +46,20 @@ browser bundle and the servers can all consume it:
   guards — including cross-field invariants the server always maintains
   (exempt views carry no numbers; counts never exceed the limit). No
   device identifiers exist in this contract.
-- `scans.ts` — scan-job contracts (Pump 7): the four supported job
+- `scans.ts` — scan-job contracts (Pump 7 + 8): the four supported job
   types (SAST/SCA/SECRETS/DAST), the server-authoritative status and
-  failure-code vocabularies, `scan_` UUID id + idempotency-key
-  patterns, the owner-free public `Scan` shape with state-machine
-  invariants, response guards and the documented ordering comparator.
+  failure-code vocabularies (orchestration + the closed SAST engine
+  set), `scan_` UUID id + idempotency-key patterns, the owner-free
+  public `Scan` shape with state-machine invariants, response guards
+  and the documented ordering comparator; Pump 8 adds the `Finding`
+  contract (deterministic `fnd_` ids from content fingerprints,
+  fixed severities, bounded evidence, redaction upstream) plus the
+  findings-bearing scan-detail response guard.
+- `sources.ts` — source-snapshot contracts (Pump 8): the upload body
+  (`{ files: [{ path, content }] }`), the single path policy
+  (relative, no traversal/dotfiles, len/segment/depth caps, blocked
+  key-material extensions), size caps (200 files / 256 KiB / 768 KiB)
+  and the metadata-only public response (content never echoes back).
 - `projects.ts` — project contracts (Pump 6): the closed status
   vocabulary (ACTIVE/ARCHIVED), the `prj_` UUID id pattern, bounded
   name/description lengths, the public `Project` shape (deliberately
@@ -123,12 +132,18 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   bounded idempotency entries; THE atomic `createScanWithQuota`
   operation linearizes idempotency lookup, quota consumption via the
   UsageService and the durable append; claim-once `claimNextQueued`,
-  finish-once `completeScan`/`failScan`, boot recovery
-  `failAllRunning`); `engines.ts` is the scanner-engine boundary
-  (server-side registry — EMPTY in Pump 7, so scans fail honestly with
-  SCAN_ENGINE_NOT_IMPLEMENTED); `processor.ts` is the durable worker
+  finish-once `completeScan`/`failScan` (Pump 8: findings persist
+  atomically with the COMPLETED transition, COMPLETED-only), boot
+  recovery `failAllRunning`); `engines.ts` is the scanner-engine
+  boundary (server-side registry — Pump 8 registers the REAL SAST
+  engine; SCA/SECRETS/DAST stay unregistered and fail honestly with
+  SCAN_ENGINE_NOT_IMPLEMENTED); `sast/` is that engine (pure-data
+  `rules.ts` + bounded `engine.ts` — analysis only, never executes
+  source, see docs/SAST.md); `sources.ts` is the project-scoped
+  source-snapshot store (path policy at rest, fail-fast load);
+  `processor.ts` is the durable worker
   loop (claim → engine → finish, 30s engine bound, startup recovery +
-  periodic sweep). See docs/SCANS.md.
+  periodic sweep). See docs/SCANS.md and docs/SAST.md.
 - `projects/` — the Projects foundation store (Pump 6):
   `store.ts` is the minimum persistence boundary (one JSON document,
   serialized mutation queue, atomic temp+rename writes, fail-fast load

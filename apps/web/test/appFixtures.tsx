@@ -9,8 +9,10 @@ import type {
   LogoutResponse,
   ProjectResponse,
   ProjectsResponse,
+  ScanDetailResponse,
   ScanResponse,
   ScansResponse,
+  SourceSnapshotResponse,
   StatusResponse,
   SubscriptionResponse,
   UsageResponse,
@@ -141,6 +143,27 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // requests are not stubbed (suites that exercise them override).
     getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
     createScan: vi.fn(async (): Promise<ScanResponse> => {
+      throw new Error('not stubbed');
+    }),
+    // Pump 8 defaults: scan detail and source snapshots start empty; a
+    // missing snapshot reads as the honest 404-shaped error.
+    getScan: vi.fn(async (): Promise<ScanDetailResponse> => {
+      throw new ApiClientError({
+        kind: 'http',
+        message: 'Not found.',
+        status: 404,
+        requestId: 'test',
+      });
+    }),
+    getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
+      throw new ApiClientError({
+        kind: 'http',
+        message: 'Not found.',
+        status: 404,
+        requestId: 'test',
+      });
+    }),
+    uploadSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
       throw new Error('not stubbed');
     }),
     ...overrides,

@@ -1,23 +1,23 @@
-import type { ScanResultSummary, ScanType } from '@drobon/shared';
+import type { Finding, ScanFailureCode, ScanResultSummary, ScanType } from '@drobon/shared';
 import type { ScanRecord } from './store.js';
 
 /**
- * The scanner-engine boundary (Pump 7).
+ * The scanner-engine boundary (Pump 7; SAST became REAL in Pump 8).
  *
  * A {@link ScanEngine} is the ONLY thing that may produce a scan
  * result. The registry is populated exclusively server-side at process
  * composition time (app.ts); nothing client-facing can register,
  * discover or influence engines.
  *
- * PUMP 7 SHIPS ZERO ENGINES — deliberately. `SAST`, `SCA`, `SECRETS`
- * and `DAST` are SUPPORTED job types of the orchestration layer; the
- * engines themselves arrive in later pumps. Until then the processor
- * deterministically fails every scan with `SCAN_ENGINE_NOT_IMPLEMENTED`
- * — it NEVER fabricates findings, never pretends a scan happened, and
- * never touches vulnerability datasets (the dataset lock: no
- * CVE/NVD/GHSA/OSV/KEV/EPSS data, ever, in this repository).
+ * PUMP 8 registers the first REAL engine: SAST (static analysis of the
+ * project's source snapshot — see `sast/`). `SCA`, `SECRETS` and
+ * `DAST` remain unimplemented: the processor deterministically fails
+ * them with `SCAN_ENGINE_NOT_IMPLEMENTED` — it NEVER fabricates
+ * findings, never pretends a scan happened, and never touches
+ * vulnerability datasets (the dataset lock: no CVE/NVD/GHSA/OSV/KEV/
+ * EPSS data, ever, in this repository).
  *
- * Engines are hand-written code in later pumps, NOT dataset loaders.
+ * Engines are hand-written code, NOT dataset loaders.
  */
 
 /** Execution context handed to an engine. */
@@ -26,9 +26,15 @@ export interface ScanEngineContext {
   signal: AbortSignal;
 }
 
+/**
+ * A completed outcome carries the summary AND the real findings the
+ * engine produced (bounded by MAX_FINDINGS_PER_SCAN; the processor
+ * persists them with the terminal transition). A failed outcome uses a
+ * closed-vocabulary failure code with a safe, bounded message.
+ */
 export type EngineOutcome =
-  | { kind: 'completed'; resultSummary: ScanResultSummary }
-  | { kind: 'failed'; failureCode: 'SCAN_ENGINE_ERROR'; failureMessage: string };
+  | { kind: 'completed'; resultSummary: ScanResultSummary; findings?: Finding[] }
+  | { kind: 'failed'; failureCode: ScanFailureCode; failureMessage: string };
 
 /**
  * One scanner engine for one scan type. `execute` must be side-effect
