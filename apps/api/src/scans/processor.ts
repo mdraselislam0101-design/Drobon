@@ -147,11 +147,14 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       }
       if (outcome.kind === 'completed') {
         // Pump 8: real findings (when the engine produced any) persist
-        // atomically with the terminal transition.
+        // atomically with the terminal transition. Pump 9: the SCA
+        // payload (inventory + manifest results + SBOM + assessment)
+        // persists the same way — one linearized terminal write.
         const completed = await store.completeScan(
           scan.id,
           outcome.resultSummary,
           outcome.findings,
+          outcome.sca,
         );
         if (completed === undefined) {
           logger.error('Scan finalize failed after completion', { scanId: scan.id });

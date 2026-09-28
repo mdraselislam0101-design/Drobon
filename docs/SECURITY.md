@@ -203,6 +203,23 @@ test in `apps/api/test/validate.test.ts`.
 | Web: findings render as literal text (injection payloads displayed, never executed), secrets stay redacted client-side, lazy detail loading, archived projects cannot replace snapshots | VERIFIED | `apps/web/test/sastUi.test.tsx` |
 | Static safety: no eval/Function/child_process surface in engine code; rules are pure data (the forbidden-pattern scan exempts nothing by suppression — rules.ts patterns are data, not matchers) | VERIFIED | `apps/api/test/staticSafety.test.ts` |
 
+### Software-composition analysis — SCA engine (Pump 9)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Analysis only: dependency manifests are parsed as DATA — never `npm`/`pip` installed, never executed, no lifecycle hooks; `postinstall: "touch /tmp/…"` in an uploaded package.json leaves the marker ABSENT after scans | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts` |
+| THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS data in the repo; `VULN_INTEL_PROVIDER` accepts only `none` (anything else fails startup); with no dataset the assessment is honestly NOT_ASSESSED with ZERO advisories — a vulnerable-looking fixture yields no fabricated findings | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts`, `packages/shared/test/sca.test.ts`, config tests |
+| Provider boundary is real, not decorative: an injected stub provider's advisories are re-validated, deduped, dropped when phantom/malformed, and ASSESSED is claimed only with matched records | VERIFIED | `apps/api/test/scaEngine.test.ts` |
+| Parser security: own-property discipline (prototype keys are skipped as data, never `key in obj`), no recursion over JSON, entry/line/length bounds, control-character rejection, invalid data dropped — never guessed; staticSafety pins the denylist to data, not access | VERIFIED | `apps/api/test/scaParsers.test.ts`, `apps/api/test/staticSafety.test.ts` |
+| Path policy REUSE: evidence paths must satisfy the Pump 8 `SOURCE_PATH_PATTERN` (traversal/absolute/backslash/drive/percent classes unrepresentable) — enforced again in the shared guard; no second implementation | VERIFIED | `packages/shared/test/sca.test.ts`, `apps/api/test/scaEngine.test.ts` |
+| Lockfile truth: declared AND resolved versions both preserved; a resolved version without lockfile provenance is structurally rejected (no fabricated pins); lockfilePath never appears without a resolution | VERIFIED | `packages/shared/test/sca.test.ts` |
+| Determinism: content fingerprints → stable `dep_` ids, content-derived SBOM serial — identical snapshots yield identical ids across rescans/restarts; no random identities | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts` |
+| Bounded work: snapshot caps reused (200 files / 256 KiB / 768 KiB — NOT raised), 50 manifests, 768 KiB manifest bytes, 200 persisted inventory entries with an honest truncated flag + total, 10 s deadline — every breach fails closed with a closed code | VERIFIED | `apps/api/test/scaEngine.test.ts` |
+| SCA pre-flight: no snapshot → 409 BEFORE quota consumption (same rule as SAST) | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| Payload authority: request bodies accept only `scanType` (injected `sca` → 422); the SCA payload persists only with the terminal COMPLETED transition, rides the detail route only, and a forged payload on a non-SCA/non-terminal scan or a malformed one refuses to boot | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| Isolation: SCA payloads are project-scoped and owner-checked; cross-account reads stay uniform (403/404 — no oracle, no inventory leakage) | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| No content exfiltration: list responses carry counts only; the detail payload carries paths/counts/names — never manifest content, never script bodies | VERIFIED | `apps/api/test/scaApi.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |

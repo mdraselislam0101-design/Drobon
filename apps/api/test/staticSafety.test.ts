@@ -34,7 +34,17 @@ describe('static safety', () => {
     // anything). Every other file is checked with no exemption, and
     // the `__proto__` check applies everywhere.
     const RULE_DATA_FILE = 'scans/sast/rules.ts';
-    const forbidden: Array<{ pattern: RegExp; reason: string; exemptRuleData?: boolean }> = [
+    // The SCA parsers (Pump 9) carry a prototype-key DENYLIST — the
+    // literal `__proto__` string as DATA (skipped, never accessed).
+    // Exempt from that one pattern, with a compensating structural
+    // control in the test after next.
+    const PARSER_DATALIST_FILE = 'scans/sca/parsers.ts';
+    const forbidden: Array<{
+      pattern: RegExp;
+      reason: string;
+      exemptRuleData?: boolean;
+      exemptParserDenylist?: boolean;
+    }> = [
       { pattern: /child_process/, reason: 'child processes are forbidden', exemptRuleData: true },
       { pattern: /\bexec(Sync|File)?\s*\(/, reason: 'exec is forbidden', exemptRuleData: true },
       { pattern: /\bspawn(Sync)?\s*\(/, reason: 'spawn is forbidden', exemptRuleData: true },
@@ -44,12 +54,19 @@ describe('static safety', () => {
         reason: 'Function constructor is forbidden',
         exemptRuleData: true,
       },
-      { pattern: /__proto__/, reason: '__proto__ access is forbidden' },
+      {
+        pattern: /__proto__/,
+        reason: '__proto__ access is forbidden',
+        exemptParserDenylist: true,
+      },
     ];
     const violations: string[] = [];
     for (const { file, content } of sources()) {
-      for (const { pattern, reason, exemptRuleData } of forbidden) {
+      for (const { pattern, reason, exemptRuleData, exemptParserDenylist } of forbidden) {
         if (file === RULE_DATA_FILE && exemptRuleData === true) {
+          continue;
+        }
+        if (file === PARSER_DATALIST_FILE && exemptParserDenylist === true) {
           continue;
         }
         if (pattern.test(content)) {
@@ -70,6 +87,20 @@ describe('static safety', () => {
     expect(rules?.content).not.toMatch(/^\s*import\s(?!type\b)/m);
     expect(rules?.content).not.toMatch(/require\s*\(/);
     expect(rules?.content).not.toMatch(/\bprocess\b/);
+  });
+
+  test('the SCA parser prototype-key denylist is data, not access', () => {
+    // Compensating control for the exemption above: the literal may
+    // exist ONLY inside the denylist constant and its documentation —
+    // never as an assignment target, a property read or a spread key.
+    const parsers = sources().find(({ file }) => file === 'scans/sca/parsers.ts');
+    expect(parsers).toBeDefined();
+    const content = parsers?.content ?? '';
+    expect(content).not.toMatch(/__proto__\s*[:=]/); // no assignment/setter
+    expect(content).not.toMatch(/\[\s*'__proto__'\s*\]/); // no property read
+    expect(content).not.toMatch(/\.\s*__proto__/); // no dot access
+    // And the denylist itself exists (defense in depth is real).
+    expect(content).toContain("['__proto__', 'constructor', 'prototype']");
   });
 
   test('process.env is read only in config.ts', () => {

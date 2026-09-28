@@ -241,6 +241,7 @@ describe('auth security controls', () => {
             projectStorePath: `${dir}/projects.json`,
             scanStorePath: `${dir}/scans.json`,
             sourceStorePath: ':memory:',
+    vulnIntelProvider: 'none' as const,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

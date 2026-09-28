@@ -173,7 +173,9 @@ async function requestScan(
   server: TestServer,
   cookies: Cookies,
   projectId: string,
-  body: unknown = { scanType: 'SCA' },
+  // Pump 9: SCA is a REAL engine (needs a snapshot target). DAST is
+  // the engine-less control type for this orchestration suite.
+  body: unknown = { scanType: 'DAST' },
   idempotencyKey?: string,
 ): Promise<ScanCallResult> {
   const res = await fetch(
@@ -237,7 +239,7 @@ describe('scan routes: authentication', () => {
         const res = await fetch(`${server.baseUrl}${path}`, {
           method,
           headers: { 'content-type': 'application/json' },
-          ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SCA' }) } : {}),
+          ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'DAST' }) } : {}),
         });
         expect(res.status).toBe(401);
         expect(errorOf(await readJson(res)).code).toBe('UNAUTHORIZED');
@@ -287,7 +289,7 @@ describe('scan routes: project policy (no existence oracle)', () => {
                 'content-type': 'application/json',
                 cookie: cookieHeader(cookies),
               },
-              ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'SCA' }) } : {}),
+              ...(method === 'POST' ? { body: JSON.stringify({ scanType: 'DAST' }) } : {}),
             },
           );
           expect(res.status).toBe(403);
@@ -631,7 +633,7 @@ describe('scan creation: quota consumed exactly once (atomicity)', () => {
             cookie: `${cookieHeader(owner)}; plan=PRO; role=ADMIN`,
             'x-plan': 'PRO',
           },
-          body: JSON.stringify({ scanType: 'SCA' }),
+          body: JSON.stringify({ scanType: 'DAST' }),
         },
       );
       expect(retry.status).toBe(429); // Still FREE/exhausted.
@@ -729,7 +731,7 @@ describe('idempotency keys', () => {
             ['idempotency-key', 'duplicate-key-1'],
             ['idempotency-key', 'duplicate-key-2'],
           ],
-          body: JSON.stringify({ scanType: 'SCA' }),
+          body: JSON.stringify({ scanType: 'DAST' }),
         },
       );
       expect(dup.status).toBe(422);
@@ -750,14 +752,14 @@ describe('idempotency keys', () => {
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
-      const first = await requestScan(server, owner, projectId, { scanType: 'SCA' }, 'key-1234');
+      const first = await requestScan(server, owner, projectId, { scanType: 'SECRETS' }, 'key-1234');
       expect(first.res.status).toBe(201);
       const otherProject = await createProject(server, owner, 'Other');
       const conflictProject = await requestScan(
         server,
         owner,
         otherProject,
-        { scanType: 'SCA' },
+        { scanType: 'SECRETS' },
         'key-1234',
       );
       expect(conflictProject.res.status).toBe(409);
@@ -819,6 +821,10 @@ describe('scan reads', () => {
       const other = await login(server, 'other@example.test');
       const projectId = await createProject(server, owner);
       const otherProject = await createProject(server, other, 'Foreign');
+      // Pump 9: SCA pre-flights the scan target like SAST.
+      await uploadSources(server, owner, projectId, [
+        { path: 'package.json', content: '{"name":"app","version":"1.0.0"}' },
+      ]);
       const created: Scan[] = [];
       for (const scanType of ['SCA', 'SECRETS', 'DAST'] as const) {
         const outcome = await requestScan(server, owner, projectId, { scanType });
@@ -1070,7 +1076,7 @@ describe('scan processor lifecycle', () => {
         { path: 'src/index.ts', content: 'export const ok = true;\n' },
       ]);
       await requestScan(first, cookie, projectId, { scanType: 'SAST' }); // → QUEUED (no auto-processing).
-      await requestScan(first, cookie, projectId, { scanType: 'SCA' });
+      await requestScan(first, cookie, projectId, { scanType: 'DAST' });
       // Simulate a crash mid-execution: claim one scan (→ RUNNING), then
       // "die" without finishing it.
       const claimed = await first.scans.claimNextQueued();
@@ -1091,7 +1097,7 @@ describe('scan processor lifecycle', () => {
       const scans = await listScans(second, relogin, projectId);
       expect(scans).toHaveLength(2);
       const interrupted = scans.find((scan) => scan.scanType === 'SAST');
-      const queued = scans.find((scan) => scan.scanType === 'SCA');
+      const queued = scans.find((scan) => scan.scanType === 'DAST');
       expect(interrupted?.status).toBe('FAILED');
       expect(interrupted?.failureCode).toBe('SCAN_INTERRUPTED');
       expect(queued?.status).toBe('FAILED'); // Drained; no engine → NOT_IMPLEMENTED.

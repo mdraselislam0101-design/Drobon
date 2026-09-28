@@ -1,15 +1,25 @@
-# Scan Jobs (Pump 7 — secure orchestration; Pump 8 — first real engine)
+# Scan Jobs (Pump 7 — secure orchestration; Pump 8–9 — real engines)
 
 A Scan Job is a request to run ONE security scan of ONE type against
 ONE project. Pump 7 established the secure orchestration boundary the
-scanner engines plug into. **Pump 8 registers the first REAL engine:
+scanner engines plug into. **Pump 8 registered the first REAL engine:
 SAST** (static analysis of the uploaded source snapshot — see
-`docs/SAST.md`). The boundary contract is unchanged:
+`docs/SAST.md`). **Pump 9 registers the second REAL engine: SCA**
+(software-composition analysis of the snapshot's dependency manifests
+— see `docs/SCA.md`). The boundary contract is unchanged:
 
 - `SAST` scans complete with genuine, deterministic findings
   (rule id, severity, CWE, bounded redacted evidence, remediation) —
   analysis only, source files are never executed.
-- **SCA, SECRETS and DAST still have no engine.** Those types remain
+- `SCA` scans complete with a genuine, deterministic dependency
+  inventory (direct/transitive with lockfile evidence), a CycloneDX
+  1.5-subset SBOM and an honest assessment state — analysis only,
+  manifests are never installed or executed. Without a loaded
+  vulnerability-intelligence dataset the assessment is honestly
+  `NOT_ASSESSED` with zero advisories (the dataset lock holds); the
+  inventory and SBOM are still real. The SCA payload rides the same
+  detail route as SAST findings (`scan.sca`, detail-only).
+- **SECRETS and DAST still have no engine.** Those types remain
   supported job types of the orchestration layer with zero engines
   registered, so every such scan deterministically FAILS with
   `SCAN_ENGINE_NOT_IMPLEMENTED` — the system NEVER fabricates
@@ -26,8 +36,9 @@ SAST** (static analysis of the uploaded source snapshot — see
 Authenticated account (ownership source — never client-supplied)
   └── Project (Pump 6 — ACTIVE required for new scans)
         └── Scan Job (Pump 7 — this document)
-              └── source snapshot (Pump 8 — the SAST scan target)
-              └── engine results / findings (SAST today; SCA/SECRETS/DAST future)
+              └── source snapshot (Pump 8 — the SAST/SCA scan target)
+              └── engine results / findings (SAST findings; SCA inventory+SBOM;
+                  SECRETS/DAST future)
 ```
 
 The client may submit ONLY the scan type (plus an optional idempotency
@@ -51,7 +62,7 @@ answer the SAME uniform 403 (no existence oracle). `AccountRole` and
 | ------ | ---- | -------- |
 | `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body exactly `{ scanType }`. Project must be the caller's own AND `ACTIVE` (archived → `409 PROJECT_ARCHIVED`). Consumes quota atomically with creation. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
 | `GET` | `/api/v1/projects/:projectId/scans` | The project's scans, server-ordered `createdAt` DESC then `id` ASC. |
-| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its findings** (Pump 8: COMPLETED SAST scans carry the full ordered, redacted findings list — the ONLY findings read surface). Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
+| `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its engine payload** (Pump 8: COMPLETED SAST scans carry the full ordered, redacted findings list — the ONLY findings read surface; Pump 9: COMPLETED SCA scans carry `scan.sca` — summary, dependency inventory, manifest outcomes, SBOM and advisories — the ONLY SCA payload read surface). Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
 
 There is deliberately **NO scan mutation endpoint** — no PATCH, no
 DELETE, no status route. `PATCH`/`DELETE` on a scan answer `405 +
@@ -119,6 +130,9 @@ RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
   `SCAN_ENGINE_ERROR` (orchestration) plus the Pump 8 SAST engine's
   closed set — `SAST_TARGET_NOT_FOUND`, `SAST_TARGET_TOO_LARGE`,
   `SAST_FILE_LIMIT_EXCEEDED`, `SAST_SCAN_TIMEOUT`, `SAST_INPUT_INVALID`,
+  `SAST_UNSUPPORTED_LANGUAGE` — and the Pump 9 SCA engine's closed set
+  — `SCA_TARGET_NOT_FOUND`, `SCA_TARGET_TOO_LARGE`, `SCA_INPUT_INVALID`,
+  `SCA_MANIFEST_LIMIT_EXCEEDED`, `SCA_SCAN_TIMEOUT`,
   `SAST_UNSUPPORTED_LANGUAGE`. A crashed engine fails closed with a
   generic message — internals never leak.
 

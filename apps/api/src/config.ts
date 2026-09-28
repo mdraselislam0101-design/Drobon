@@ -84,6 +84,14 @@ export interface ApiConfig {
    * rejected in production (scan targets must survive restarts).
    */
   sourceStorePath: string;
+  /**
+   * The vulnerability-intelligence provider selector (Pump 9).
+   * `none` — the ONLY supported value — selects the locked Null
+   * provider (no dataset; assessments are honestly NOT_ASSESSED /
+   * NO_DATA_LOADED). A future real dataset integration registers a
+   * new selector here; anything unknown fails fast at startup.
+   */
+  vulnIntelProvider: 'none';
 }
 
 export class ConfigError extends Error {
@@ -269,6 +277,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   // --- Sources (Pump 8) -----------------------------------------------------
+  // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
+  // only 'none' exists today, so any attempt to point the app at a
+  // "dataset" fails fast instead of silently pretending.
+  const vulnIntelProviderRaw = (env['VULN_INTEL_PROVIDER'] ?? 'none').trim();
+  if (vulnIntelProviderRaw !== 'none') {
+    issues.push(
+      `VULN_INTEL_PROVIDER must be "none" (no vulnerability dataset is bundled; external intelligence is a separate future integration)`,
+    );
+  }
+  const vulnIntelProvider = 'none' as const;
+
   const sourceStorePath = (env['SOURCE_STORE_PATH'] ?? '.data/sources.json').trim();
   const sourceMemoryStore = sourceStorePath === ':memory:';
   if (sourceStorePath.length === 0) {
@@ -316,5 +335,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     projectStorePath,
     scanStorePath,
     sourceStorePath,
+    vulnIntelProvider,
   };
 }

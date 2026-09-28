@@ -129,6 +129,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sourceStore,
     scanEngines,
     scanProcessorIntervalMs,
+    vulnIntelProvider,
     ...configOverrides
   } = overrides;
   const config: ApiConfig = {
@@ -153,6 +154,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStorePath: ':memory:',
     scanStorePath: ':memory:',
     sourceStorePath: ':memory:',
+    vulnIntelProvider: vulnIntelProvider ?? 'none',
     ...configOverrides,
   };
   const effectiveStorePath =

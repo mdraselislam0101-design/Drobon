@@ -13,11 +13,13 @@ import {
   isScanType,
   type Finding,
   compareFindings,
+  isScaResult,
   type Scan,
   type ScanDetail,
   type ScanFailureCode,
   type ScanResultSummary,
   type ScanType,
+  type ScaResult,
 } from '@drobon/shared';
 
 /**
@@ -73,6 +75,12 @@ export interface ScanRecord {
    * Present only when the engine actually produced findings.
    */
   findings?: Finding[];
+  /**
+   * The SCA payload (Pump 9) — COMPLETED SCA scans only, validated by
+   * the shared closed-shape guard, persisted with the terminal
+   * transition. Inventory + manifest results + SBOM + assessment.
+   */
+  sca?: ScaResult;
 }
 
 /**
@@ -158,6 +166,7 @@ export interface ScanStore {
     id: string,
     resultSummary: ScanResultSummary,
     findings?: Finding[],
+    sca?: ScaResult,
   ): Promise<ScanRecord | undefined>;
   /**
    * RUNNING → FAILED with a closed-vocabulary failure code and a safe,
@@ -309,6 +318,18 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   if (hasFindings && status !== 'COMPLETED') {
     return undefined;
   }
+  // SCA payload (Pump 9): closed-shape + bounded + cross-field-checked
+  // by the shared guard, and it exists ONLY on COMPLETED SCA scans —
+  // a payload on any other record (SAST scan, non-terminal state) is
+  // corruption or a transplant attempt and refuses to boot.
+  if (record['sca'] !== undefined) {
+    if (!isScaResult(record['sca'])) {
+      return undefined;
+    }
+    if (status !== 'COMPLETED' || record['scanType'] !== 'SCA') {
+      return undefined;
+    }
+  }
   // Rebuild explicitly from the validated fields (no casts — the
   // optional fields exist exactly when the state machine allows).
   const built: ScanRecord = {
@@ -337,6 +358,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   }
   if (Array.isArray(record['findings'])) {
     built.findings = record['findings'];
+  }
+  if (record['sca'] !== undefined && isScaResult(record['sca'])) {
+    built.sca = record['sca'];
   }
   return built;
 }
@@ -626,10 +650,17 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         return claimed === undefined ? undefined : toPublic(claimed);
       }),
 
-    completeScan: (id, resultSummary, findings) =>
+    completeScan: (id, resultSummary, findings, sca) =>
       runExclusive(() => {
         const current = scansById.get(id);
         if (current === undefined || current.status !== 'RUNNING') {
+          return undefined;
+        }
+        // Defense in depth (Pump 9): the SCA payload is a closed-shape,
+        // bounded, cross-field-checked contract AND may only exist on
+        // an SCA scan. A SAST scan completing with an SCA payload (or
+        // a malformed payload) is inconsistent state — refused.
+        if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) {
           return undefined;
         }
         // Defense in depth: findings are bounded and must belong to
@@ -657,6 +688,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           updatedAt: new Date().toISOString(),
           resultSummary,
           ...(safeFindings === undefined ? {} : { findings: safeFindings }),
+          ...(sca === undefined ? {} : { sca }),
         }));
         return updated === undefined ? undefined : toPublic(updated);
       }),
@@ -739,6 +771,9 @@ export function toScanDetailResponse(record: ScanRecord): ScanDetail {
   return {
     ...toScanResponse(record),
     findings,
+    // The SCA payload rides ONLY the detail route (the list stays
+    // lean — counts live in resultSummary).
+    ...(record.sca === undefined ? {} : { sca: record.sca }),
   };
 }
 

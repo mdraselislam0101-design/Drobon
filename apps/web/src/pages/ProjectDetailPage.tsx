@@ -9,6 +9,7 @@ import {
   type ScanType,
   type Scan,
   type FindingSeverity,
+  type ScaEcosystem,
   type SourceSnapshotResponse,
   type UsageResponse,
 } from '@drobon/shared';
@@ -31,6 +32,11 @@ import { LoadingState } from '../components/LoadingState.js';
  * - the SAST engine (Pump 8) analyzes the project's uploaded source
  *   snapshot — analysis only, sources are never executed; findings come
  *   from the scan detail route and render as text.
+ * - the SCA engine (Pump 9) analyzes the same snapshot's dependency
+ *   manifests — again analysis only. Its inventory/manifest/SBOM
+ *   payload renders from the SAME detail route, clearly separated
+ *   from SAST findings, and states honestly when the vulnerability
+ *   intelligence dataset is unavailable (not assessed, zero advisories).
  * - no localStorage, no URL-derived project state beyond the id.
  */
 
@@ -345,10 +351,13 @@ function ScansSection({
             {submitting ? 'Requesting…' : 'Request scan'}
           </button>
           <p className="muted">
-            SAST analyzes the uploaded source snapshot (analysis only —
-            your code is never executed). SCA, SECRETS and DAST engines
-            are not implemented yet: those scans fail honestly with
-            SCAN_ENGINE_NOT_IMPLEMENTED.
+            SAST analyzes the uploaded source snapshot and SCA analyzes
+            its dependency manifests — analysis only, your code is never
+            executed. SCA reports the dependency inventory and an SBOM;
+            without a vulnerability intelligence dataset it honestly
+            reports not assessed (no fabricated advisories). SECRETS and
+            DAST engines are not implemented yet: those scans fail
+            honestly with SCAN_ENGINE_NOT_IMPLEMENTED.
           </p>
           {formError !== null && (
             <div className="form-alert" role="alert">
@@ -420,11 +429,18 @@ function ScansSection({
               )}
               {scan.status === 'COMPLETED' && scan.resultSummary !== undefined && (
                 <p className="muted" data-testid="scan-result">
-                  Findings: {scan.resultSummary.findingsTotal}
+                  {scan.scanType === 'SCA'
+                    ? `Dependencies: ${scan.resultSummary.dependenciesTotal ?? 0} (${
+                        scan.resultSummary.directDependencies ?? 0
+                      } direct)`
+                    : `Findings: ${scan.resultSummary.findingsTotal}`}
                 </p>
               )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SAST' && (
                 <FindingsView projectId={projectId} scanId={scan.id} />
+              )}
+              {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
+                <ScaView projectId={projectId} scanId={scan.id} />
               )}
             </li>
           ))}
@@ -728,6 +744,225 @@ function FindingsView({
                 </li>
               ))}
             </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One completed SCA scan's dependency analysis (Pump 9) — the SCA read
+ * surface, lazy like FindingsView and clearly separated from it.
+ * - the assessment banner is HONEST by construction: with no loaded
+ *   dataset it says "not assessed", and zero advisories are shown as
+ *   exactly that (the server never fabricates any);
+ * - the inventory renders as TEXT (React escaping) — names, versions,
+ *   purls come from the validated shared contract, never raw files;
+ * - the ecosystem filter is display-only (client-side over the SAME
+ *   bounded response) — it never triggers another request;
+ * - manifests list what was analyzed/partial/unsupported/invalid, so
+ *   the limits of the analysis are visible, not hidden.
+ */
+function ScaView({
+  projectId,
+  scanId,
+}: {
+  projectId: string;
+  scanId: string;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [detail, setDetail] = useState<ScanDetailResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [ecosystem, setEcosystem] = useState<'ALL' | ScaEcosystem>('ALL');
+
+  const load = async (): Promise<void> => {
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await client.getScan(projectId, scanId);
+      setDetail(data);
+    } catch (error: unknown) {
+      setError(
+        error instanceof ApiClientError ? error.message : 'Could not load the dependency analysis.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sca = detail?.scan.sca;
+  const visibleDeps =
+    sca === undefined ? [] : ecosystem === 'ALL' ? sca.dependencies : sca.dependencies.filter((d) => d.ecosystem === ecosystem);
+
+  return (
+    <div className="findings">
+      {detail === null && error === null && !loading && (
+        <button
+          type="button"
+          className="button button-ghost"
+          onClick={() => void load()}
+          data-testid="view-sca"
+        >
+          View dependency analysis
+        </button>
+      )}
+      {loading && <LoadingState label="Loading the dependency analysis…" />}
+      {error !== null && (
+        <div>
+          <div className="form-alert" role="alert">
+            <p data-testid="sca-error">{error}</p>
+          </div>
+          <button
+            type="button"
+            className="button button-ghost"
+            onClick={() => void load()}
+            data-testid="sca-retry"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {sca !== undefined && (
+        <>
+          <p className="muted" data-testid="sca-assessment">
+            {sca.summary.assessmentState === 'ASSESSED'
+              ? `Assessed by ${sca.summary.providerId}: ${sca.summary.advisoriesTotal} advisories.`
+              : 'Not assessed — vulnerability intelligence dataset unavailable. The dependency inventory and SBOM below are complete; no vulnerability claims are made without a loaded dataset.'}
+          </p>
+          <dl className="facts" data-testid="sca-summary">
+            <div className="fact">
+              <dt>Dependencies</dt>
+              <dd>
+                {sca.summary.truncated
+                  ? `${sca.dependencies.length} of ${sca.summary.dependenciesTotal} (truncated)`
+                  : sca.summary.dependenciesTotal}
+              </dd>
+            </div>
+            <div className="fact">
+              <dt>Direct</dt>
+              <dd>{sca.summary.directDependencies}</dd>
+            </div>
+            <div className="fact">
+              <dt>Transitive</dt>
+              <dd>{sca.summary.transitiveDependencies}</dd>
+            </div>
+            <div className="fact">
+              <dt>Unknown class</dt>
+              <dd>{sca.summary.unclassifiedDependencies}</dd>
+            </div>
+            <div className="fact">
+              <dt>Transitive graph</dt>
+              <dd data-testid="sca-graph">
+                {sca.summary.transitiveGraph === 'AVAILABLE'
+                  ? 'Available (lockfile evidence)'
+                  : 'Unavailable (no lockfile closure)'}
+              </dd>
+            </div>
+            <div className="fact">
+              <dt>SBOM</dt>
+              <dd data-testid="sca-sbom">
+                CycloneDX 1.5 · {sca.sbom.components.length} components
+              </dd>
+            </div>
+          </dl>
+          <div className="field">
+            <label htmlFor={`sca-filter-${scanId}`}>Ecosystem</label>
+            <select
+              id={`sca-filter-${scanId}`}
+              value={ecosystem}
+              onChange={(event) => setEcosystem(event.target.value as 'ALL' | ScaEcosystem)}
+              data-testid="sca-filter"
+            >
+              <option value="ALL">All ecosystems</option>
+              <option value="npm">npm</option>
+              <option value="pypi">pypi</option>
+            </select>
+          </div>
+          <h4>Manifests</h4>
+          <ul className="scan-list" data-testid="sca-manifests">
+            {sca.manifests.map((manifest) => (
+              <li key={manifest.path} data-testid="sca-manifest-item">
+                <span
+                  className={
+                    manifest.status === 'ANALYZED'
+                      ? 'pill pill-ok'
+                      : manifest.status === 'PARTIAL'
+                        ? 'pill'
+                        : 'pill pill-danger'
+                  }
+                  data-testid="sca-manifest-status"
+                >
+                  {manifest.status}
+                </span>{' '}
+                <code>{manifest.path}</code> · {manifest.ecosystem} ·{' '}
+                {manifest.dependencyCount} dependencies
+                {manifest.note !== undefined ? ` · ${manifest.note}` : ''}
+              </li>
+            ))}
+          </ul>
+          <h4>Dependency inventory</h4>
+          {visibleDeps.length === 0 ? (
+            <p className="muted" data-testid="sca-empty">
+              No dependencies at this ecosystem.
+            </p>
+          ) : (
+            <ul className="findings-list" data-testid="sca-dependencies">
+              {visibleDeps.map((dependency) => (
+                <li key={dependency.dependencyId} data-testid="sca-dep-item">
+                  <div className="scan-item-head">
+                    <strong data-testid="sca-dep-name">{dependency.name}</strong>
+                    <span className="pill" data-testid="sca-dep-class">
+                      {dependency.dependencyClass}
+                      {dependency.dependencyType !== 'unknown' ? ` · ${dependency.dependencyType}` : ''}
+                    </span>
+                  </div>
+                  <p className="muted" data-testid="sca-dep-version">
+                    {dependency.ecosystem} ·{' '}
+                    {dependency.resolvedVersion !== undefined
+                      ? `resolved ${dependency.resolvedVersion}`
+                      : dependency.declaredVersion !== undefined
+                        ? `declared ${dependency.declaredVersion}`
+                        : 'no version evidence'}
+                    {dependency.resolvedVersion !== undefined &&
+                    dependency.declaredVersion !== undefined
+                      ? ` (declared ${dependency.declaredVersion})`
+                      : ''}
+                    {dependency.purl !== undefined ? ` · ${dependency.purl}` : ''}
+                  </p>
+                  <p className="muted" data-testid="sca-dep-evidence">
+                    {dependency.manifestPath}
+                    {dependency.lockfilePath !== undefined ? ` · ${dependency.lockfilePath}` : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {sca.advisories.length > 0 && (
+            <>
+              <h4>Advisories</h4>
+              <ul className="findings-list" data-testid="sca-advisories">
+                {sca.advisories.map((advisory) => (
+                  <li key={`${advisory.id}-${advisory.dependencyId}`} data-testid="sca-advisory-item">
+                    <span
+                      className={
+                        advisory.severity === 'CRITICAL' || advisory.severity === 'HIGH'
+                          ? 'pill pill-danger'
+                          : advisory.severity === 'MEDIUM'
+                            ? 'pill'
+                            : 'pill pill-ok'
+                      }
+                    >
+                      {advisory.severity}
+                    </span>{' '}
+                    <strong>{advisory.id}</strong> — {advisory.name}
+                    {advisory.version !== undefined ? `@${advisory.version}` : ''}:{' '}
+                    {advisory.summary}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </>
       )}

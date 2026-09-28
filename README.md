@@ -79,6 +79,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/PROJECTS.md` — project model, ownership, CRUD, lifecycle, scan boundary
 - `docs/SCANS.md` — scan jobs, quota atomicity, idempotency, processor, engine boundary
 - `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
+- `docs/SCA.md` — the real SCA engine: manifest parsing, inventory, SBOM, the dataset lock
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -140,12 +141,32 @@ redacted evidence and remediation. Analysis only — source files are
 NEVER executed; every dimension is capped (files, bytes, findings,
 10 s deadline) with fail-closed codes. Findings persist atomically
 with COMPLETED, are readable only via the scan detail route, and
-render in the web UI as text. SCA/SECRETS/DAST still fail honestly
+render in the web UI as text. SECRETS/DAST still fail honestly
 with SCAN_ENGINE_NOT_IMPLEMENTED; the dataset lock holds. See
 `docs/SAST.md` and `docs/SCANS.md`.
 
-**NOT included:** the remaining scan engines (SCA/SECRETS/DAST —
-SAST ships above), vulnerability
+**PLUS Pump 9 (Real SCA engine — honest by construction)**: software-
+composition analysis of the same uploaded snapshot's dependency
+manifests (package.json, package-lock.json v1–v3, requirements.txt,
+pyproject.toml PEP 621 + Poetry). Defensive parsers (prototype-key
+discipline, entry/line bounds, invalid data dropped — never guessed)
+build a normalized inventory: direct vs transitive with lockfile
+evidence, declared AND resolved versions both preserved, deterministic
+fingerprints/ids (no random UUIDs), and a CycloneDX 1.5-subset SBOM
+with a content-derived serial. Analysis only — nothing is ever
+installed or executed (postinstall scripts are inert data, verified by
+marker-file tests). THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS
+data enters the repo; with no dataset the assessment is honestly
+NOT_ASSESSED with ZERO advisories while the inventory and SBOM stay
+real — a vulnerable-looking fixture yields no fabricated findings.
+The VulnerabilityIntelligenceProvider boundary is injectable and
+tested with synthetic fixtures (tests only), so the advisory path is
+real. SCA payloads persist atomically, ride the detail route only,
+survive restarts, and render distinctly from SAST in the web UI.
+See `docs/SCA.md`.
+
+**NOT included:** the remaining scan engines (SECRETS/DAST —
+SAST and SCA ship above), vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
 UI), plan mutation workflow (`plan:manage` is granted to no one), usage
@@ -158,8 +179,9 @@ UserType-specific product features. See the NOT_IMPLEMENTED sections in
 
 ## Status
 
-Pump 7 — foundation + authentication + authorization + plans/
+Pump 9 — foundation + authentication + authorization + plans/
 subscriptions/entitlements + usage quota & device anti-abuse +
-projects + secure scan-job foundation. See `docs/BUILD_VERIFICATION.md`
-for the latest
+projects + secure scan-job foundation + the REAL SAST engine + the
+REAL SCA engine (dependency inventory, SBOM, honest NOT_ASSESSED
+dataset lock). See `docs/BUILD_VERIFICATION.md` for the latest
 verification evidence and `git log` for history.

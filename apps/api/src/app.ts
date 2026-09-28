@@ -51,6 +51,8 @@ import {
   type SourceSnapshotStore,
 } from './scans/sources.js';
 import { createSastEngine } from './scans/sast/engine.js';
+import { createScaEngine } from './scans/sca/engine.js';
+import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
@@ -210,8 +212,17 @@ export function createApp(deps: AppDeps): App {
   // The engine registry (server-side composition ONLY). Pump 8 default:
   // the REAL SAST engine (static analysis of the project's source
   // snapshot — see scans/sast/). SCA/SECRETS/DAST ship no engine.
+  // PUMP 9: SCA joins SAST as a REAL engine. The vulnerability
+  // intelligence provider comes from config — 'none' (the only value
+  // today, enforced by the dataset lock) composes the Null provider,
+  // so SCA assessments are honestly NOT_ASSESSED / NO_DATA_LOADED.
+  // SECRETS and DAST remain unregistered (honest NOT_IMPLEMENTED).
+  const intelligenceProvider = createNullIntelligenceProvider();
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
-    deps.scanEngines ?? [createSastEngine({ sources: sourceStore })],
+    deps.scanEngines ?? [
+      createSastEngine({ sources: sourceStore }),
+      createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
+    ],
   );
   const scanProcessor: ScanProcessor = createScanProcessor({
     store: scanStore,

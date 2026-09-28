@@ -1,4 +1,4 @@
-import type { Finding, ScanFailureCode, ScanResultSummary, ScanType } from '@drobon/shared';
+import type { Finding, ScaResult, ScanFailureCode, ScanResultSummary, ScanType } from '@drobon/shared';
 import type { ScanRecord } from './store.js';
 
 /**
@@ -9,8 +9,10 @@ import type { ScanRecord } from './store.js';
  * composition time (app.ts); nothing client-facing can register,
  * discover or influence engines.
  *
- * PUMP 8 registers the first REAL engine: SAST (static analysis of the
- * project's source snapshot — see `sast/`). `SCA`, `SECRETS` and
+ * PUMP 8 registered the first REAL engine: SAST (static analysis,
+ * `sast/`). PUMP 9 registers the second: SCA (software-composition
+ * analysis, `sca/` — manifests → inventory → SBOM → honest
+ * assessment, see docs/SCA.md). `SECRETS` and
  * `DAST` remain unimplemented: the processor deterministically fails
  * them with `SCAN_ENGINE_NOT_IMPLEMENTED` — it NEVER fabricates
  * findings, never pretends a scan happened, and never touches
@@ -33,7 +35,18 @@ export interface ScanEngineContext {
  * closed-vocabulary failure code with a safe, bounded message.
  */
 export type EngineOutcome =
-  | { kind: 'completed'; resultSummary: ScanResultSummary; findings?: Finding[] }
+  | {
+      kind: 'completed';
+      resultSummary: ScanResultSummary;
+      /** Real findings (SAST, Pump 8) — bounded, persisted atomically. */
+      findings?: Finding[];
+      /**
+       * The SCA payload (Pump 9): inventory, manifest results, SBOM
+       * and the honest assessment. Persisted atomically with the
+       * terminal transition — COMPLETED SCA scans only.
+       */
+      sca?: ScaResult;
+    }
   | { kind: 'failed'; failureCode: ScanFailureCode; failureMessage: string };
 
 /**

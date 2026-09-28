@@ -646,15 +646,29 @@ describe('SAST scans: the real engine over HTTP', () => {
     }
   });
 
-  test('SCA/SECRETS/DAST still honestly fail with SCAN_ENGINE_NOT_IMPLEMENTED', async () => {
+  test('SCA is a REAL engine now (Pump 9); SECRETS/DAST still honestly fail', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
     const server = await startTestServer({ users });
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
-      await putSources(server, owner, projectId, SAFE_SOURCE);
-      for (const scanType of ['SCA', 'SECRETS', 'DAST'] as const) {
+      // A manifest-bearing snapshot: SCA has real work to do.
+      await putSources(server, owner, projectId, [
+        ...SAFE_SOURCE,
+        {
+          path: 'package.json',
+          content: '{"name":"safe-app","version":"1.0.0","dependencies":{"left-pad":"^1.3.0"}}',
+        },
+      ]);
+      const sca = await requestScan(server, owner, projectId, 'SCA');
+      expect(sca.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const scaDetail = await getScanDetail(server, owner, projectId, scanOf(sca.body).id);
+      expect(scaDetail.data.scan.status).toBe('COMPLETED');
+      expect(scaDetail.data.scan.findings).toEqual([]);
+      expect(scaDetail.data.scan.sca?.summary.dependenciesTotal).toBe(1);
+      for (const scanType of ['SECRETS', 'DAST'] as const) {
         const { res, body } = await requestScan(server, owner, projectId, scanType);
         expect(res.status).toBe(201);
         await server.scanProcessor.drain();
@@ -662,6 +676,7 @@ describe('SAST scans: the real engine over HTTP', () => {
         expect(detail.data.scan.status, scanType).toBe('FAILED');
         expect(detail.data.scan.failureCode).toBe('SCAN_ENGINE_NOT_IMPLEMENTED');
         expect(detail.data.scan.findings).toEqual([]);
+        expect(detail.data.scan.sca).toBeUndefined();
       }
     } finally {
       await server.stop();

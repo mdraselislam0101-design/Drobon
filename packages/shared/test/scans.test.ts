@@ -60,6 +60,12 @@ describe('scan vocabulary', () => {
       'SAST_SCAN_TIMEOUT',
       'SAST_INPUT_INVALID',
       'SAST_UNSUPPORTED_LANGUAGE',
+      // Pump 9: the SCA engine's mirror set.
+      'SCA_TARGET_NOT_FOUND',
+      'SCA_TARGET_TOO_LARGE',
+      'SCA_MANIFEST_LIMIT_EXCEEDED',
+      'SCA_SCAN_TIMEOUT',
+      'SCA_INPUT_INVALID',
     ]);
   });
 

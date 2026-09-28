@@ -10,4 +10,5 @@ export * from './plans.js';
 export * from './usage.js';
 export * from './projects.js';
 export * from './scans.js';
+export * from './sca.js';
 export * from './sources.js';

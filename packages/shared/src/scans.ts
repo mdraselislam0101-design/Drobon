@@ -76,6 +76,14 @@ export function isScanStatus(value: unknown): value is ScanStatus {
  *   unsupported files are skipped and counted, never claimed as
  *   scanned.
  */
+import { isScaResult, type ScaResult } from './sca.js';
+
+/**
+ * Failure codes (scan-domain, stable, safe to expose). Pump 8 added
+ * the closed SAST engine set; Pump 9 adds the SCA engine's mirror
+ * set (target/size/manifest-limit/timeout/input). Closed vocabulary:
+ * internals never leak through failure messages.
+ */
 export const SCAN_FAILURE_CODES = [
   'SCAN_ENGINE_NOT_IMPLEMENTED',
   'SCAN_INTERRUPTED',
@@ -86,6 +94,11 @@ export const SCAN_FAILURE_CODES = [
   'SAST_SCAN_TIMEOUT',
   'SAST_INPUT_INVALID',
   'SAST_UNSUPPORTED_LANGUAGE',
+  'SCA_TARGET_NOT_FOUND',
+  'SCA_TARGET_TOO_LARGE',
+  'SCA_MANIFEST_LIMIT_EXCEEDED',
+  'SCA_SCAN_TIMEOUT',
+  'SCA_INPUT_INVALID',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -137,6 +150,10 @@ export interface ScanResultSummary {
    * the honest signal that more findings may exist (SAST).
    */
   truncated?: boolean;
+  /** Unique dependencies discovered (SCA, Pump 9) — lean list metric. */
+  dependenciesTotal?: number;
+  /** Direct dependencies (SCA, Pump 9) — lean list metric. */
+  directDependencies?: number;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -145,6 +162,11 @@ const SUMMARY_ALLOWED_KEYS = [
   'filesScanned',
   'filesSkipped',
   'truncated',
+  // SCA (Pump 9): lean metrics so the LIST route can show dependency
+  // counts without shipping the inventory. The full payload (manifest
+  // results, SBOM, advisories) lives in the scan-detail response only.
+  'dependenciesTotal',
+  'directDependencies',
 ] as const;
 
 function isCount(value: unknown): value is number {
@@ -189,6 +211,12 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
     return false;
   }
   if (record['truncated'] !== undefined && typeof record['truncated'] !== 'boolean') {
+    return false;
+  }
+  if (record['dependenciesTotal'] !== undefined && !isCount(record['dependenciesTotal'])) {
+    return false;
+  }
+  if (record['directDependencies'] !== undefined && !isCount(record['directDependencies'])) {
     return false;
   }
   return true;
@@ -446,6 +474,13 @@ export function compareFindings(a: Finding, b: Finding): number {
  */
 export interface ScanDetail extends Scan {
   findings: Finding[];
+  /**
+   * The SCA payload (Pump 9): dependency inventory, manifest results,
+   * the deterministic SBOM and the honest assessment state. Present
+   * ONLY on COMPLETED SCA scans; never on SAST scans, never in list
+   * responses (the list stays lean — counts live in resultSummary).
+   */
+  sca?: ScaResult;
 }
 
 export interface ScanDetailResponse {
@@ -471,14 +506,20 @@ export function isScanDetailResponse(value: unknown): value is ScanDetailRespons
     return false;
   }
   const scanRecord = scan as Record<string, unknown>;
-  const { findings, ...scanWithoutFindings } = scanRecord;
+  const { findings, sca, ...scanWithoutPayload } = scanRecord;
   if (!Array.isArray(findings)) {
     return false;
   }
   if (findings.length > MAX_FINDINGS_PER_SCAN) {
     return false;
   }
-  if (!isScan(scanWithoutFindings)) {
+  if (!isScan(scanWithoutPayload)) {
+    return false;
+  }
+  // The optional SCA payload is validated as a whole (closed shape,
+  // bounded arrays, cross-field honesty — see sca.ts). A malformed or
+  // forged payload fails the entire response as invalid.
+  if (sca !== undefined && !isScaResult(sca)) {
     return false;
   }
   return findings.every((finding) => isFinding(finding));

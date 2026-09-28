@@ -616,3 +616,83 @@ code); `check:secrets` PASS over sources and builds (the fake
 credential literals in tests carry same-line fake markers);
 **DATASET LOCK respected** — no CVE/NVD/GHSA/OSV/KEV/EPSS data
 anywhere; `git status` clean of secrets/datasets/junk after commit.
+
+## Pump 9 — Real SCA engine, honest by construction (VERIFIED, live E2E included)
+
+**Pipeline:** `npm run verify` — 9/9 PASS (boundaries, secret
+matcher self-test, secret scan sources + builds, typecheck, lint,
+tests, production builds, dependency audit).
+
+**Test totals:** shared 140 (incl. `sca` contract suite 12), api 494
+(incl. `scaParsers` 27, `scaEngine` 21, `scaApi` 13), web 173 passed
++ 3 skipped (incl. `scaUi` 7), worker 28 — **838 total, 0 failed**.
+
+### Live E2E (production build, `:4101`, fresh stores in `/tmp`)
+
+1. Boot `NODE_ENV=production node dist/index.js` → listening
+   (`VULN_INTEL_PROVIDER=none` accepted; any other value refuses).
+2. Register + login + project create → 201/200/201.
+3. **SCA pre-flight quota protection**: SCA on a snapshot-less
+   project → `409 CONFLICT` "Upload a source snapshot before
+   requesting a SCA scan." and usage stays `used=0`.
+4. Snapshot upload (7 files: package.json, lock v3, requirements.txt,
+   pyproject.toml, a `tools/package.json` with a hostile postinstall,
+   an `exec` source file) → 200; read-back is METADATA ONLY;
+   `../traversal`, `%2e%2e/`, `C:\secret\package.json` and `.env`
+   uploads → 422 with the snapshot intact.
+5. **Scan 1 (SCA)**: QUEUED → COMPLETED — inventory **7 dependencies
+   (6 direct, 1 transitive)**, `transitiveGraph: AVAILABLE`,
+   **SBOM with 7 components** anchored at the root `demo-app` 1.4.2;
+   5 manifests ANALYZED (incl. the nested `tools/package.json`).
+6. **DATASET HONESTY**: the fixture deliberately pins vulnerable-
+   LOOKING versions (express 4.17.1, lodash 4.17.15, flask 1.1.1) —
+   the assessment is **`NOT_ASSESSED` / `NO_DATA_LOADED`** with
+   **ZERO advisories and zero findings**. Nothing fabricated.
+7. **Analyzed, never executed**: the uploaded postinstall
+   `touch /tmp/pump9-e2e-marker` — the marker DOES NOT EXIST after
+   the scan (checked; manifests are inert data).
+8. **Lockfile priority**: express keeps declared `^4.18.0` AND
+   resolved `4.17.1` (versionSource lockfile, lockfilePath evidence,
+   purl `pkg:npm/express@4.17.1`); flask keeps `==1.1.1` declared
+   with NO resolved version (never fabricated); `accepts` classified
+   transitive from the lockfile closure.
+9. Idempotent replay (same key) → 200, same scan id, usage unchanged
+   (`used=1`).
+10. **Scan 2 (SAST)** on the SAME snapshot: COMPLETED with the exec
+    finding (DG-SAST-001) and **NO `sca` payload** — the two engines
+    stay distinct on one target.
+11. **Scan 3 (DAST)**: FAILED/`SCAN_ENGINE_NOT_IMPLEMENTED` — the
+    honest no-engine path.
+12. **Quota exhaustion**: 4th scan → `429 QUOTA_EXCEEDED` +
+    `Retry-After: 235482`; usage `used=3, EXHAUSTED`.
+13. **Cross-account isolation**: second account → sources GET/PUT,
+    foreign scan detail and scan request all uniform 403 — no
+    inventory leakage, no oracle.
+14. **Hygiene**: server log + `scans.json` carry NO manifest content
+    and NO advisory identifiers; raw content lives ONLY in the 0600
+    `sources.json` scan-target store (by design, gitignored).
+15. **Restart durability**: SIGTERM → reboot on the same stores →
+    fresh login (sessions are in-memory by design), scan 1 still
+    COMPLETED with the **identical sca payload** (identical
+    dependency ids AND identical SBOM serial), quota continuity
+    (`used=3, EXHAUSTED`); an extra scan still 429s (no free slots).
+16. **Forged SCA payload refuses to boot** (`:4102`, fabricated
+    `ASSESSED` + `CVE-FAKE` advisory injected on a SAST scan):
+    "refusing to start", exit 1, port never opens.
+17. Production web build carries the SCA UI (`view-sca`, the honest
+    not-assessed banner, the inventory view).
+
+### Boundary checks (§33-style audit)
+
+`check:boundaries` PASS (no DB/dataset/shell; no payment/gateway
+code); `check:secrets` PASS over sources and builds (361 files);
+**DATASET LOCK respected** — no CVE/NVD/GHSA/OSV/KEV/EPSS data
+anywhere (the only advisory-shaped strings in the repo are clearly-
+synthetic test fixtures: `GHSA-test-0001`, `CVE-FAKE`, guard-shape
+examples); no exec/spawn/eval/child_process in `apps/api/src/scans/sca/`
+(0 matches); no npm/pip install anywhere in API src (0 matches); no
+`randomUUID` in the SCA engine (deterministic ids only, 0 matches);
+no `key in obj` patterns in the SCA parsers (own-property discipline);
+the Pump 8 path policy is defined exactly once
+(`SOURCE_PATH_PATTERN`) and reused by the SCA guards; `git status`
+clean of secrets/datasets/junk after commit.

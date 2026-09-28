@@ -159,18 +159,18 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             { path: 'scanType', message: 'Unsupported scan type.' },
           ]);
         }
-        // PUMP 8 PRE-FLIGHT (quota protection): a SAST scan needs a
-        // source snapshot as its deterministic target. Rejecting the
-        // request BEFORE quota consumption keeps a FREE account from
-        // burning its monthly allowance on a scan that can only fail
-        // with SAST_TARGET_NOT_FOUND. Race-window defense: if the
-        // snapshot disappears between here and processing, the engine
-        // still fails the scan closed.
-        if (parsed.value.scanType === 'SAST') {
+        // PUMP 8/9 PRE-FLIGHT (quota protection): SAST and SCA both
+        // need a source snapshot as their deterministic target.
+        // Rejecting the request BEFORE quota consumption keeps a FREE
+        // account from burning its monthly allowance on a scan that
+        // can only fail with a *_TARGET_NOT_FOUND code. Race-window
+        // defense: if the snapshot disappears between here and
+        // processing, the engine still fails the scan closed.
+        if (parsed.value.scanType === 'SAST' || parsed.value.scanType === 'SCA') {
           const snapshot = await sources.findByProject(project.id);
           if (snapshot === undefined || snapshot.files.length === 0) {
             throw conflict(
-              'Upload a source snapshot before requesting a SAST scan.',
+              `Upload a source snapshot before requesting a ${parsed.value.scanType} scan.`,
             );
           }
         }

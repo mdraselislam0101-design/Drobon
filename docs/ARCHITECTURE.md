@@ -48,7 +48,8 @@ browser bundle and the servers can all consume it:
   device identifiers exist in this contract.
 - `scans.ts` — scan-job contracts (Pump 7 + 8): the four supported job
   types (SAST/SCA/SECRETS/DAST), the server-authoritative status and
-  failure-code vocabularies (orchestration + the closed SAST engine
+  failure-code vocabularies (orchestration + the closed SAST and SCA
+  engine
   set), `scan_` UUID id + idempotency-key patterns, the owner-free
   public `Scan` shape with state-machine invariants, response guards
   and the documented ordering comparator; Pump 8 adds the `Finding`
@@ -60,6 +61,18 @@ browser bundle and the servers can all consume it:
   (relative, no traversal/dotfiles, len/segment/depth caps, blocked
   key-material extensions), size caps (200 files / 256 KiB / 768 KiB)
   and the metadata-only public response (content never echoes back).
+- `sca.ts` — SCA contracts (Pump 9): the closed vocabularies
+  (ecosystems npm/pypi, dependency types/classes, version sources
+  manifest/lockfile, manifest statuses, dataset statuses,
+  assessment states, transitive-graph states), the `ScaDependency`
+  record (deterministic `dep_` ids from fingerprints, declared AND
+  resolved versions as distinct evidence, lockfile provenance rules),
+  the advisory shape (provider-authored only), the ScaSummary with
+  cross-field honesty (NOT_ASSESSED ⇒ zero advisories; the Null
+  provider never claims ASSESSED), the CycloneDX 1.5-subset SBOM
+  guard (digest-shaped hashes only, deterministic serial) and the
+  whole-result guard (counts match arrays, advisories reference real
+  dependencies, manifest caps) — the DATASET LOCK made structural.
 - `projects.ts` — project contracts (Pump 6): the closed status
   vocabulary (ACTIVE/ARCHIVED), the `prj_` UUID id pattern, bounded
   name/description lengths, the public `Project` shape (deliberately
@@ -136,10 +149,17 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   atomically with the COMPLETED transition, COMPLETED-only), boot
   recovery `failAllRunning`); `engines.ts` is the scanner-engine
   boundary (server-side registry — Pump 8 registers the REAL SAST
-  engine; SCA/SECRETS/DAST stay unregistered and fail honestly with
-  SCAN_ENGINE_NOT_IMPLEMENTED); `sast/` is that engine (pure-data
-  `rules.ts` + bounded `engine.ts` — analysis only, never executes
-  source, see docs/SAST.md); `sources.ts` is the project-scoped
+  engine and Pump 9 the REAL SCA engine; SECRETS/DAST stay
+  unregistered and fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED);
+  `sast/` is the SAST engine (pure-data `rules.ts` + bounded
+  `engine.ts` — analysis only, never executes source, see
+  docs/SAST.md); `sca/` is the SCA engine — `parsers.ts` (defensive
+  per-manifest parsing), `inventory.ts` (normalized inventory +
+  deterministic CycloneDX-subset SBOM), `provider.ts` (the
+  VulnerabilityIntelligenceProvider boundary — locked Null provider,
+  no dataset ever), `engine.ts` (manifest discovery + the same
+  bounded-engine contract, see docs/SCA.md); `sources.ts` is the
+  project-scoped
   source-snapshot store (path policy at rest, fail-fast load);
   `processor.ts` is the durable worker
   loop (claim → engine → finish, 30s engine bound, startup recovery +
