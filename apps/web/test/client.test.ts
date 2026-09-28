@@ -70,6 +70,31 @@ describe('createApiClient', () => {
     expect(init.body).toBe(JSON.stringify({ message: 'hi' }));
   });
 
+  test('uses authenticated assistant status and project-scoped ask endpoints with no client authority claims', async () => {
+    const projectId = 'prj_00000000-0000-4000-8000-0000000000aa';
+    const status = { providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false };
+    const answer = {
+      state: 'UNAVAILABLE', mode: 'DETERMINISTIC', providerState: 'NONE',
+      answer: 'No configured AI provider is available for open-ended generation.',
+      facts: [], interpretations: [], recommendations: [], limitations: ['Generation is unavailable.'], evidence: [],
+      context: { itemCount: 0, characterCount: 0, redactedItems: 0, truncated: false },
+    };
+    const fetchImpl: FetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: status, meta: { requestId: 'assistant-status' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: answer, meta: { requestId: 'assistant-answer' } }));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    expect(await client.getAssistantStatus()).toEqual(status);
+    expect(await client.askAssistant(projectId, { question: 'What is unknown?', scanId: 'scan_00000000-0000-4000-8000-000000000001' })).toEqual(answer);
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe('/api/v1/assistant/status');
+    expect(calls[0]?.[1].credentials).toBe('include');
+    expect(calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/assistant/ask`);
+    expect(calls[1]?.[1].method).toBe('POST');
+    expect(calls[1]?.[1].body).toBe(JSON.stringify({ question: 'What is unknown?', scanId: 'scan_00000000-0000-4000-8000-000000000001' }));
+    expect(String(calls[1]?.[1].body)).not.toContain('providerId');
+    expect(String(calls[1]?.[1].body)).not.toContain('ownerId');
+  });
+
   test('configures and removes a project-associated DAST target without client authority claims', async () => {
     const project = {
       id: 'prj_00000000-0000-4000-8000-0000000000aa',

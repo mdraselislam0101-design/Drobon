@@ -901,3 +901,29 @@ DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passiv
   credential is verified/rotated, and no external vulnerability
   intelligence is claimed. SCA remains `NOT ASSESSED` where intelligence
   is unavailable. This is not a public-target security assessment.
+
+## Verification evidence (Pump 14 — AI Security Assistant foundation)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green: scope boundaries,
+  secret matcher self-test, source secret scan, typecheck, lint, full tests,
+  production builds, build secret scan, and dependency audit.
+- Test totals: **1,039 passed, 0 failed** across 95 files:
+  - shared: 167 (15 files)
+  - API: 649 (56 files)
+  - worker: 28 (3 files)
+  - web: 195 (21 files)
+- Source and build secret scans: **PASS**, 450 files scanned at each
+  stage. Dependency audit: **0 vulnerabilities**. Shared, API, worker and
+  production Web builds all passed. `git diff --check`: **PASS**.
+- Focused assistant coverage includes strict shared request/response/status
+  contracts, bounded context and redaction, prompt-like evidence treated as
+  inert text, authenticated project-scoped status/ask endpoints, cross-account
+  and foreign scan/finding/report ID isolation, deterministic finding and
+  SCA explanations, `NOT ASSESSED` / `NO_DATA_LOADED` honesty, read-only
+  lifecycle behavior, scan-quota neutrality, and text-only Web rendering.
+- Local/synthetic only: API tests use ephemeral loopback servers and
+  synthetic accounts, projects, SAST source, and package inventory. No
+  public target or vulnerability dataset was used. No provider is active;
+  unsupported generation stays unavailable, and chat history is not
+  persisted. This is not a public-target security assessment.

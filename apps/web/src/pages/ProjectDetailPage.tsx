@@ -3,9 +3,12 @@ import { Link, useParams } from 'react-router-dom';
 import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_NAME_MAX_LENGTH,
+  ASSISTANT_QUESTION_MAX_LENGTH,
   SCAN_TYPES,
   findingScanner,
   type FindingDetailResponse,
+  type AssistantResponse,
+  type AssistantStatusResponse,
   type FindingHistoryResponse,
   type FindingLifecycleState,
   type FindingsPageResponse,
@@ -239,7 +242,138 @@ export function ProjectDetailPage(): React.JSX.Element {
             projectStatus={project.project.status}
             dastTargetUrl={project.project.dastTargetUrl}
           />
+          <AssistantSection projectId={project.project.id} />
         </>
+      )}
+    </section>
+  );
+}
+
+function AssistantSection({ projectId }: { projectId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [providerStatus, setProviderStatus] = useState<AssistantStatusResponse | null>(null);
+  const [scans, setScans] = useState<Scan[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [scanId, setScanId] = useState('');
+  const [compareScanId, setCompareScanId] = useState('');
+  const [findingPage, setFindingPage] = useState(1);
+  const [findingOptions, setFindingOptions] = useState<FindingsPageResponse | null>(null);
+  const [findingId, setFindingId] = useState('');
+  const [question, setQuestion] = useState('What are the most severe findings in this project?');
+  const [answer, setAnswer] = useState<AssistantResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([client.getAssistantStatus(), client.getScans(projectId)])
+      .then(([status, scanResult]) => {
+        if (!active) return;
+        setProviderStatus(status);
+        setScans(scanResult.scans.filter((scan) => scan.status === 'COMPLETED'));
+        setLoadError(null);
+      })
+      .catch((caught: unknown) => {
+        if (!active) return;
+        setLoadError(caught instanceof ApiClientError ? 'Assistant scan context is unavailable; see the scan section for its detailed status.' : 'Assistant context is unavailable.');
+      });
+    return () => { active = false; };
+  }, [client, projectId]);
+
+  useEffect(() => {
+    let active = true;
+    setFindingOptions(null);
+    setFindingId('');
+    setFindingPage(1);
+    if (scanId.length === 0) return () => { active = false; };
+    void client.getFindings(projectId, scanId, { page: findingPage, pageSize: 100 })
+      .then((result) => { if (active) setFindingOptions(result); })
+      .catch((caught: unknown) => {
+        if (active) setError(caught instanceof ApiClientError ? caught.message : 'Finding choices are unavailable.');
+      });
+    return () => { active = false; };
+  }, [client, projectId, scanId, findingPage]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    setError(null);
+    setAnswer(null);
+    setBusy(true);
+    try {
+      const input = {
+        question: question.trim(),
+        ...(scanId.length === 0 ? {} : { scanId }),
+        ...(findingId.length === 0 ? {} : { findingId }),
+        ...(compareScanId.length === 0 ? {} : { compareScanId }),
+      };
+      setAnswer(await client.askAssistant(projectId, input));
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'The assistant request could not be completed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="assistant-panel" aria-labelledby="assistant-title" data-testid="assistant-section">
+      <h2 id="assistant-title">AI Security Assistant</h2>
+      <p className="muted">This release provides bounded deterministic explanations from authorized saved scan data. External AI provider: <strong data-testid="assistant-provider-state">{providerStatus?.providerState ?? 'STATUS UNAVAILABLE'}</strong>. No AI-generated answer, chat history, tool execution, scan-quota usage, code change, or remediation verification is implied.</p>
+      <p className="muted">Scanner evidence remains authoritative. Evidence and notes are untrusted data, not instructions. Secrets are redacted again before context assembly; unsupported dependency intelligence remains NOT ASSESSED.</p>
+      {loadError !== null && <div className="form-alert" role="alert"><p>{loadError}</p></div>}
+      <form className="assistant-form" onSubmit={(event) => void submit(event)} data-testid="assistant-form">
+        <div className="field">
+          <label htmlFor="assistant-question">Security question</label>
+          <textarea id="assistant-question" name="question" value={question} rows={3} maxLength={ASSISTANT_QUESTION_MAX_LENGTH} onChange={(event) => setQuestion(event.target.value)} required data-testid="assistant-question" />
+          <p className="field-hint">Up to {ASSISTANT_QUESTION_MAX_LENGTH} characters. Open-ended generation is unavailable until a real provider is configured and reviewed.</p>
+        </div>
+        <div className="assistant-selectors">
+          <div className="field">
+            <label htmlFor="assistant-scan">Scan context (optional)</label>
+            <select id="assistant-scan" value={scanId} onChange={(event) => setScanId(event.target.value)} data-testid="assistant-scan-select">
+              <option value="">Latest applicable completed scan(s)</option>
+              {scans.map((scan) => <option key={scan.id} value={scan.id}>{scan.scanType} · {scan.completedAt ?? scan.id}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="assistant-compare-scan">Compare with (optional)</label>
+            <select id="assistant-compare-scan" value={compareScanId} onChange={(event) => setCompareScanId(event.target.value)} data-testid="assistant-compare-select">
+              <option value="">No comparison</option>
+              {scans.map((scan) => <option key={scan.id} value={scan.id}>{scan.scanType} · {scan.completedAt ?? scan.id}</option>)}
+            </select>
+          </div>
+          {scanId.length > 0 && (
+            <div className="field">
+              <label htmlFor="assistant-finding">Finding (optional)</label>
+              <select id="assistant-finding" value={findingId} onChange={(event) => setFindingId(event.target.value)} data-testid="assistant-finding-select">
+                <option value="">No finding selected</option>
+                {(findingOptions?.findings ?? []).map((finding) => <option key={finding.id} value={finding.id}>{finding.severity} · {finding.title}</option>)}
+              </select>
+              {findingOptions !== null && findingOptions.totalPages > 1 && (
+                <div className="assistant-page-controls">
+                  <span>Page {findingOptions.page} of {findingOptions.totalPages} · {findingOptions.total} findings</span>
+                  <button type="button" className="button button-ghost" disabled={findingPage <= 1} onClick={() => setFindingPage((page) => Math.max(1, page - 1))}>Previous</button>
+                  <button type="button" className="button button-ghost" disabled={findingPage >= findingOptions.totalPages} onClick={() => setFindingPage((page) => Math.min(findingOptions.totalPages, page + 1))}>Next</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {error !== null && <div className="form-alert" role="alert"><p data-testid="assistant-error">{error}</p></div>}
+        <button type="submit" className="button button-secondary" disabled={busy || question.trim().length === 0} aria-busy={busy} data-testid="assistant-submit">
+          {busy ? 'Preparing deterministic response…' : 'Ask assistant'}
+        </button>
+      </form>
+      {answer !== null && (
+        <section className="assistant-answer" aria-live="polite" data-testid="assistant-answer">
+          <p className="badges"><span className="pill" data-testid="assistant-answer-state">{answer.state}</span><span className="pill">{answer.mode}</span><span className="pill">Provider: {answer.providerState}</span></p>
+          <p data-testid="assistant-answer-text">{answer.answer}</p>
+          {answer.facts.length > 0 && <div><h3>Facts from saved records</h3><ul>{answer.facts.map((item, index) => <li key={`fact-${index}`}>{item}</li>)}</ul></div>}
+          {answer.interpretations.length > 0 && <div><h3>Interpretation</h3><ul>{answer.interpretations.map((item, index) => <li key={`interpretation-${index}`}>{item}</li>)}</ul></div>}
+          {answer.recommendations.length > 0 && <div><h3>Recommendations</h3><ul>{answer.recommendations.map((item, index) => <li key={`recommendation-${index}`}>{item}</li>)}</ul></div>}
+          {answer.limitations.length > 0 && <div><h3>Limitations</h3><ul>{answer.limitations.map((item, index) => <li key={`limitation-${index}`}>{item}</li>)}</ul></div>}
+          {answer.evidence.length > 0 && <details><summary>Evidence references ({answer.evidence.length})</summary><ul data-testid="assistant-evidence-references">{answer.evidence.map((item, index) => <li key={`${item.sourceType}-${item.sourceId}-${index}`}>{item.sourceType}: <code>{item.sourceId}</code>{item.scanId === undefined ? '' : <> · scan <code>{item.scanId}</code></>}</li>)}</ul></details>}
+          <p className="field-hint">Context bounded to {answer.context.itemCount} item(s) / {answer.context.characterCount} characters · {answer.context.redactedItems} item(s) redacted{answer.context.truncated ? ' · context truncated' : ''}. Suggestions are not proof of remediation; verify with a subsequent authorized scan.</p>
+        </section>
       )}
     </section>
   );

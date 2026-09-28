@@ -706,3 +706,64 @@ code {
 .workflow-notes p {
   white-space: pre-wrap;
 }
+
+/* Pump 14: bounded, read-only assistant surface. */
+.assistant-panel {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+}
+
+.assistant-panel > p,
+.assistant-answer > p {
+  max-width: 76ch;
+}
+
+.assistant-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.assistant-form textarea,
+.assistant-form select {
+  width: 100%;
+  color: inherit;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 0.65rem;
+  font: inherit;
+}
+
+.assistant-form textarea {
+  resize: vertical;
+}
+
+.assistant-selectors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+}
+
+.assistant-answer {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(110, 118, 129, 0.06);
+  overflow-wrap: anywhere;
+}
+
+.assistant-answer li {
+  margin: 0.35rem 0;
+}
+
+.assistant-page-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

@@ -208,13 +208,18 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   (atomic quota + creation, optional Idempotency-Key, archived → 409
   PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
   `GET …/scans/:scanId` (uniform 404 inside the caller's own project),
-  plus Pump 12's authenticated findings page/detail and report routes and
-  Pump 13's authenticated lifecycle/note/history routes, all scoped through
+  plus Pump 12's authenticated findings page/detail and report routes,
+  Pump 13's authenticated lifecycle/note/history routes, and Pump 14's
+  authenticated assistant status/project-ask routes, all scoped through
   the same own-project resolver. Finding filters, workflow records, history
   and export bodies are bounded; archived projects are read-only for
   workflow mutation. Reports share the scan store and do not consume quota.
   No scan-job lifecycle mutation endpoint exists — the processor owns scan
-  transitions. See docs/SCANS.md, `docs/FINDINGS.md`, and `docs/REPORTS.md`.
+  transitions. The Pump 14 assistant is deterministic/read-only with no
+  active provider, provider calls, chat persistence, tools or quota usage;
+  its bounded provenance context reuses the same project/scan/finding/report
+  stores (see `docs/ASSISTANT.md`). See docs/SCANS.md, `docs/FINDINGS.md`,
+  and `docs/REPORTS.md`.
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original
@@ -364,5 +369,7 @@ rate limiting, durable/persistent sessions and out-of-process queues, the databa
 ingestion/storage, browser-based/full DAST, multi-scan reporting,
 remediation tracking and active testing (the existing bounded scan
 engines and Pump 5 quota integration are DONE — see docs/SCANS.md and
-`docs/REPORTS.md`), AI assistance,
-admin dashboard, multi-instance deployment, metrics/tracing.
+`docs/REPORTS.md`), external generative-provider integration and durable
+assistant history (the deterministic assistant foundation is implemented
+in Pump 14 — see `docs/ASSISTANT.md`), admin dashboard, multi-instance
+deployment, metrics/tracing.

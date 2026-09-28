@@ -59,6 +59,7 @@ import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
 import { createSourceRoutes } from './routes/sources.js';
 import { createReportsRoutes } from './routes/reports.js';
+import { createAssistantRoutes } from './routes/assistant.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 import { createDastTargetPolicy, type DastTargetPolicy } from './scans/dast/target.js';
@@ -272,6 +273,7 @@ export function createApp(deps: AppDeps): App {
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
     ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock }),
+    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore }),
     ...(deps.extraRoutes ?? []),
   ];
 

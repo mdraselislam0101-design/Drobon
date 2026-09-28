@@ -1,4 +1,5 @@
 export * from './api.js';
+export * from './assistant.js';
 export * from './auth.js';
 export * from './authz.js';
 export * from './config.js';

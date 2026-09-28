@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 13: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, and finding remediation lifecycle**.
+Cybersecurity application — **Pump 14: cumulative security foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, finding remediation lifecycle, and a read-only AI Security Assistant foundation**.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -79,6 +79,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/DAST.md` — limited passive DAST: target authorization, SSRF controls, request bounds and limitations
 - `docs/FINDINGS.md` — lifecycle transitions, verification semantics, notes, guidance, authorization and persistence
 - `docs/REPORTS.md` — findings routes, persisted single-scan reports, workflow snapshots, exports, digests and honesty limits
+- `docs/ASSISTANT.md` — Pump 14 assistant authorization, evidence, no-provider behavior, redaction, bounds and limitations
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -200,6 +201,17 @@ do not consume scan quota; verification scans use the existing quota.
 Archived projects remain read-only for workflow mutations. See
 `docs/FINDINGS.md` and `docs/REPORTS.md`.
 
+**PLUS Pump 14 (AI Security Assistant foundation):** project-owner-only,
+read-only deterministic answers over bounded provenance-bearing saved
+scan, finding, workflow, report, SCA/SBOM, and DAST evidence. The default
+provider state is `NONE`: unsupported generative questions explicitly
+return unavailable, with no fake model output or external provider call.
+Credential/evidence redaction is applied again before response/provider
+boundaries, and no tools, arbitrary network access, chat persistence,
+source mutation, lifecycle mutation, or scan-quota consumption is added.
+Dependency intelligence preserves `NOT ASSESSED` / `NO_DATA_LOADED`.
+See `docs/ASSISTANT.md`.
+
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
@@ -207,17 +219,18 @@ UI), plan mutation workflow (`plan:manage` is granted to no one), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-AI assistance, admin dashboard, UserType-specific
+external generative AI provider, durable assistant chat history, admin dashboard, UserType-specific
 product features, multi-scan reports, PDF/signature workflows, and a
 database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 13 — cumulative security foundation, authenticated project targets,
+Pump 14 — cumulative security foundation, authenticated project targets,
 secure scan lifecycle/quota, real SAST/SCA/Secrets engines, limited
-passive DAST, bounded findings, durable single-scan reports, and persisted
-finding remediation lifecycle. DAST remains single-target and passive;
-SCA vulnerability intelligence remains NOT ASSESSED without a loaded
-dataset. See `docs/BUILD_VERIFICATION.md`, `docs/DAST.md`,
-`docs/FINDINGS.md`, and `docs/REPORTS.md` for verification evidence and scope.
+passive DAST, bounded findings, durable single-scan reports, persisted
+finding remediation lifecycle, and a read-only deterministic assistant
+foundation. No generative provider is active; SCA vulnerability intelligence
+remains NOT ASSESSED / NO_DATA_LOADED without a configured dataset. See
+`docs/BUILD_VERIFICATION.md`, `docs/DAST.md`, `docs/FINDINGS.md`,
+`docs/REPORTS.md`, and `docs/ASSISTANT.md` for verification evidence and scope.

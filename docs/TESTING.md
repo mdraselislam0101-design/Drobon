@@ -66,3 +66,12 @@ Watch mode during development: `npx vitest --workspace @drobon/api`
 - `apps/api/test/findingLifecycleApi.test.ts` exercises real local HTTP authentication and ownership resolution; anonymous, cross-account and foreign-project mutation denial; archived-project read-only behavior; strict body shapes; HTML/Markdown/credential-shaped note safety; report snapshot/redaction; quota neutrality; and a genuine second local SAST scan that reopens a resolved fingerprint. It does not contact a public target or run active DAST.
 - `apps/web/test/findingsReportsUi.test.tsx` covers rule guidance, lifecycle state changes, verification language, notes, event-history reads and report workflow snapshots. The API client adds authenticated PATCH/POST/history methods validated by shared response guards.
 - Cumulative compatibility is checked by the full `npm run verify` pipeline; Pump 1–12 suites remain required and are not replaced by these focused tests.
+
+### Pump 14 — AI Security Assistant foundation
+
+- `packages/shared/test/assistant.test.ts` pins strict request shapes, selector dependencies, answer provenance/bounds and explicit provider/history/tool state.
+- `apps/api/test/assistantService.test.ts` verifies that prompt-like project/finding evidence stays inert, response text is redacted, provenance remains project-scoped, and open-ended questions do not produce fabricated output.
+- `apps/api/test/assistantRedaction.test.ts` uses synthetic markers to test credential, token, cookie, private-key and URL-credential redaction; malformed sensitive material fails closed; context item/character/source-ID caps are asserted.
+- `apps/api/test/assistantApi.test.ts` is local synthetic HTTP E2E: authenticated status, honest `NONE` provider and unsupported-generation response, strict request validation, project/account authorization, foreign scan/finding ID isolation, selected local SAST finding guidance, read-only lifecycle behavior, scan-quota neutrality, and `NOT ASSESSED` dependency-intelligence language. The test contacts only ephemeral loopback services and uses no public target or vulnerability dataset.
+- `apps/web/test/assistantUi.test.tsx` checks the project-integrated read-only surface, bounded request fields, visible no-provider/deterministic labels, evidence/limitation rendering, no browser storage, and inert rendering of server answer strings.
+- `npm run check:boundaries` continues to reject dataset/feed dependencies, imports, and filenames. No CVE/NVD/GHSA/OSV/KEV/EPSS data is loaded or bundled.

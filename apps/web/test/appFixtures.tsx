@@ -2,6 +2,9 @@ import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
+  AssistantQuestionRequest,
+  AssistantResponse,
+  AssistantStatusResponse,
   AuthResponse,
   CapabilityResponse,
   CurrentUserResponse,
@@ -174,6 +177,8 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
+    getAssistantStatus: vi.fn(async (): Promise<AssistantStatusResponse> => ({ providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false })),
+    askAssistant: vi.fn(async (_projectId: string, _input: AssistantQuestionRequest): Promise<AssistantResponse> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
       throw new ApiClientError({
         kind: 'http',

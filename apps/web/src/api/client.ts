@@ -1,4 +1,6 @@
 import {
+  isAssistantResponse,
+  isAssistantStatusResponse,
   isAuthResponse,
   isCapabilityResponse,
   isCurrentUserResponse,
@@ -18,6 +20,9 @@ import {
   isUsageResponse,
   parseApiResponse,
   type ApiErrorDetail,
+  type AssistantQuestionRequest,
+  type AssistantResponse,
+  type AssistantStatusResponse,
   type AuthResponse,
   type AuthzCapability,
   type CapabilityResponse,
@@ -234,6 +239,10 @@ export interface ApiClient {
   getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Authenticated, bounded JSON or Markdown export. */
   downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload>;
+  /** Provider availability; currently reports the honest no-provider state. */
+  getAssistantStatus(signal?: AbortSignal): Promise<AssistantStatusResponse>;
+  /** Read-only deterministic question over one server-authorized project. */
+  askAssistant(projectId: string, input: AssistantQuestionRequest, signal?: AbortSignal): Promise<AssistantResponse>;
   /**
    * The project's source-snapshot metadata (Pump 8) — the SAST scan
    * target. Content never travels back; 404 means no snapshot yet.
@@ -707,6 +716,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
         format,
         signal,
+      ),
+    getAssistantStatus: (signal?: AbortSignal): Promise<AssistantStatusResponse> =>
+      authRequest<AssistantStatusResponse>(
+        '/api/v1/assistant/status',
+        signal === undefined ? {} : { signal },
+        isAssistantStatusResponse,
+      ),
+    askAssistant: (projectId: string, input: AssistantQuestionRequest, signal?: AbortSignal): Promise<AssistantResponse> =>
+      authRequest<AssistantResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/assistant/ask`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) },
+        isAssistantResponse,
       ),
     getSources: (projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse> =>
       authRequest<SourceSnapshotResponse>(

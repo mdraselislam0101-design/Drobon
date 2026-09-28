@@ -186,6 +186,8 @@ export interface ScanStore {
    * `createdAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByProject(projectId: string): Promise<ScanRecord[]>;
+  /** At most one latest completed scan per scanner type (bounded assistant context query). */
+  listLatestCompletedByScannerForAssistant(projectId: string): Promise<ScanRecord[]>;
   /** One scan of one project (ownership is resolved by the caller). */
   findByProjectAndId(projectId: string, scanId: string): Promise<ScanRecord | undefined>;
   /**
@@ -926,6 +928,23 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           )
           .map(toPublic),
       ),
+
+    listLatestCompletedByScannerForAssistant: (projectId) => {
+      const latest = new Map<ScanType, ScanRecord>();
+      for (const record of scansById.values()) {
+        if (record.projectId !== projectId || record.status !== 'COMPLETED') continue;
+        const current = latest.get(record.scanType);
+        const recordTime = record.completedAt ?? '';
+        const currentTime = current?.completedAt ?? '';
+        if (current === undefined || recordTime > currentTime || (recordTime === currentTime && record.id < current.id)) {
+          latest.set(record.scanType, record);
+        }
+      }
+      return Promise.resolve([...latest.values()].sort((a, b) =>
+        (a.completedAt ?? '') > (b.completedAt ?? '') ? -1 :
+          (a.completedAt ?? '') < (b.completedAt ?? '') ? 1 : a.id < b.id ? -1 : 1,
+      ).map(toPublic));
+    },
 
     findByProjectAndId: (projectId, scanId) => {
       const record = scansById.get(scanId);

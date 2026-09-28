@@ -262,6 +262,19 @@ test in `apps/api/test/validate.test.ts`.
 | Workflow operations do not consume scan quota; verification still uses normal FREE/PRO scan policy | VERIFIED | `apps/api/test/findingLifecycleApi.test.ts`, `apps/api/test/reportsApi.test.ts` |
 | Existing detail UI renders guidance, workflow state, verification, notes and bounded history as text; saved report UI identifies its point-in-time lifecycle snapshot | VERIFIED | `apps/web/test/findingsReportsUi.test.tsx` |
 
+### AI Security Assistant — Pump 14
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Authenticated status and ask routes; project ownership comes only from the existing session resolver; scan/finding/report evidence is resolved inside that project and persisted scan | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Cross-account/project access denied; foreign scan/finding identifiers produce no foreign evidence; body cannot select a provider, role, plan, owner, or permission | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Default provider is `NONE`; unsupported generative questions return unavailable; no model output/network/provider call is used | VERIFIED | `apps/api/test/assistantApi.test.ts`, `apps/api/src/assistant/provider.ts` |
+| Assistant reads are lifecycle/source/report/scan read-only and leave FREE quota unchanged | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Synthetic secret/token/cookie/private-key/URL-credential redaction, fail-closed uncertainty, safe response text, provenance IDs and context bounds | VERIFIED | `apps/api/test/assistantRedaction.test.ts`, `apps/api/test/assistantApi.test.ts` |
+| Prompt-injection resistance: closed intent recognition uses only the user question; prompt-like evidence is tested as inert text; no tools/arbitrary network are enabled | VERIFIED | `apps/api/test/assistantService.test.ts`, `apps/api/src/assistant/service.ts`, `provider.ts` |
+| Dependency intelligence remains `NOT ASSESSED` / `NO_DATA_LOADED`; no vulnerability or threat dataset is added | VERIFIED | `apps/api/test/assistantApi.test.ts`, `scripts/check-boundaries.mjs` |
+| Provider generation and durable conversation history remain unimplemented and disclosed in status/UI/docs | VERIFIED | `packages/shared/test/assistant.test.ts`, `apps/web/test/assistantUi.test.tsx`, `docs/ASSISTANT.md` |
+
 ### Web
 
 | Control | Status | Evidence |
