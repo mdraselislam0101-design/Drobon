@@ -52,6 +52,7 @@ import {
 } from './scans/sources.js';
 import { createSastEngine } from './scans/sast/engine.js';
 import { createScaEngine } from './scans/sca/engine.js';
+import { createSecretsEngine } from './scans/secrets/engine.js';
 import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
@@ -209,19 +210,22 @@ export function createApp(deps: AppDeps): App {
     (config.sourceStorePath === ':memory:'
       ? createMemorySourceStore()
       : createJsonFileSourceStore(config.sourceStorePath));
-  // The engine registry (server-side composition ONLY). Pump 8 default:
-  // the REAL SAST engine (static analysis of the project's source
-  // snapshot — see scans/sast/). SCA/SECRETS/DAST ship no engine.
-  // PUMP 9: SCA joins SAST as a REAL engine. The vulnerability
-  // intelligence provider comes from config — 'none' (the only value
-  // today, enforced by the dataset lock) composes the Null provider,
-  // so SCA assessments are honestly NOT_ASSESSED / NO_DATA_LOADED.
-  // SECRETS and DAST remain unregistered (honest NOT_IMPLEMENTED).
+  // The engine registry (server-side composition ONLY). Pump 8: the
+  // REAL SAST engine (static analysis of the project's source
+  // snapshot — see scans/sast/). Pump 9: SCA joins as a REAL engine
+  // (manifests → inventory → SBOM → honest assessment; the
+  // intelligence provider comes from config — 'none', the only value
+  // today, enforced by the dataset lock → Null provider → honest
+  // NOT_ASSESSED). PUMP 10: SECRETS joins as a REAL engine
+  // (hardcoded-secret detection with mandatory evidence redaction —
+  // see scans/secrets/). DAST remains unregistered (honest
+  // NOT_IMPLEMENTED).
   const intelligenceProvider = createNullIntelligenceProvider();
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore }),
       createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
+      createSecretsEngine({ sources: sourceStore }),
     ],
   );
   const scanProcessor: ScanProcessor = createScanProcessor({

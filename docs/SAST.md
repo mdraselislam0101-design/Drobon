@@ -7,7 +7,9 @@ entirely server-side by deterministic code. **Analysis only: source
 files are read and matched, NEVER parsed into execution, NEVER
 imported, NEVER run.**
 
-The other scan types (`SCA`, `SECRETS`, `DAST`) still have no engine
+SCA (Pump 9) and SECRETS (Pump 10) are real engines now (see
+`docs/SCA.md` and `docs/SECRETS.md`); the remaining scan type
+(`DAST`) still has no engine
 and still fail honestly with `SCAN_ENGINE_NOT_IMPLEMENTED`
 (see `docs/SCANS.md`).
 

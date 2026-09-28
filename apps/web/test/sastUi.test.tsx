@@ -8,7 +8,8 @@
  *   read as text, replacement semantics), server-rejected uploads shown
  *   verbatim, archived projects cannot upload;
  * - the scan form stays honest: SAST analyzes (never executes) the
- *   snapshot; SCA/SECRETS/DAST still fail with SCAN_ENGINE_NOT_IMPLEMENTED;
+ *   snapshot; SECRETS (Pump 10) is real too; DAST still fails with
+ *   SCAN_ENGINE_NOT_IMPLEMENTED;
  * - findings: lazy "View findings", server-ordered rendering as TEXT
  *   (React escaping — a rule-1 command-injection payload in evidence is
  *   displayed, never executed), redacted secrets stay redacted, the

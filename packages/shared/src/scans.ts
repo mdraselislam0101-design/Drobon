@@ -99,6 +99,11 @@ export const SCAN_FAILURE_CODES = [
   'SCA_MANIFEST_LIMIT_EXCEEDED',
   'SCA_SCAN_TIMEOUT',
   'SCA_INPUT_INVALID',
+  'SECRETS_TARGET_NOT_FOUND',
+  'SECRETS_TARGET_TOO_LARGE',
+  'SECRETS_FILE_LIMIT_EXCEEDED',
+  'SECRETS_SCAN_TIMEOUT',
+  'SECRETS_INPUT_INVALID',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -154,6 +159,17 @@ export interface ScanResultSummary {
   dependenciesTotal?: number;
   /** Direct dependencies (SCA, Pump 9) — lean list metric. */
   directDependencies?: number;
+  /**
+   * True when the engine analyzed only PART of the snapshot because a
+   * configured limit was hit (e.g. an oversize file was skipped, or
+   * the findings cap truncated the sweep). A PARTIAL scan with 0
+   * findings is NOT "no secrets" — it is "no secrets in what was
+   * inspected". Required honesty for the secrets engine (Pump 10);
+   * rendered explicitly in the UI.
+   */
+  partial?: boolean;
+  /** Bounded reason for `partial` (never source content). */
+  partialReason?: string;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -167,6 +183,9 @@ const SUMMARY_ALLOWED_KEYS = [
   // results, SBOM, advisories) lives in the scan-detail response only.
   'dependenciesTotal',
   'directDependencies',
+  // Secrets engine (Pump 10): explicit partial-scan honesty.
+  'partial',
+  'partialReason',
 ] as const;
 
 function isCount(value: unknown): value is number {
@@ -218,6 +237,25 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   }
   if (record['directDependencies'] !== undefined && !isCount(record['directDependencies'])) {
     return false;
+  }
+  if (record['partial'] !== undefined && typeof record['partial'] !== 'boolean') {
+    return false;
+  }
+  // partialReason: bounded, control-character-free text — and it may
+  // only exist when partial is actually true (never a dangling reason).
+  if (record['partialReason'] !== undefined) {
+    if (record['partial'] !== true || typeof record['partialReason'] !== 'string') {
+      return false;
+    }
+    if (record['partialReason'].length === 0 || record['partialReason'].length > 200) {
+      return false;
+    }
+    for (const char of record['partialReason']) {
+      const code = char.codePointAt(0) ?? 0;
+      if (code < 0x20 || code === 0x7f) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -306,6 +344,32 @@ export function isFindingSeverity(value: unknown): value is FindingSeverity {
 export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
 
 /**
+ * The finding rule-id family pattern (Pump 10): every engine's rules
+ * share the `DG-<ENGINE>-###` shape so a finding always identifies its
+ * scanner family by id alone (`DG-SAST-###` static analysis,
+ * `DG-SEC-###` secrets). Closed — no free-form rule ids.
+ */
+export const FINDING_RULE_ID_PATTERN = /^DG-(?:SAST|SEC)-[0-9]{3}$/;
+
+/**
+ * Detection confidence (Pump 10, secrets): how certain the RULE is
+ * that the match is real credential material — deterministic,
+ * rule-defined, never guessed by the UI. HIGH = structural/known
+ * format (e.g. a private-key header, a known service-key prefix);
+ * MEDIUM = strong shape + context (assignment + length + character
+ * mix); LOW = deliberate residual uncertainty (documented per rule).
+ * This is DETECTION confidence, never "the credential is live".
+ */
+export const FINDING_CONFIDENCES = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export type FindingConfidence = (typeof FINDING_CONFIDENCES)[number];
+
+export function isFindingConfidence(value: unknown): value is FindingConfidence {
+  return (
+    typeof value === 'string' && (FINDING_CONFIDENCES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Finding ids: `fnd_` + the first 24 hex chars of the finding's
  * fingerprint — DETERMINISTIC (derived from rule + file + line +
  * evidence), so repeated scans of unchanged source reproduce identical
@@ -380,6 +444,14 @@ export interface Finding {
   evidence: string;
   /** Rule-specific remediation guidance (separate from evidence). */
   remediation: string;
+  /**
+   * Detection confidence (Pump 10, secrets rules): rule-defined, how
+   * certain the rule is that this is real credential material.
+   * ABSENT on SAST findings (Pump 8 contract unchanged). Never a
+   * verification claim — a HIGH-confidence finding says "this shape
+   * is a private key block", NOT "this key is valid or active".
+   */
+  confidence?: FindingConfidence;
   /** Deterministic identity: sha256(ruleId|file|line|evidence digest). */
   fingerprint: string;
 }
@@ -404,6 +476,7 @@ export function isFinding(value: unknown): value is Finding {
     'column',
     'evidence',
     'remediation',
+    'confidence',
     'fingerprint',
   ];
   if (keys.some((key) => !allowed.includes(key))) {
@@ -415,7 +488,7 @@ export function isFinding(value: unknown): value is Finding {
     typeof record['scanId'] !== 'string' ||
     !SCAN_ID_PATTERN.test(record['scanId']) ||
     typeof record['ruleId'] !== 'string' ||
-    !SAST_RULE_ID_PATTERN.test(record['ruleId']) ||
+    !FINDING_RULE_ID_PATTERN.test(record['ruleId']) ||
     !isFindingSeverity(record['severity']) ||
     !isSafeFindingText(record['title'], FINDING_TITLE_MAX_LENGTH) ||
     !isSafeFindingText(record['description'], FINDING_TEXT_MAX_LENGTH) ||
@@ -439,6 +512,12 @@ export function isFinding(value: unknown): value is Finding {
     return false;
   }
   if (typeof record['cwe'] === 'string' && !FINDING_CWE_PATTERN.test(record['cwe'])) {
+    return false;
+  }
+  if (
+    record['confidence'] !== undefined &&
+    !isFindingConfidence(record['confidence'])
+  ) {
     return false;
   }
   return true;

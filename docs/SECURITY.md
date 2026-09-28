@@ -220,6 +220,23 @@ test in `apps/api/test/validate.test.ts`.
 | Isolation: SCA payloads are project-scoped and owner-checked; cross-account reads stay uniform (403/404 — no oracle, no inventory leakage) | VERIFIED | `apps/api/test/scaApi.test.ts` |
 | No content exfiltration: list responses carry counts only; the detail payload carries paths/counts/names — never manifest content, never script bodies | VERIFIED | `apps/api/test/scaApi.test.ts` |
 
+### Secrets detection — SECRETS engine (Pump 10)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| DETECTED ≠ VERIFIED: no rule, title, description, remediation or UI string claims a credential is valid/active/compromised/revoked; the engine performs NO verification, NO network access, never contacts any service | VERIFIED | `apps/api/test/secretsRules.test.ts`, `apps/api/test/secretsEngine.test.ts` |
+| REDACTION (hard invariant): raw secret values never appear in API responses, UI, logs, errors, exports or stores — positional span blanking (window-cut values cannot leak partially), neighbour redaction (other secrets on the same line are blanked too), defensive re-scan (evidence matching ANY rule fails closed to `[DG-SEC-###] <redacted>`), PEM header-only evidence (key bodies never enter findings) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts` |
+| Three-layer redaction sweep over real HTTP: the same synthetic values asserted absent from the response body, the durable `scans.json` store AND the server logs | VERIFIED | `apps/api/test/secretsApi.test.ts` |
+| Whole-DOM no-leak sweep in the browser: raw values absent from text, attributes and URLs | VERIFIED | `apps/web/test/secretsUi.test.tsx` |
+| Fingerprints exclude the secret: ids derive from rule+file+line+sha256(redacted evidence) — deterministic, no random UUIDs, value-independent | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
+| Analysis only: snapshot content never executed (marker-file test); credential-material file types (.pem/.key/.env/…) never enter a snapshot at all (Pump 8 upload policy) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s deadline; ignored dirs (node_modules/dist/build/…) and unsupported extensions are skipped-and-counted, never interpreted | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
+| PARTIAL honesty: oversize skips and findings-cap truncation set `partial: true` + a bounded reason — a partial scan with 0 findings is "nothing found in what was inspected", NEVER "no secrets"; FAILED scans report no findings | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts`, `apps/web/test/secretsUi.test.tsx` |
+| False-positive defenses: placeholder/template denylist (incl. `<YOUR_API_KEY>`, the AWS docs example, test-mode keys, self-referential values), UUID/plain-hash exclusion, structure gates (length + character classes + entropy as ONE input); a "test"-named file is NOT suppressed — content decides | VERIFIED | `apps/api/test/secretsRules.test.ts` |
+| SECRETS pre-flight: no snapshot → 409 BEFORE quota consumption (same rule as SAST/SCA) | VERIFIED | `apps/api/test/secretsApi.test.ts` |
+| Closed vocabularies: `DG-SEC-###` rule ids, severity and detection-confidence vocabularies enforced by the shared guards; a forged finding (e.g. `confidence: 'CERTAIN'`) refuses to boot the store | VERIFIED | `packages/shared/test/scans.test.ts`, `apps/api/test/secretsApi.test.ts` |
+| Dataset lock extension: no external secret databases/feeds vendored; synthetic fixtures exist only in tests, with denylist-dodging values chosen so positive paths fire and markers kept out of repo-wide secret scans | VERIFIED | `check:secrets`, `apps/api/test/secretsRules.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -269,7 +286,7 @@ foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
 project sharing/collaboration, admin/operator project visibility,
 scan cancellation (deliberately absent until explicitly designed —
 the scan-job foundation itself is DONE in Pump 7 — see
-`docs/SCANS.md`), the remaining engines SCA/SECRETS/DAST and
+`docs/SCANS.md`), the remaining engine DAST and
 findings-aggregation reports (the REAL SAST engine is DONE in Pump 8 —
 see `docs/SAST.md`; source "upload" is a JSON-body snapshot, NOT
 multipart file storage), admin/operator scan

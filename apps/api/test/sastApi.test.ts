@@ -646,7 +646,7 @@ describe('SAST scans: the real engine over HTTP', () => {
     }
   });
 
-  test('SCA is a REAL engine now (Pump 9); SECRETS/DAST still honestly fail', async () => {
+  test('SCA (Pump 9) and SECRETS (Pump 10) are REAL engines; DAST still honestly fails', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
     const server = await startTestServer({ users });
@@ -668,7 +668,28 @@ describe('SAST scans: the real engine over HTTP', () => {
       expect(scaDetail.data.scan.status).toBe('COMPLETED');
       expect(scaDetail.data.scan.findings).toEqual([]);
       expect(scaDetail.data.scan.sca?.summary.dependenciesTotal).toBe(1);
-      for (const scanType of ['SECRETS', 'DAST'] as const) {
+      // PUMP 10: SECRETS is a REAL engine too. Over SAFE_SOURCE it
+      // completes with 0 findings — the honest "nothing found in what
+      // was inspected", never "risk unknown".
+      const secrets = await requestScan(server, owner, projectId, 'SECRETS');
+      expect(secrets.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const secretsDetail = await getScanDetail(
+        server,
+        owner,
+        projectId,
+        scanOf(secrets.body).id,
+      );
+      expect(secretsDetail.data.scan.status).toBe('COMPLETED');
+      expect(secretsDetail.data.scan.findings).toEqual([]);
+      // 4 scannable files (3 code + package.json); README.md is an
+      // unsupported format → skipped, never interpreted.
+      expect(secretsDetail.data.scan.resultSummary?.filesScanned).toBe(4);
+      expect(secretsDetail.data.scan.resultSummary?.filesSkipped).toBe(1);
+      expect(secretsDetail.data.scan.resultSummary?.truncated).toBe(false);
+      expect(secretsDetail.data.scan.sca).toBeUndefined();
+      // DAST remains the honest engine-less control type.
+      for (const scanType of ['DAST'] as const) {
         const { res, body } = await requestScan(server, owner, projectId, scanType);
         expect(res.status).toBe(201);
         await server.scanProcessor.drain();

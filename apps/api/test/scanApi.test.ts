@@ -752,6 +752,11 @@ describe('idempotency keys', () => {
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
+      // Pump 10: SECRETS is a real snapshot-consuming engine — its
+      // pre-flight requires an uploaded target like SAST/SCA.
+      await uploadSources(server, owner, projectId, [
+        { path: 'src/app.js', content: 'export const ok = 1\n' },
+      ]);
       const first = await requestScan(server, owner, projectId, { scanType: 'SECRETS' }, 'key-1234');
       expect(first.res.status).toBe(201);
       const otherProject = await createProject(server, owner, 'Other');
@@ -1129,6 +1134,10 @@ describe('scan persistence', () => {
       const created = await requestScan(first, cookie, projectId, undefined, 'durable-key-1');
       failedScanId = scanOf(created.body).id;
       await first.scanProcessor.drain(); // → FAILED/NOT_IMPLEMENTED.
+      // Pump 10: SECRETS needs an uploaded snapshot target too.
+      await uploadSources(first, cookie, projectId, [
+        { path: 'src/app.js', content: 'export const ok = 1\n' },
+      ]);
       await requestScan(first, cookie, projectId, { scanType: 'SECRETS' });
       // The persisted document holds scans + idempotency entries only.
       const onDisk = readFileSync(join(dir, 'scans.json'), 'utf8');

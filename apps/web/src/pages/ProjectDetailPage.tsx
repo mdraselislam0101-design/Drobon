@@ -37,6 +37,12 @@ import { LoadingState } from '../components/LoadingState.js';
  *   payload renders from the SAME detail route, clearly separated
  *   from SAST findings, and states honestly when the vulnerability
  *   intelligence dataset is unavailable (not assessed, zero advisories).
+ * - the SECRETS engine (Pump 10) scans the same snapshot for hardcoded
+ *   secrets — analysis only, no execution, no verification. Findings
+ *   render through the SAME findings surface with rule, severity,
+ *   DETECTION confidence, location, redacted evidence and remediation;
+ *   the raw secret values never reach the client (server-side
+ *   redaction is enforced before any serialization).
  * - no localStorage, no URL-derived project state beyond the id.
  */
 
@@ -230,8 +236,9 @@ export function ProjectDetailPage(): React.JSX.Element {
  *   only the scan type + an idempotency key that makes retries safe);
  * - SAST (Pump 8) analyzes the uploaded source snapshot server-side —
  *   real findings with evidence and remediation, rendered as text;
- * - SCA/SECRETS/DAST engines do not exist yet, so those scans fail
- *   with SCAN_ENGINE_NOT_IMPLEMENTED — shown verbatim, never faked;
+ * - SCA (Pump 9) and SECRETS (Pump 10) are real engines over the same
+ *   snapshot; DAST does not exist yet, so those scans fail with
+ *   SCAN_ENGINE_NOT_IMPLEMENTED — shown verbatim, never faked;
  * - quota/entitlement display comes from the server's usage view,
  *   never local state;
  * - archived projects cannot START new scans (the server enforces it;
@@ -351,12 +358,14 @@ function ScansSection({
             {submitting ? 'Requesting…' : 'Request scan'}
           </button>
           <p className="muted">
-            SAST analyzes the uploaded source snapshot and SCA analyzes
-            its dependency manifests — analysis only, your code is never
-            executed. SCA reports the dependency inventory and an SBOM;
-            without a vulnerability intelligence dataset it honestly
-            reports not assessed (no fabricated advisories). SECRETS and
-            DAST engines are not implemented yet: those scans fail
+            SAST, SECRETS and SCA analyze the uploaded source snapshot —
+            analysis only, your code is never executed and credentials
+            are never verified against any service. Secrets findings
+            show redacted evidence (the value itself is never sent to
+            the browser). SCA reports the dependency inventory and an
+            SBOM; without a vulnerability intelligence dataset it
+            honestly reports not assessed (no fabricated advisories).
+            The DAST engine is not implemented yet: those scans fail
             honestly with SCAN_ENGINE_NOT_IMPLEMENTED.
           </p>
           {formError !== null && (
@@ -433,10 +442,19 @@ function ScansSection({
                     ? `Dependencies: ${scan.resultSummary.dependenciesTotal ?? 0} (${
                         scan.resultSummary.directDependencies ?? 0
                       } direct)`
-                    : `Findings: ${scan.resultSummary.findingsTotal}`}
+                    : `Findings: ${scan.resultSummary.findingsTotal}${
+                        scan.resultSummary.partial === true
+                          ? ` — partial scan: ${
+                              scan.resultSummary.partialReason ?? 'some content was not inspected'
+                            }`
+                          : scan.resultSummary.truncated === true
+                            ? ' (findings truncated)'
+                            : ''
+                      }`}
                 </p>
               )}
-              {scan.status === 'COMPLETED' && scan.scanType === 'SAST' && (
+              {(scan.status === 'COMPLETED' &&
+                (scan.scanType === 'SAST' || scan.scanType === 'SECRETS')) && (
                 <FindingsView projectId={projectId} scanId={scan.id} />
               )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
@@ -559,14 +577,16 @@ function SourcesSection({
         </div>
       ) : missing ? (
         <p className="muted" data-testid="snapshot-empty">
-          No source snapshot uploaded yet. Upload one to enable SAST scans.
+          No source snapshot uploaded yet. Upload one to enable SAST,
+          SCA and SECRETS scans.
         </p>
       ) : snapshot !== null ? (
         <p className="muted" data-testid="snapshot-meta">
           {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
           {snapshot.totalBytes} bytes — uploaded{' '}
           <code>{snapshot.updatedAt}</code>. The latest upload replaces the
-          previous snapshot and is what a SAST scan analyzes.
+          previous snapshot and is what SAST, SCA and SECRETS scans
+          analyze.
         </p>
       ) : (
         <LoadingState label="Loading the source snapshot…" />
@@ -617,13 +637,17 @@ function SourcesSection({
 }
 
 /**
- * One completed scan's findings (Pump 8) — the only findings read
- * surface. Lazy: the list stays cheap until the user asks.
+ * One completed scan's findings (Pump 8 SAST + Pump 10 SECRETS) — the
+ * only findings read surface. Lazy: the list stays cheap until the
+ * user asks.
  * - server-ordered (most severe first), rendered as text;
  * - the severity filter is display-only (client-side over the SAME
  *   bounded response) — it never triggers another request;
  * - evidence is ALREADY redacted server-side; rendering it as text
- *   (never HTML) keeps it non-executing on both ends.
+ *   (never HTML) keeps it non-executing on both ends;
+ * - SECRETS findings additionally carry a rule-defined DETECTION
+ *   confidence (how certain the RULE is of the match — never a
+ *   liveness claim), shown as a badge next to the severity.
  */
 function FindingsView({
   projectId,
@@ -729,6 +753,11 @@ function FindingsView({
                       {finding.severity}
                     </span>
                     <strong data-testid="finding-rule">{finding.ruleId}</strong>
+                    {finding.confidence !== undefined && (
+                      <span className="pill" data-testid="finding-confidence">
+                        {finding.confidence} confidence
+                      </span>
+                    )}
                   </div>
                   <p data-testid="finding-title">{finding.title}</p>
                   <p className="muted" data-testid="finding-location">

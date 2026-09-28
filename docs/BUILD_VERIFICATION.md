@@ -696,3 +696,86 @@ no `key in obj` patterns in the SCA parsers (own-property discipline);
 the Pump 8 path policy is defined exactly once
 (`SOURCE_PATH_PATTERN`) and reused by the SCA guards; `git status`
 clean of secrets/datasets/junk after commit.
+
+## Pump 10 — Real SECRETS engine, redaction by construction (VERIFIED, live E2E included)
+
+**Pipeline:** `npm run verify` — 9/9 PASS (boundaries, secret matcher
+self-test, secret scan sources + builds, typecheck, lint, tests,
+production builds, dependency audit).
+
+**Test totals:** shared 142 (+2 contracts), api 543 (incl.
+`secretsRules` 21, `secretsEngine` 19, `secretsApi` 9), web 183
+(incl. `secretsUi` 7), worker 28 — **896 total, 0 failed** (was 838).
+
+### Live E2E (production build, `:4171`, fresh stores in `/tmp/pump10-e2e`)
+
+Driver script + fixtures under `/tmp/pump10-e2e/` (synthetic values;
+`.pem`/`.env` fixtures never committed to the repo).
+
+1. Boot `NODE_ENV=production node apps/api/dist/index.js` → listening
+   (`VULN_INTEL_PROVIDER=none`).
+2. Register + login + project create → 201/200/201.
+3. **SECRETS pre-flight quota protection**: SECRETS without a snapshot
+   → `409 CONFLICT`, usage stays `used=0`.
+4. Snapshot upload (6 files: AWS/GitHub keys, bearer+password, PEM
+   pasted INTO code, api_key + credentialed db URL in yaml, docs
+   examples with UUID/sha256/public-key/AWS-docs-key, ordinary code)
+   → 200; `leak.pem` and `secrets.env` uploads → 422, snapshot intact.
+5. **Scan 1 (SECRETS)**: QUEUED → COMPLETED — **exactly 7 findings**
+   at the right lines with the right rules
+   (`DG-SEC-002 ×2`, `-003`, `-004`, `-005`, `-006`, `-001`);
+   `filesScanned 5` (docs `.md` skipped), not partial; confidence
+   vocabulary in use: `{HIGH, MEDIUM, LOW}` (all rule-defined); PEM
+   evidence is **exactly the header**; AWS evidence is
+   `export const aws = "<redacted>";`.
+6. **THREE-LAYER REDACTION SWEEP**: all six raw synthetic values
+   (plus the PEM body) absent from the HTTP response AND the durable
+   `scans.json`; server logs carry ids/counts only ("Scan completed",
+   `findingsTotal: 7` — verified over the process log). The raw
+   values exist ONLY in the 0600 `sources.json` scan-target store
+   (the uploaded input, by design, gitignored).
+7. **Idempotent replay** (same key) → 200, same scan id, usage
+   unchanged (`used=1`).
+8. **§30 no-fake snapshot** (UUID, sha256, `<YOUR_API_KEY>`,
+   changeme, docs values): COMPLETED with **0 findings**,
+   `filesScanned 3`, NO failure code — ANALYZED, not NOT_ASSESSED,
+   never "risk unknown".
+9. **Findings cap over HTTP**: 205 single-line matches → **200
+   findings, `truncated: true`, `partial: true`**, reason mentions
+   the cap — visible in the API summary and rendered by the web UI.
+10. **FREE quota honesty**: 3rd scan consumes the last slot
+    (`used=3, EXHAUSTED`); the 4th → 429.
+11. **Cross-account isolation**: the attacker reading the owner's scan
+    id inside their own project → the same 404 as an unknown id.
+12. **Regressions**: SAST over the same adversarial snapshot →
+    COMPLETED (its own rule family); SCA → COMPLETED; DAST → FAILED
+    `SCAN_ENGINE_NOT_IMPLEMENTED` (still honest).
+13. **Analyzed, never executed**: the uploaded
+    `writeFileSync('/tmp/pump10-e2e/MARKER-EXECUTED')` — the marker
+    DOES NOT EXIST after all scans.
+14. **Restart durability**: SIGTERM → reboot on the same stores →
+    fresh login → the SECRETS scan payload is **identical** (ids,
+    findings, summary); quota continuity (`used=3, EXHAUSTED`); an
+    extra scan still 429s; post-restart responses stay redacted.
+
+E2E tally: 53/54 main-run assertions + 5/5 restart assertions; the
+single main-run "FAIL" was a driver-script bug (livez asserted the
+wrong envelope path; the endpoint itself returned
+`200 {"ok":true,"data":{"status":"ok"}}`), fixed in the driver.
+
+### §40 final repo-wide leakage audit
+
+- `check-no-secrets` PASS over sources AND builds (372 files) — all
+  secret-shaped fixtures are same-line-marked synthetic test values.
+- Raw synthetic values: **0 occurrences** in non-test sources
+  (`apps/*/src`, `packages/*/src`), **0** in the production web
+  bundle, **0** in API responses, `scans.json` stores and server logs
+  (asserted by suites + swept live above).
+- Web: **no** `localStorage`/`sessionStorage` usage (only prohibition
+  comments), **no** `console.*`, no URL/query/client state carrying
+  findings; findings render as text (React escaping) — whole-DOM
+  no-leak sweep is an executable test (`secretsUi.test.tsx`).
+- API: no `console.*`; structured logging carries ids/counts only;
+  the logger's deep redaction suite stays green.
+- DATASET LOCK (extended): no external secret databases/feeds; the
+  denylists are heuristic word lists, not vendored data.

@@ -614,7 +614,7 @@ describe('SCA API: SAST regression with the SCA engine registered', () => {
     }
   });
 
-  test('SECRETS and DAST still honestly fail with SCAN_ENGINE_NOT_IMPLEMENTED', async () => {
+  test('SECRETS is a REAL engine now (Pump 10); DAST still honestly fails', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test', PRO_ACTIVE);
     const server = await startTestServer({ users });
@@ -622,15 +622,33 @@ describe('SCA API: SAST regression with the SCA engine registered', () => {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
       await putSources(server, owner, projectId, VULN_LOOKING_SOURCE);
-      for (const scanType of ['SECRETS', 'DAST'] as const) {
-        const { res, body } = await requestScan(server, owner, projectId, scanType);
-        expect(res.status).toBe(201);
-        await server.scanProcessor.drain();
-        const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
-        expect(detail.data.scan.status).toBe('FAILED');
-        expect(detail.data.scan.failureCode).toBe('SCAN_ENGINE_NOT_IMPLEMENTED');
-        expect(detail.data.scan.sca).toBeUndefined();
-      }
+      // PUMP 10: the secrets engine really runs over the snapshot.
+      // Manifest JSON carries no credential material → honest 0
+      // findings, ANALYZED (not NOT_ASSESSED, not "risk unknown").
+      const secrets = await requestScan(server, owner, projectId, 'SECRETS');
+      expect(secrets.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const secretsDetail = await getScanDetail(
+        server,
+        owner,
+        projectId,
+        scanOf(secrets.body).id,
+      );
+      expect(secretsDetail.data.scan.status).toBe('COMPLETED');
+      expect(secretsDetail.data.scan.failureCode).toBeUndefined();
+      expect(secretsDetail.data.scan.findings).toEqual([]);
+      expect(secretsDetail.data.scan.resultSummary?.filesScanned).toBeGreaterThan(0);
+      expect(secretsDetail.data.scan.resultSummary?.truncated).toBe(false);
+      expect(secretsDetail.data.scan.resultSummary?.partial).toBeUndefined();
+      expect(secretsDetail.data.scan.sca).toBeUndefined();
+      // DAST remains the honest engine-less control type.
+      const { res, body } = await requestScan(server, owner, projectId, 'DAST');
+      expect(res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
+      expect(detail.data.scan.status).toBe('FAILED');
+      expect(detail.data.scan.failureCode).toBe('SCAN_ENGINE_NOT_IMPLEMENTED');
+      expect(detail.data.scan.sca).toBeUndefined();
     } finally {
       await server.stop();
     }

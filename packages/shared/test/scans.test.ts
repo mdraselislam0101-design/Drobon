@@ -66,6 +66,12 @@ describe('scan vocabulary', () => {
       'SCA_MANIFEST_LIMIT_EXCEEDED',
       'SCA_SCAN_TIMEOUT',
       'SCA_INPUT_INVALID',
+      // Pump 10: the secrets engine's mirror set.
+      'SECRETS_TARGET_NOT_FOUND',
+      'SECRETS_TARGET_TOO_LARGE',
+      'SECRETS_FILE_LIMIT_EXCEEDED',
+      'SECRETS_SCAN_TIMEOUT',
+      'SECRETS_INPUT_INVALID',
     ]);
   });
 
@@ -315,9 +321,28 @@ describe('findings (Pump 8)', () => {
     expect(isFinding({ ...finding, fingerprint: 'z'.repeat(64) })).toBe(false);
     expect(isFinding({ ...finding, ruleId: 'SAST-001' })).toBe(false);
     expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(false);
+    // Pump 10: the rule-id FAMILY pattern (DG-SAST-### | DG-SEC-###).
+    expect(isFinding({ ...finding, ruleId: 'DG-SEC-001' })).toBe(true);
+    expect(isFinding({ ...finding, ruleId: 'DG-SECRETS-001' })).toBe(false);
+    expect(isFinding({ ...finding, ruleId: 'DG-DAST-001' })).toBe(false);
+    expect(isFinding({ ...finding, ruleId: 'XX-SEC-001' })).toBe(false);
     expect(isFinding({ ...finding, cwe: 'CWE-0' })).toBe(false);
     expect(isFinding({ ...finding, cwe: 'CWE-7x' })).toBe(false);
     expect(isFinding({ ...finding, cwe: 'CWE-78' })).toBe(true);
+  });
+
+  test('isFinding: detection confidence is a closed vocabulary (Pump 10)', () => {
+    // Secrets findings carry rule-fixed confidence…
+    expect(isFinding({ ...finding, ruleId: 'DG-SEC-001', confidence: 'HIGH' })).toBe(true);
+    expect(isFinding({ ...finding, ruleId: 'DG-SEC-006', confidence: 'LOW' })).toBe(true);
+    expect(isFinding({ ...finding, ruleId: 'DG-SEC-003', confidence: 'MEDIUM' })).toBe(true);
+    // …from a closed set, never free text or a numeric score.
+    expect(isFinding({ ...finding, confidence: 'CERTAIN' })).toBe(false);
+    expect(isFinding({ ...finding, confidence: 'high' })).toBe(false);
+    expect(isFinding({ ...finding, confidence: '0.9' })).toBe(false);
+    // And it is never a liveness/verification claim shape.
+    expect(isFinding({ ...finding, verified: true })).toBe(false);
+    expect(isFinding({ ...finding, live: true })).toBe(false);
   });
 
   test('isFinding enforces severity vocabulary and rejects client input shapes', () => {
@@ -384,6 +409,37 @@ describe('findings (Pump 8)', () => {
     expect(isScanResultSummary({ findingsTotal: 2, cvss: 4.2 })).toBe(false);
     expect(isScanResultSummary({ findingsTotal: 2, truncated: 'no' })).toBe(false);
     expect(isScanResultSummary({ findingsTotal: 2, extra: 1 })).toBe(false);
+  });
+
+  test('ScanResultSummary partial honesty (Pump 10): a partial scan says so, bounded', () => {
+    // A partial scan is explicit — with a bounded, control-free reason.
+    expect(
+      isScanResultSummary({
+        findingsTotal: 0,
+        filesScanned: 9,
+        filesSkipped: 0,
+        partial: true,
+        partialReason: '1 file(s) exceeded the per-file size limit and were not inspected.',
+      }),
+    ).toBe(true);
+    // A dangling reason without partial is inconsistent state — rejected.
+    expect(
+      isScanResultSummary({ findingsTotal: 0, partialReason: 'why' }),
+    ).toBe(false);
+    // partial without a reason is fine (boolean alone carries it)…
+    expect(isScanResultSummary({ findingsTotal: 0, partial: true })).toBe(true);
+    // …but partial:false with a reason is contradictory.
+    expect(
+      isScanResultSummary({ findingsTotal: 0, partial: false, partialReason: 'x' }),
+    ).toBe(false);
+    // The reason is bounded and control-character-free (no content leak).
+    expect(
+      isScanResultSummary({ findingsTotal: 0, partial: true, partialReason: 'x'.repeat(201) }),
+    ).toBe(false);
+    expect(
+      isScanResultSummary({ findingsTotal: 0, partial: true, partialReason: 'a\tb' }),
+    ).toBe(false);
+    expect(isScanResultSummary({ findingsTotal: 0, partial: 'yes' })).toBe(false);
   });
 
   test('scan detail response guard accepts scan+findings and stays bounded', () => {

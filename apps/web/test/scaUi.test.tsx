@@ -307,7 +307,7 @@ describe('SCA UI: list view distinguishes the engines', () => {
     expect(await screen.find('view-findings')).toBeTruthy();
   });
 
-  test('the scan form stays honest: SCA analyzes, SECRETS/DAST do not exist yet', async () => {
+  test('the scan form stays honest: SCA/SECRETS analyze; DAST does not exist yet', async () => {
     await renderScaPage();
     const formText = (document.querySelector('[data-testid="scan-form"]') as HTMLElement)
       .textContent;

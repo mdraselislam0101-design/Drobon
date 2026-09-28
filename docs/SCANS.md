@@ -6,7 +6,10 @@ scanner engines plug into. **Pump 8 registered the first REAL engine:
 SAST** (static analysis of the uploaded source snapshot — see
 `docs/SAST.md`). **Pump 9 registers the second REAL engine: SCA**
 (software-composition analysis of the snapshot's dependency manifests
-— see `docs/SCA.md`). The boundary contract is unchanged:
+— see `docs/SCA.md`). **Pump 10 registers the third REAL engine:
+SECRETS** (hardcoded-secret detection over the same snapshot with
+mandatory evidence redaction — see `docs/SECRETS.md`). The boundary
+contract is unchanged:
 
 - `SAST` scans complete with genuine, deterministic findings
   (rule id, severity, CWE, bounded redacted evidence, remediation) —
@@ -19,9 +22,14 @@ SAST** (static analysis of the uploaded source snapshot — see
   `NOT_ASSESSED` with zero advisories (the dataset lock holds); the
   inventory and SBOM are still real. The SCA payload rides the same
   detail route as SAST findings (`scan.sca`, detail-only).
-- **SECRETS and DAST still have no engine.** Those types remain
-  supported job types of the orchestration layer with zero engines
-  registered, so every such scan deterministically FAILS with
+- `SECRETS` scans complete with genuine, deterministic findings
+  (rule id, severity, rule-defined detection confidence, CWE, bounded
+  REDACTED evidence, remediation) — analysis only, no execution, no
+  credential verification, no network. Raw secret values never leave
+  the engine (see `docs/SECRETS.md`).
+- **DAST still has no engine.** The type remains a supported job type
+  of the orchestration layer with zero engines registered, so every
+  such scan deterministically FAILS with
   `SCAN_ENGINE_NOT_IMPLEMENTED` — the system NEVER fabricates
   findings, results or "completed" states.
 - **No vulnerability datasets.** No CVE/NVD/GHSA/OSV/KEV/EPSS data is
@@ -144,7 +152,8 @@ produce a result: a server-side `ScanEngine` registry entry
 startup — nothing client-facing can register, discover or influence
 engines. Pump 8 registers the REAL SAST engine
 (`apps/api/src/scans/sast/` — rules + engine, documented in
-`docs/SAST.md`); `SCA`/`SECRETS`/`DAST` remain unregistered and fail
+`docs/SAST.md`), SCA (Pump 9) and SECRETS (Pump 10) are registered
+real engines; `DAST` remains unregistered and fails
 with `SCAN_ENGINE_NOT_IMPLEMENTED`. Future engines plug in here with
 zero route/store changes. Test suites also inject synthetic engines to
 prove processor edge cases (synthetic fixtures are allowed ONLY in

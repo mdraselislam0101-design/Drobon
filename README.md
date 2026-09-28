@@ -141,7 +141,9 @@ redacted evidence and remediation. Analysis only — source files are
 NEVER executed; every dimension is capped (files, bytes, findings,
 10 s deadline) with fail-closed codes. Findings persist atomically
 with COMPLETED, are readable only via the scan detail route, and
-render in the web UI as text. SECRETS/DAST still fail honestly
+render in the web UI as text. SECRETS (Pump 10) detects hardcoded
+secrets over the same snapshot with mandatory redaction; DAST still
+fails honestly
 with SCAN_ENGINE_NOT_IMPLEMENTED; the dataset lock holds. See
 `docs/SAST.md` and `docs/SCANS.md`.
 
@@ -165,7 +167,7 @@ real. SCA payloads persist atomically, ride the detail route only,
 survive restarts, and render distinctly from SAST in the web UI.
 See `docs/SCA.md`.
 
-**NOT included:** the remaining scan engines (SECRETS/DAST —
+**NOT included:** the remaining scan engines (DAST —
 SAST and SCA ship above), vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval

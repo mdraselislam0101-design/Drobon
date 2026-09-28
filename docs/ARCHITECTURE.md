@@ -149,7 +149,8 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   atomically with the COMPLETED transition, COMPLETED-only), boot
   recovery `failAllRunning`); `engines.ts` is the scanner-engine
   boundary (server-side registry — Pump 8 registers the REAL SAST
-  engine and Pump 9 the REAL SCA engine; SECRETS/DAST stay
+  engine, Pump 9 the REAL SCA engine and Pump 10 the REAL secrets
+  engine; DAST stays
   unregistered and fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED);
   `sast/` is the SAST engine (pure-data `rules.ts` + bounded
   `engine.ts` — analysis only, never executes source, see
