@@ -53,7 +53,12 @@ export function RegisterPage(): React.JSX.Element {
     setSubmitting(true);
     try {
       const registered = await register(trimmedEmail, password, userType || undefined);
-      navigate(readSafePath(location.state) ?? (registered.userType === 'DEVELOPER' ? '/dashboard' : '/account'), { replace: true });
+      const landing = registered.userType === 'DEVELOPER'
+        ? '/dashboard'
+        : registered.userType === 'STUDENT'
+          ? '/student/dashboard'
+          : '/account';
+      navigate(readSafePath(location.state) ?? landing, { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {
         if (error.code === 'VALIDATION_ERROR') {

@@ -16,7 +16,12 @@ export function PublicOnlyRoute({ children }: { children: ReactElement }): React
   }
   if (state.status === 'ready') {
     const from = readSafePath(location.state);
-    return <Navigate to={from ?? (state.user.userType === 'DEVELOPER' ? '/dashboard' : '/account')} replace />;
+    const landing = state.user.userType === 'DEVELOPER'
+      ? '/dashboard'
+      : state.user.userType === 'STUDENT'
+        ? '/student/dashboard'
+        : '/account';
+    return <Navigate to={from ?? landing} replace />;
   }
   // `error` on the session probe falls through to the form: logging in is
   // still a meaningful action (and likely fixes the connectivity issue).
@@ -82,6 +87,15 @@ export function ProtectedRoute({ minRole }: { minRole?: AccountRole } = {}): Rea
 export function DeveloperDashboardRoute(): React.JSX.Element {
   const { state } = useAuth();
   if (state.status === 'ready' && state.user.userType !== 'DEVELOPER') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; Student access still uses the normal authenticated, self-scoped services. */
+export function StudentDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'STUDENT') {
     return <Navigate to="/projects" replace />;
   }
   return <Outlet />;

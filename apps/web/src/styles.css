@@ -335,6 +335,23 @@ a:focus-visible {
   margin: 0;
 }
 
+.student-workflow-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.student-workflow-nav a {
+  display: inline-block;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  color: var(--accent);
+}
+
 .dashboard-section .pill {
   margin-left: 0.4rem;
 }

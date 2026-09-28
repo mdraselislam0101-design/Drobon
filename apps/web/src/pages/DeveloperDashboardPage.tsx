@@ -31,6 +31,7 @@ function countEntries<T extends Record<string, number>>(counts: T): Array<[keyof
 
 export function DeveloperDashboardPage(): React.JSX.Element {
   const { state: authState } = useAuth();
+  const isStudent = authState.status === 'ready' && authState.user.userType === 'STUDENT';
   const client = useApiClient();
   const [dashboard, setDashboard] = useState<DashboardState>({ status: 'loading' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -63,13 +64,18 @@ export function DeveloperDashboardPage(): React.JSX.Element {
     if (authState.status === 'ready') void load();
   }, [authState.status, load, reloadToken]);
 
+  const activeProject = dashboard.status === 'ready'
+    ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE')
+    : undefined;
+
   return (
-    <section className="panel developer-dashboard" aria-labelledby="developer-dashboard-title">
-      <p className="eyebrow">Developer workspace</p>
-      <h1 id="developer-dashboard-title">Security overview</h1>
+    <section className="panel developer-dashboard" aria-labelledby="workspace-dashboard-title">
+      <p className="eyebrow">{isStudent ? 'Student workspace' : 'Developer workspace'}</p>
+      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : 'Security overview'}</h1>
       <p className="muted">
-        An account-owned summary of persisted projects, scans, finding workflows and reports.
-        It is activity history—not a claim that every security area is clear or assessed.
+        {isStudent
+          ? 'Follow your own projects, scan evidence, finding workflows and reports. This is persisted progress—not a grade, complete-coverage claim, or security score.'
+          : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
       </p>
       {dashboard.status === 'loading' && <LoadingState label="Loading your security overview…" />}
       {dashboard.status === 'error' && (
@@ -90,7 +96,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             </article>
             <article className="card">
               <h2>Scans</h2>
-              <p><strong>{dashboard.overview.scans.total}</strong> recorded</p>
+              <p><strong>{dashboard.overview.scans.byStatus.COMPLETED}</strong> completed · {dashboard.overview.scans.total} recorded</p>
               <p className="muted">{countEntries(dashboard.overview.scans.byStatus).map(([status, count]) => `${displayState(String(status))}: ${count}`).join(' · ') || 'No scans recorded yet.'}</p>
             </article>
             <article className="card">
@@ -101,6 +107,26 @@ export function DeveloperDashboardPage(): React.JSX.Element {
               <Link to="/account">Account details</Link>
             </article>
           </div>
+
+          {isStudent && (
+            <nav className="student-workflow-nav" aria-label="Student security workflow">
+              <Link to="/projects">My projects</Link>
+              {activeProject === undefined ? (
+                <Link to="/projects">Create a project to begin scanning</Link>
+              ) : (
+                <>
+                  <Link to={`/projects/${activeProject.id}#source-snapshot`}>Source submission</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Security scan</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Understand findings</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Fix problems</Link>
+                  <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>
+                </>
+              )}
+              <a href="#student-progress-summary">My progress</a>
+              <a href="#reports-title">Reports</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
 
           <section className="dashboard-section" aria-labelledby="workspace-projects-title">
             <div className="section-heading-row">
@@ -124,9 +150,9 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             )}
           </section>
 
-          <section className="dashboard-section" aria-labelledby="security-history-title">
+          <section id="student-progress-summary" className="dashboard-section" aria-labelledby="security-history-title">
             <div className="section-heading-row">
-              <h2 id="security-history-title">Recent security history</h2>
+              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : 'Recent security history'}</h2>
               <span className="muted">Updated {dashboard.overview.generatedAt}</span>
             </div>
             {dashboard.overview.scans.recent.length === 0 ? (
@@ -153,7 +179,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="finding-workflows-title">
             <div className="section-heading-row">
-              <h2 id="finding-workflows-title">Finding &amp; remediation status</h2>
+              <h2 id="finding-workflows-title">{isStudent ? 'Understand & fix findings' : 'Finding & remediation status'}</h2>
               <span className="pill">{dashboard.overview.findings.unresolved} unresolved</span>
             </div>
             <p className="muted">Counts use the latest persisted observation per project and finding identity. “Not observed” is not a remediation confirmation; lifecycle state and scan evidence remain available in the project.</p>
@@ -182,7 +208,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="reports-title">
             <div className="section-heading-row">
-              <h2 id="reports-title">Reports</h2>
+              <h2 id="reports-title">{isStudent ? 'My reports' : 'Reports'}</h2>
               <span>{dashboard.overview.reports.availableCount} persisted</span>
             </div>
             {dashboard.overview.reports.recent.length === 0 ? (

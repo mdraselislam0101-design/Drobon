@@ -30,11 +30,9 @@ credential rate limit → CSRF origin guard → session resolution → routing).
 single choke point every future protected route reuses.
 
 Registration optionally submits one server-validated `UserType` from the
-closed shared vocabulary. The Developer selector is a profile classification
+closed shared vocabulary. Developer and Student selectors are profile classifications
 only: every self-registration is still `MEMBER` + `FREE` + `ACTIVE`, and
-role/plan/entitlement/account-state fields remain server-controlled. UserType
-never bypasses authentication, ownership, permissions or quota; see
-`AUTHORIZATION.md` and `DEVELOPER.md`.
+role/plan/entitlement/account-state fields remain server-controlled. Developer and Student classifications route to their respective workspace presentations; other classifications retain the account landing. UserType never bypasses authentication, ownership, permissions or quota; see `AUTHORIZATION.md`, `DEVELOPER.md` and `STUDENT.md`.
 
 ## Credentials and sessions
 

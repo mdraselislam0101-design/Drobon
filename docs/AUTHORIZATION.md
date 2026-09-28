@@ -105,8 +105,10 @@ Role management UI/first-admin bootstrap (roles are assigned by operators
 directly on the store today), roles-as-claims in tokens, ABAC/ReBAC
 policies, per-resource ACLs, audit trail of role changes, UserType-based
 authorization or entitlements, and admin/partner permissions beyond the
-table above. Pump 17's Developer dashboard uses UserType only for routing
-and navigation; its API is authenticated and self-scoped for any user type.
+table above. Pump 17's Developer and Pump 18's Student dashboards use
+UserType only for workspace routing/navigation; the shared overview API
+remains authenticated and self-scoped, and ordinary resource authorization
+continues to use the existing role, plan, quota and ownership checks.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

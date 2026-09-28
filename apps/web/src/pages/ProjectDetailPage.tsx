@@ -1132,7 +1132,7 @@ function FindingsView({
           {detailError !== null && <div className="form-alert" role="alert"><p data-testid="finding-detail-error">{detailError}</p></div>}
           {selected !== null && selectedFinding !== undefined && (
             <section className="finding-detail" aria-label="Finding detail" data-testid="finding-detail">
-              <h4>{selectedFinding.title}</h4>
+              <h4>What was found: {selectedFinding.title}</h4>
               <dl className="facts">
                 <div className="fact"><dt>Severity</dt><dd>{selectedFinding.severity}</dd></div>
                 <div className="fact"><dt>Scanner</dt><dd>{findingScanner(selectedFinding) ?? 'Unknown scanner'}</dd></div>
@@ -1142,17 +1142,19 @@ function FindingsView({
                 <div className="fact"><dt>Scan</dt><dd>{selected.scan.scanType} · <code>{selected.scan.id}</code></dd></div>
                 <div className="fact"><dt>Observed</dt><dd>{selectedFinding.scanner === 'DAST' ? selectedFinding.observedAt : selected.scan.completedAt ?? selected.scan.createdAt}</dd></div>
                 {selectedFinding.cwe !== undefined && <div className="fact"><dt>CWE</dt><dd>{selectedFinding.cwe}</dd></div>}
-                <div className="fact"><dt>Location</dt><dd>{selectedFinding.scanner === 'DAST' ? `${selectedFinding.method} ${selectedFinding.endpoint}` : `${selectedFinding.file}:${selectedFinding.line}:${selectedFinding.column}`}</dd></div>
+                <div className="fact"><dt>Where</dt><dd>{selectedFinding.scanner === 'DAST' ? `${selectedFinding.method} ${selectedFinding.endpoint}` : `${selectedFinding.file}:${selectedFinding.line}:${selectedFinding.column}`}</dd></div>
               </dl>
+              <p><strong>Finding description</strong></p>
               <p>{selectedFinding.description}</p>
-              <p><strong>Observed evidence</strong></p><pre><code data-testid="finding-evidence">{selectedFinding.evidence}</code></pre>
-              <p><strong>Scanner remediation</strong></p><p data-testid="finding-remediation">{selectedFinding.remediation}</p>
+              <p><strong>Supporting scanner evidence</strong></p><pre><code data-testid="finding-evidence">{selectedFinding.evidence}</code></pre>
+              <p><strong>Scanner-provided remediation</strong></p><p data-testid="finding-remediation">{selectedFinding.remediation}</p>
               {selected.guidance !== undefined && (
                 <section className="workflow-guidance" aria-label="Remediation guidance" data-testid="finding-guidance">
                   <h5>Rule-specific guidance · {selected.guidance.status.replaceAll('_', ' ')}</h5>
-                  <p>{selected.guidance.whyItMatters}</p>
+                  <p><strong>Why it matters:</strong> {selected.guidance.whyItMatters}</p>
+                  <p><strong>What to do next</strong></p>
                   <ul>{selected.guidance.actions.map((action, index) => <li key={`${selected.guidance?.ruleId}-${index}`}>{action}</li>)}</ul>
-                  <p><strong>Verification:</strong> {selected.guidance.verification}</p>
+                  <p><strong>Check after fixing:</strong> {selected.guidance.verification}</p>
                   {selected.guidance.standardId !== undefined && <p className="muted">Scanner rule identifier: {selected.guidance.standardId}</p>}
                   {selected.guidance.example !== undefined && (
                     <div className="guidance-example">
@@ -1163,6 +1165,9 @@ function FindingsView({
                     </div>
                   )}
                 </section>
+              )}
+              {selected.guidance === undefined && (
+                <p className="muted">Rule-specific explanation is unavailable for this finding. Review only the recorded description, evidence, and scanner remediation; no missing technical facts are inferred.</p>
               )}
               {selected.workflow !== undefined && (
                 <section className="finding-workflow" aria-label="Finding remediation workflow" data-testid="finding-workflow">

@@ -2,9 +2,9 @@
 
 Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
 plans/entitlements, quotas, projects, scans, reports, assistant, and manual
-payments), Pump 16 (restricted platform operations), and Pump 17 (Developer
-workspace completion): an
-npm-workspaces monorepo with three runtime components
+payments), Pump 16 (restricted platform operations), Pump 17 (Developer
+workspace completion), and Pump 18 (Student presentation over the shared
+overview): an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -280,8 +280,9 @@ NOT_IMPLEMENTED).
   *expired*, authenticated-but-insufficient → `ForbiddenState` — never a
   login redirect), `PublicOnlyRoute` (authed visitors bounce off /login
   and /register), and `readSafePath()` (open-redirect defense for
-  post-login navigation). `components/ForbiddenState.tsx` is the generic
-  403 view (alert, no role hints).
+  post-login navigation); Developer and Student workspace guards only control
+  UX routing and confer no API permission. `components/ForbiddenState.tsx`
+  is the generic 403 view (alert, no role hints).
 - `routes.tsx` / `App.tsx` — `BrowserRouter` in prod, `MemoryRouter` in
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
   `/register`, `/account` (protected, `minRole="MEMBER"`), `/projects`

@@ -69,9 +69,7 @@ export function ProjectsPage(): React.JSX.Element {
     <section className="panel" aria-labelledby="projects-title">
       <h1 id="projects-title">Projects</h1>
       <p className="muted">
-        Projects are the containers your future security scans, findings
-        and reports will attach to. Only you can see your projects — the
-        server enforces this on every request.
+        Projects hold your source snapshots, scan history, findings and reports. Only you can see your projects — the server enforces ownership on every request.
       </p>
 
       <CreateProjectForm onCreated={() => setReloadToken((token) => token + 1)} />

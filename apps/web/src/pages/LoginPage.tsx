@@ -41,7 +41,12 @@ export function LoginPage(): React.JSX.Element {
     setSubmitting(true);
     try {
       const authenticated = await login(trimmedEmail, password);
-      navigate(readSafePath(location.state) ?? (authenticated.userType === 'DEVELOPER' ? '/dashboard' : '/account'), { replace: true });
+      const landing = authenticated.userType === 'DEVELOPER'
+        ? '/dashboard'
+        : authenticated.userType === 'STUDENT'
+          ? '/student/dashboard'
+          : '/account';
+      navigate(readSafePath(location.state) ?? landing, { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {
         if (error.code === 'VALIDATION_ERROR') {
