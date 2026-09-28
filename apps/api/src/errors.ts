@@ -104,6 +104,24 @@ export function rateLimited(retryAfterSec: number): AppError {
 }
 
 /**
+ * Quota exhaustion (Pump 5): the FREE monthly scan allowance (account or
+ * shared device) is used up. Distinct stable code (`QUOTA_EXCEEDED`) from
+ * transport rate limiting (`RATE_LIMITED`) so clients can render "upgrade
+ * or wait for the next UTC month" instead of "slow down". Same 429 status
+ * family with `Retry-After` pointing at the next UTC month boundary.
+ * Denials are uniform: they never reveal which limit tripped, other
+ * accounts, or device state.
+ */
+export function quotaExceeded(retryAfterSec: number): AppError {
+  return new AppError({
+    code: 'QUOTA_EXCEEDED',
+    statusCode: 429,
+    message: 'Monthly free scan limit reached. Your allowance resets at the start of the next UTC month.',
+    retryAfterSec,
+  });
+}
+
+/**
  * Missing/invalid/expired authentication. The default message is generic on
  * purpose — it must not reveal whether the account exists.
  */
@@ -128,6 +146,21 @@ export function forbidden(message = 'Request refused.'): AppError {
 /** Uniqueness conflict (e.g. registration with an email already in use). */
 export function conflict(message: string): AppError {
   return new AppError({ code: 'CONFLICT', statusCode: 409, message });
+}
+
+/**
+ * Scan creation against an ARCHIVED project (Pump 7): archived projects
+ * cannot start new scans (their historical scans stay readable). Distinct
+ * stable code so clients can render "unarchive first" instead of a
+ * generic conflict. Reveals nothing about other accounts — the caller
+ * already owns the project at this point (the uniform 403 comes first).
+ */
+export function projectArchived(): AppError {
+  return new AppError({
+    code: 'PROJECT_ARCHIVED',
+    statusCode: 409,
+    message: 'Archived projects cannot start new scans. Unarchive the project first.',
+  });
 }
 
 export function timeoutError(message = 'The operation timed out.'): AppError {

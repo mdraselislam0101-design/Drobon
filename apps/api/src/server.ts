@@ -46,6 +46,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     resetRateLimit: app.resetRateLimit,
     stop: () =>
       new Promise<void>((resolve, reject) => {
+        app.scanProcessor.stop();
         server.close((error) => {
           if (error) {
             reject(error);

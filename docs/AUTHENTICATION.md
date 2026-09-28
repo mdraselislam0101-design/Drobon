@@ -77,7 +77,8 @@ single choke point every future protected route reuses.
   (`/…`, no `//`, no backslash/CRLF) — tested against `//evil`,
   `https://evil`, `/\evil` payloads.
 - **Mass assignment**: credential schemas reject unknown keys (a client
-  cannot POST `role: "admin"`), tested.
+  cannot POST `role: "admin"` — nor `plan`/`subscription` since Pump 4),
+  tested.
 
 ## Persistence boundary (why a JSON file exists)
 

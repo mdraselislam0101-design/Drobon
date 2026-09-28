@@ -7,7 +7,15 @@ import type {
   CurrentUserResponse,
   HealthResponse,
   LogoutResponse,
+  ProjectResponse,
+  ProjectsResponse,
+  ScanDetailResponse,
+  ScanResponse,
+  ScansResponse,
+  SourceSnapshotResponse,
   StatusResponse,
+  SubscriptionResponse,
+  UsageResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -88,6 +96,75 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     ),
     getUserById: vi.fn(async () => {
       throw forbiddenError();
+    }),
+    // Pump 4 default: the FREE world — FREE + ACTIVE, no PRO entitlement.
+    getSubscription: vi.fn(async (): Promise<SubscriptionResponse> => ({
+      subscription: {
+        plan: 'FREE',
+        status: 'ACTIVE',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      entitlements: ['plan:view'],
+    })),
+    // Pump 5 default: a fresh FREE usage view (nothing consumed this
+    // UTC month). Suites override it to model exhaustion or PRO.
+    getUsage: vi.fn(async (): Promise<UsageResponse> => ({
+      plan: 'FREE',
+      period: {
+        period: '2026-09',
+        startUtc: '2026-09-01T00:00:00.000Z',
+        endUtc: '2026-10-01T00:00:00.000Z',
+      },
+      used: 0,
+      limit: 3,
+      remaining: 3,
+      quotaStatus: 'OK',
+    })),
+    // Pump 6 default: no projects yet (the honest empty world). Suites
+    // override these to model owned/foreign/lifecycle states.
+    getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),
+    getProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw forbiddenError();
+    }),
+    createProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    updateProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    archiveProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    unarchiveProject: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    // Pump 7 defaults: no scans yet (the honest empty world); scan
+    // requests are not stubbed (suites that exercise them override).
+    getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+    createScan: vi.fn(async (): Promise<ScanResponse> => {
+      throw new Error('not stubbed');
+    }),
+    // Pump 8 defaults: scan detail and source snapshots start empty; a
+    // missing snapshot reads as the honest 404-shaped error.
+    getScan: vi.fn(async (): Promise<ScanDetailResponse> => {
+      throw new ApiClientError({
+        kind: 'http',
+        message: 'Not found.',
+        status: 404,
+        requestId: 'test',
+      });
+    }),
+    getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
+      throw new ApiClientError({
+        kind: 'http',
+        message: 'Not found.',
+        status: 404,
+        requestId: 'test',
+      });
+    }),
+    uploadSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
+      throw new Error('not stubbed');
     }),
     ...overrides,
   };

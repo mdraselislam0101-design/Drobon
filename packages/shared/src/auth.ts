@@ -107,8 +107,23 @@ export function passwordPolicyIssue(password: string): string | undefined {
   return undefined;
 }
 
-/** Keys that must never appear inside an {@link AuthUser} payload. */
-const FORBIDDEN_USER_KEYS = ['password', 'passwordhash', 'hash', 'token', 'session', 'secret'] as const;
+/**
+ * Keys that must never appear inside an {@link AuthUser} payload. Since
+ * Pump 4 this also blocks plan/subscription material: commercial state
+ * has exactly ONE channel (`GET /api/v1/subscription`, validated by
+ * `isSubscriptionResponse`) — user payloads must never carry a second,
+ * forgeable copy of it.
+ */
+const FORBIDDEN_USER_KEYS = [
+  'password',
+  'passwordhash',
+  'hash',
+  'token',
+  'session',
+  'secret',
+  'plan',
+  'subscription',
+] as const;
 
 /** Structural guard for {@link AuthUser} at the client boundary. */
 export function isAuthUser(value: unknown): value is AuthUser {

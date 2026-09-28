@@ -1,18 +1,33 @@
 # Security
 
-Pump 1 established, Pump 2 extended (authentication): security is a
-first-class, **tested** requirement. A control is listed as VERIFIED only
-if an automated test or an executed check proves it; anything else is
-marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
+Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
+(authorization), Pump 4 extended (plans/subscriptions/entitlements),
+Pump 5 extended (usage quota + device anti-abuse), Pump 6 extended
+(projects foundation), Pump 7 extended (secure scan-job foundation):
+security is a first-class, **tested** requirement. A control is listed as
+VERIFIED only if an automated test or an executed check proves it;
+anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz stage)
+## Threat model (foundation + auth + authz + subscription + usage + projects + scans stage)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
 against the cookie session; privilege escalation (vertical: MEMBER→ADMIN→
 OWNER; horizontal: cross-account IDOR); role tampering via client input;
-misconfiguration; secret leakage into code, logs or the browser bundle;
-dependency risk; abuse/accidental overload of a single instance.
+commercial entitlement fraud (forging PRO via body/query/header/cookie
+tampering, client state, UserType or AccountRole; degrading or reading
+another account's subscription); **quota abuse (multi-account farming of
+the FREE scan allowance, racing concurrent consumes, forging/altering the
+device cookie, tampering with usage counts or periods)**; **project
+ownership fraud (claiming another account's project via ownerId/headers/
+query, cross-account reads/writes, injecting lifecycle status,
+prototype-pollution payloads, XSS/HTML in project text)**; **scan fraud
+(quota bypass via concurrency/retries/multiple projects/types, forging
+scan status or results, claiming another account's scans, replaying
+idempotency keys, resurrecting or double-executing jobs)**;
+misconfiguration;
+secret leakage into code, logs or the browser bundle; dependency risk;
+abuse/accidental overload of a single instance.
 
 Out of scope for now: persistent attackers across restarts (sessions are
 process-local), supply-chain compromise beyond `npm audit`,
@@ -75,6 +90,153 @@ DDoS/absorption (single-instance limiter only), attackers with a
 | Web: forbidden state (not login redirect) for insufficient roles; role-aware guards; capability verdicts rendered from API responses only; permission-aware UI visibility | VERIFIED | `apps/web/test/authzUi.test.tsx` |
 | Web authz payload boundary: guards reject forged role values (`SUPERADMIN` etc.) | VERIFIED | `apps/web/test/authClient.test.ts`, `shared/test/auth.test.ts` |
 
+### Subscriptions & entitlements (Pump 4)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Entitlements derived ONLY from the account's persisted subscription via the shared decision table (`feature:pro` in exactly one cell: PRO + ACTIVE; fail closed) | VERIFIED | `packages/shared/test/plans.test.ts`, `apps/api/test/subscriptionMatrix.test.ts` |
+| AccountRole never grants PRO (full MEMBER/ADMIN/ACCOUNT_OWNER × FREE/PRO grid; derivation structurally ignores role/userType) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| UserType never grants PRO (all four classifications × FREE/PRO) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Non-ACTIVE PRO (INACTIVE/CANCELLED/EXPIRED) loses `feature:pro` while the plan label stays honest | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Registration always writes FREE + ACTIVE server-side; `plan`/`subscription`/`entitlements` in the payload → 422 (mass assignment) | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| `GET /api/v1/subscription` is self-only: identity from the session alone, no id parameter exists; `?userId=/?accountId=/?email=`/path manipulation cannot read another account | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Tampering cannot forge PRO: request headers, query strings, extra cookies, forged session cookies (401) and GET bodies are never consulted | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| No mutation endpoint: POST/PATCH/PUT/DELETE → 405 + `Allow: GET`, state unchanged | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Anonymous subscription read → 401 | VERIFIED | `apps/api/test/subscriptionApi.test.ts` |
+| Live server state: operator subscription changes apply on the next request (no re-login, no cookie reissue) | VERIFIED | `apps/api/test/subscriptionMatrix.test.ts` |
+| Store migration: Pump 2/3-era records (no subscription) resolve to FREE + ACTIVE and stay readable; corrupt subscription data fails closed (never PRO, never bricks the store) | VERIFIED | `apps/api/test/authStore.test.ts` |
+| Subscription state survives restarts (durable JSON store) | VERIFIED | `apps/api/test/authStore.test.ts` |
+| Subscription requests log no plan state, emails, passwords or tokens | VERIFIED | `apps/api/test/subscriptionApi.test.ts` (captured-log scan) |
+| Web: plan/PRO verdict rendered only from the server response; errors fail closed (no plan shown, never a silent PRO); no plan state in URL/localStorage/sessionStorage; user payloads can never carry plan material (`isAuthUser` rejects it) | VERIFIED | `apps/web/test/subscriptionUi.test.tsx`, `authClient.test.ts`, `packages/shared/test/plans.test.ts` |
+
+### Usage quota & device anti-abuse (Pump 5)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| FREE allowance (3 scans/UTC month) enforced by a single server-side consumption authority; routes contain no duplicate quota logic | VERIFIED | `apps/api/test/usageQuota.test.ts`, `usageApi.test.ts` |
+| Atomic consumption: serialized check-both-limits → increment → persist; 10 concurrent consumes → exactly 3 grants + 7 denials (memory store, durable store, and two accounts racing on one device token) | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Denials mutate nothing (no counter, device, period or subscription changes) and carry a stable `QUOTA_EXCEEDED` code + `Retry-After` | VERIFIED | `apps/api/test/usageApi.test.ts` |
+| PRO exemption only via the Pump 4 entitlement pipeline (PRO + ACTIVE); ADMIN/ACCOUNT_OWNER/UserTypes never exempt; lapsed PRO falls back to FREE | VERIFIED | `apps/api/test/usageApi.test.ts`, `usageQuota.test.ts` |
+| PRO consumption never counts against the shared FREE device allowance | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| UTC month rollover is natural (lazy period keys) — September never reduces October, Dec→Jan tested, clock injection supported | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Usage counters survive API restart (durable JSON store, atomic writes; corrupt documents refuse to start) | VERIFIED | `apps/api/test/usageQuota.test.ts` |
+| Device identity: opaque 32-byte base64url server-issued cookie (`HttpOnly`, `SameSite=Strict`, `Secure` in production, ~400d); only a SHA-256 hash is stored; token/hash never logged or returned | VERIFIED | `apps/api/test/usageDevice.test.ts`, `usageApi.test.ts` (captured-log scan) |
+| Malformed/missing device cookies are ignored and replaced; shape-valid client-forged tokens are treated as unknown devices (no trust, no crash) | VERIFIED | `apps/api/test/usageDevice.test.ts` |
+| Cookie rotation cannot bypass the quota: the ACCOUNT allowance binds on every device | VERIFIED | `apps/api/test/usageDevice.test.ts` |
+| `GET /api/v1/usage`: self-only (no id parameter exists), 401 anonymous, 405 for mutation methods, no device hash/other accounts' data in any response | VERIFIED | `apps/api/test/usageApi.test.ts` |
+| Production protection: the consume probe is not registered in production (404); `USAGE_STORE_PATH=:memory:` rejected in production | VERIFIED | `apps/api/test/usageApi.test.ts`, `config.test.ts` |
+| Client tampering (headers, cookies, query, body fields, localStorage) never changes usage or exemption decisions; exact body validation rejects any property | VERIFIED | `apps/api/test/usageApi.test.ts`, `usageDevice.test.ts` |
+| Web: usage section display-only (client exposes exactly one usage method, `getUsage`), numbers rendered exclusively from the server response, errors fail closed | VERIFIED | `apps/web/test/usageUi.test.tsx`, `authClient.test.ts` |
+
+Known, documented limits (see `docs/USAGE.md`): cookie rotation starts a
+fresh DEVICE identity (backstopped by the account quota, credential rate
+limits, and the hashed opaque cookie — no fingerprinting is used);
+honest users sharing a browser share the device allowance.
+
+### Projects foundation (Pump 6)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Ownership from the authenticated session only; body `ownerId`/`status`/`id`/timestamps are unknown properties → 422 (mass-assignment impossible) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Cross-account GET/PATCH/archive answer the SAME uniform 403 as unknown/malformed/oversized ids — no existence oracle, no IDOR | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| AccountRole never grants project ownership (ADMIN, ACCOUNT_OWNER × cross-account all 403) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| UserType never grants project ownership (all four classifications tested cross-account) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| List is server-scoped to the caller; a foreign project never appears in another account's list (no frontend filtering relied upon) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Anonymous access to every project route → 401; forged and expired sessions → 401 | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Strict input validation: empty/whitespace/oversized names, oversized descriptions, control characters, malformed JSON, non-object bodies (415/400/422) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Prototype pollution: `__proto__`/`constructor` payloads rejected (includes the Pump 6 audit fix to the Pump 1 validator — see below) and never merged | VERIFIED | `apps/api/test/projectApi.test.ts`, `apps/api/test/validate.test.ts` |
+| XSS/HTML payloads stored as inert text and rendered as text (React escaping; no dangerous HTML API anywhere in web src) | VERIFIED | `apps/api/test/projectApi.test.ts`, `apps/web/test/projectUi.test.tsx`, `staticWeb.test.ts` |
+| NFC Unicode normalization + bounded lengths for all project text | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Ids: `prj_` + `crypto.randomUUID()` (never counters); responses never expose `ownerId` or storage paths | VERIFIED | `packages/shared/test/projects.test.ts`, `apps/api/test/projectApi.test.ts` |
+| Deterministic ordering (updatedAt DESC, then id ASC) verified against an independent reimplementation | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Lifecycle: creation always ACTIVE; status changes ONLY via explicit owner-only archive/unarchive (idempotent); generic PATCH cannot touch status; archived projects stay listed/readable; NO hard delete | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Persistence: atomic temp+rename writes (0600), serialized mutations, 20 concurrent creates lose/duplicate nothing, corrupt store refuses to start, restart persistence (incl. the E2E-found multi-line-description load-validation mismatch, fixed + regression-tested) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Usage boundary: project CRUD never calls the usage service (scan counter untouched after full CRUD cycle) | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Log hygiene: project logs carry requestId/userId/projectId only — never names, descriptions, emails | VERIFIED | `apps/api/test/projectApi.test.ts` |
+| Web: protected routes (anonymous → login redirect), fail-closed list/detail errors, no project/ownership state in localStorage/sessionStorage/URL, edit form has no ownership/status fields at all | VERIFIED | `apps/web/test/projectUi.test.tsx` |
+
+**Pump 6 audit fix to Pump 1 code**: the strict validator's unknown-key
+check used `key in shape`, which the well-known prototype-chain keys
+(`__proto__`, `constructor`) always satisfy — so those two field names
+were silently DROPPED instead of rejected with 422 (values were never
+merged, so no prototype pollution occurred, but the documented
+"unknown keys rejected" contract had a bypass). Fixed to
+`Object.prototype.hasOwnProperty.call(shape, key)` with a regression
+test in `apps/api/test/validate.test.ts`.
+
+### Scan jobs (Pump 7)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Ownership chain account→project→scan derived from the session ONLY; body `id`/`projectId`/`ownerId`/`requestedBy`/`status`/timestamps/`result`/plan/role claims are unknown properties → 422 | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Project-level uniform 403 (unknown/foreign/malformed/oversized ids byte-identical modulo requestId) on every scan route; AccountRole and UserType never grant foreign scans | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Scan-level uniform 404 inside the caller's own project — cross-account scan-id probing cannot distinguish existence | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Quota consumed EXACTLY once per created scan, atomically with the durable append (UsageService = single authority inside the store's serialized section); no job without a consumed allowance is constructible | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Concurrency: 10 simultaneous FREE creates → exactly 3 grants + 7 uniform 429+Retry-After; same-key 10-way retry storm → 1 scan, 1 consumption; cross-project/cross-account/device-shared races; PRO concurrent never denied | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Tampering (plan/role/entitlement headers, cookies, body claims) never changes the quota verdict | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Idempotency keys: strict format, account-scoped, replay returns the original scan without a second charge, different-request reuse → 409, bounded memory, restart-persistent | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Exactly ONE server-authoritative transition path; NO client mutation endpoint (405 + Allow); claim-once/finish-once — duplicate worker delivery cannot execute a job twice; terminal scans are immutable | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| No engine registered → deterministic FAILED/SCAN_ENGINE_NOT_IMPLEMENTED, never a fabricated completion or findings; crashed engines fail closed with generic messages (no internals leak) | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Startup recovery: interrupted RUNNING scans → FAILED/SCAN_INTERRUPTED; QUEUED scans drain; the process never boots with ambiguous scan state | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Archived projects reject new scans (409 PROJECT_ARCHIVED — reachable only for owned projects); history stays readable; no scan deletion exists | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Persistence: atomic temp+rename 0600 writes, serialized mutations, corrupt/invalid state refuses to start (incl. state-machine violations and dangling idempotency entries), restart persistence with quota/idempotency continuity | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Responses expose the public scan shape only — no ownerId, no worker internals, no filesystem paths, no stack traces | VERIFIED | `apps/api/test/scanApi.test.ts`, `packages/shared/test/scans.test.ts` |
+| Log hygiene: scan lines carry requestId/userId/projectId/scanId only — no emails, passwords or device material | VERIFIED | `apps/api/test/scanApi.test.ts` |
+| Web: honest FAILED rendering (never a fake completion), server-derived quota hint, archived restriction, XSS-inert scan text, no storage authority, fail-closed errors | VERIFIED | `apps/web/test/scanUi.test.tsx` |
+| Dataset lock: no CVE/NVD/GHSA/OSV/KEV/EPSS data anywhere; synthetic engines exist only in tests | VERIFIED | `check:boundaries`, `check:secrets` |
+
+### Static analysis — SAST engine (Pump 8)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Analysis only: source snapshots are read and regex-matched, NEVER executed/imported/sandboxed — `exec('touch /tmp/…')` in uploaded code is REPORTED (DG-SAST-001), never run (marker file absent after scans) | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s processing deadline / 10 000 lines per file; every limit breach fails closed with a closed code | VERIFIED | `apps/api/test/sastEngine.test.ts` |
+| Linear-time rules only (ReDoS-shaped patterns rejected by the rule suite); whole-corpus timing pinned | VERIFIED | `apps/api/test/sastRules.test.ts` |
+| Deterministic findings (content fingerprints → stable ids; identical rescans yield identical ids) ordered most-severe-first; severities rule-fixed, never client-influenced | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Evidence discipline: ≤ 200-char windowed, control-character-free (no CRLF/tab/NUL), credential values redacted BEFORE persistence (length-neutral) | VERIFIED | `apps/api/test/sastEngine.test.ts` |
+| No content exfiltration: sources read API returns metadata only; logs carry counts/ids, never content or secret values | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Snapshot upload policy: single server-side path policy (no traversal/absolute/dotfiles, len/seg/depth caps), blocked key-material extensions (.env/.pem/.key/...), binary rejection, duplicate/unknown/proto-key rejection → 422/413 with nothing stored | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| SAST pre-flight: no snapshot → 409 BEFORE quota consumption (a FREE account cannot burn allowance on an impossible scan) | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Findings persist only with the terminal COMPLETED transition (atomic); findings on any other state = corrupt store → refuses to start; the detail route is the only findings read surface | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Snapshot/scan ownership: snapshot is project-scoped, owner-checked at scan time; cross-account answers stay uniform (403/404 — no oracle) | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Corrupt/poisoned stores (invalid JSON, traversal-shaped stored paths, findings injected into non-terminal records) refuse to start — no silent repair | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Web: findings render as literal text (injection payloads displayed, never executed), secrets stay redacted client-side, lazy detail loading, archived projects cannot replace snapshots | VERIFIED | `apps/web/test/sastUi.test.tsx` |
+| Static safety: no eval/Function/child_process surface in engine code; rules are pure data (the forbidden-pattern scan exempts nothing by suppression — rules.ts patterns are data, not matchers) | VERIFIED | `apps/api/test/staticSafety.test.ts` |
+
+### Software-composition analysis — SCA engine (Pump 9)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Analysis only: dependency manifests are parsed as DATA — never `npm`/`pip` installed, never executed, no lifecycle hooks; `postinstall: "touch /tmp/…"` in an uploaded package.json leaves the marker ABSENT after scans | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts` |
+| THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS data in the repo; `VULN_INTEL_PROVIDER` accepts only `none` (anything else fails startup); with no dataset the assessment is honestly NOT_ASSESSED with ZERO advisories — a vulnerable-looking fixture yields no fabricated findings | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts`, `packages/shared/test/sca.test.ts`, config tests |
+| Provider boundary is real, not decorative: an injected stub provider's advisories are re-validated, deduped, dropped when phantom/malformed, and ASSESSED is claimed only with matched records | VERIFIED | `apps/api/test/scaEngine.test.ts` |
+| Parser security: own-property discipline (prototype keys are skipped as data, never `key in obj`), no recursion over JSON, entry/line/length bounds, control-character rejection, invalid data dropped — never guessed; staticSafety pins the denylist to data, not access | VERIFIED | `apps/api/test/scaParsers.test.ts`, `apps/api/test/staticSafety.test.ts` |
+| Path policy REUSE: evidence paths must satisfy the Pump 8 `SOURCE_PATH_PATTERN` (traversal/absolute/backslash/drive/percent classes unrepresentable) — enforced again in the shared guard; no second implementation | VERIFIED | `packages/shared/test/sca.test.ts`, `apps/api/test/scaEngine.test.ts` |
+| Lockfile truth: declared AND resolved versions both preserved; a resolved version without lockfile provenance is structurally rejected (no fabricated pins); lockfilePath never appears without a resolution | VERIFIED | `packages/shared/test/sca.test.ts` |
+| Determinism: content fingerprints → stable `dep_` ids, content-derived SBOM serial — identical snapshots yield identical ids across rescans/restarts; no random identities | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts` |
+| Bounded work: snapshot caps reused (200 files / 256 KiB / 768 KiB — NOT raised), 50 manifests, 768 KiB manifest bytes, 200 persisted inventory entries with an honest truncated flag + total, 10 s deadline — every breach fails closed with a closed code | VERIFIED | `apps/api/test/scaEngine.test.ts` |
+| SCA pre-flight: no snapshot → 409 BEFORE quota consumption (same rule as SAST) | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| Payload authority: request bodies accept only `scanType` (injected `sca` → 422); the SCA payload persists only with the terminal COMPLETED transition, rides the detail route only, and a forged payload on a non-SCA/non-terminal scan or a malformed one refuses to boot | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| Isolation: SCA payloads are project-scoped and owner-checked; cross-account reads stay uniform (403/404 — no oracle, no inventory leakage) | VERIFIED | `apps/api/test/scaApi.test.ts` |
+| No content exfiltration: list responses carry counts only; the detail payload carries paths/counts/names — never manifest content, never script bodies | VERIFIED | `apps/api/test/scaApi.test.ts` |
+
+### Secrets detection — SECRETS engine (Pump 10)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| DETECTED ≠ VERIFIED: no rule, title, description, remediation or UI string claims a credential is valid/active/compromised/revoked; the engine performs NO verification, NO network access, never contacts any service | VERIFIED | `apps/api/test/secretsRules.test.ts`, `apps/api/test/secretsEngine.test.ts` |
+| REDACTION (hard invariant): raw secret values never appear in API responses, UI, logs, errors, exports or stores — positional span blanking (window-cut values cannot leak partially), neighbour redaction (other secrets on the same line are blanked too), defensive re-scan (evidence matching ANY rule fails closed to `[DG-SEC-###] <redacted>`), PEM header-only evidence (key bodies never enter findings) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts` |
+| Three-layer redaction sweep over real HTTP: the same synthetic values asserted absent from the response body, the durable `scans.json` store AND the server logs | VERIFIED | `apps/api/test/secretsApi.test.ts` |
+| Whole-DOM no-leak sweep in the browser: raw values absent from text, attributes and URLs | VERIFIED | `apps/web/test/secretsUi.test.tsx` |
+| Fingerprints exclude the secret: ids derive from rule+file+line+sha256(redacted evidence) — deterministic, no random UUIDs, value-independent | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
+| Analysis only: snapshot content never executed (marker-file test); credential-material file types (.pem/.key/.env/…) never enter a snapshot at all (Pump 8 upload policy) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
+| Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s deadline; ignored dirs (node_modules/dist/build/…) and unsupported extensions are skipped-and-counted, never interpreted | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
+| PARTIAL honesty: oversize skips and findings-cap truncation set `partial: true` + a bounded reason — a partial scan with 0 findings is "nothing found in what was inspected", NEVER "no secrets"; FAILED scans report no findings | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts`, `apps/web/test/secretsUi.test.tsx` |
+| False-positive defenses: placeholder/template denylist (incl. `<YOUR_API_KEY>`, the AWS docs example, test-mode keys, self-referential values), UUID/plain-hash exclusion, structure gates (length + character classes + entropy as ONE input); a "test"-named file is NOT suppressed — content decides | VERIFIED | `apps/api/test/secretsRules.test.ts` |
+| SECRETS pre-flight: no snapshot → 409 BEFORE quota consumption (same rule as SAST/SCA) | VERIFIED | `apps/api/test/secretsApi.test.ts` |
+| Closed vocabularies: `DG-SEC-###` rule ids, severity and detection-confidence vocabularies enforced by the shared guards; a forged finding (e.g. `confidence: 'CERTAIN'`) refuses to boot the store | VERIFIED | `packages/shared/test/scans.test.ts`, `apps/api/test/secretsApi.test.ts` |
+| Dataset lock extension: no external secret databases/feeds vendored; synthetic fixtures exist only in tests, with denylist-dodging values chosen so positive paths fire and markers kept out of repo-wide secret scans | VERIFIED | `check:secrets`, `apps/api/test/secretsRules.test.ts` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -112,7 +274,24 @@ DDoS/absorption (single-instance limiter only), attackers with a
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator
-action on the store today), role-change audit trail, account email
+action on the store today), role-change audit trail, payment/billing
+workflows and any subscription mutation path (subscription state changes
+only via the operator store-edit + restart workflow — see
+`docs/SUBSCRIPTIONS.md`), per-feature metering beyond the single scan
+allowance, usage analytics/history, operator quota adjustments,
+device-management UI (the usage quota + device foundation itself is DONE
+in Pump 5 — see `docs/USAGE.md`), project deletion (hard delete is
+deliberately absent — ARCHIVED is the lifecycle end-state; the projects
+foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
+project sharing/collaboration, admin/operator project visibility,
+scan cancellation (deliberately absent until explicitly designed —
+the scan-job foundation itself is DONE in Pump 7 — see
+`docs/SCANS.md`), the remaining engine DAST and
+findings-aggregation reports (the REAL SAST engine is DONE in Pump 8 —
+see `docs/SAST.md`; source "upload" is a JSON-body snapshot, NOT
+multipart file storage), admin/operator scan
+visibility,
+account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,

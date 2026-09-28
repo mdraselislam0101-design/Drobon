@@ -45,12 +45,20 @@ export function Layout({
               Service status
             </NavLink>
             {state.status === 'ready' && (
-              <NavLink
-                className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
-                to="/account"
-              >
-                Account
-              </NavLink>
+              <>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/projects"
+                >
+                  Projects
+                </NavLink>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/account"
+                >
+                  Account
+                </NavLink>
+              </>
             )}
             {state.status === 'anonymous' && (
               <>

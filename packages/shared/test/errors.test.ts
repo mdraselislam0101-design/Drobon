@@ -22,7 +22,12 @@ describe('ERROR_CODES', () => {
       'UNAUTHORIZED',
       'FORBIDDEN',
       'CONFLICT',
+      'PROJECT_ARCHIVED',
       'RATE_LIMITED',
+      // Pump 5: stable business-rule denial for the FREE monthly scan
+      // allowance (emitted by the API usage service; distinct from
+      // transport rate limiting).
+      'QUOTA_EXCEEDED',
       'TIMEOUT',
       'INTERNAL_ERROR',
       'SERVICE_UNAVAILABLE',

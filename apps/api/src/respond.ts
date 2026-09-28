@@ -11,11 +11,27 @@ export function sendJson(
   headers: Record<string, string> = {},
 ): void {
   const payload = JSON.stringify(body);
-  res.writeHead(statusCode, {
+  const finalHeaders: Record<string, string | string[]> = {
     'content-type': 'application/json; charset=utf-8',
     'content-length': String(Buffer.byteLength(payload)),
     ...headers,
-  });
+  };
+  // Multiple set-cookie sources must COMBINE, never overwrite: middleware
+  // (stale-session clears, device-cookie issuance) sets headers via
+  // `setHeader`, routes pass theirs here. `writeHead` would silently drop
+  // the earlier one for the same name, so they are merged explicitly
+  // (e.g. a register response can carry both a fresh device cookie and
+  // the session cookie).
+  const existingCookies = res.getHeader('set-cookie');
+  if (existingCookies !== undefined) {
+    const existingList = Array.isArray(existingCookies)
+      ? existingCookies.map(String)
+      : [String(existingCookies)];
+    const routeCookie = headers['set-cookie'];
+    finalHeaders['set-cookie'] =
+      routeCookie === undefined ? [...existingList] : [...existingList, routeCookie];
+  }
+  res.writeHead(statusCode, finalHeaders);
   res.end(payload);
 }
 

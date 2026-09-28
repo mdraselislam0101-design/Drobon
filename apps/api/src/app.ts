@@ -9,7 +9,7 @@ import {
   notFound,
   unauthorized,
 } from './errors.js';
-import type { Middleware, RequestContext, Route } from './http.js';
+import { matchRoutePath, type Middleware, type RequestContext, type Route } from './http.js';
 import { createJsonFileUserRepository } from './auth/jsonFileUserRepository.js';
 import { createMemoryUserRepository } from './auth/memoryUserRepository.js';
 import type { UserRepository } from './auth/repositories.js';
@@ -21,6 +21,7 @@ import { createRateLimiter } from './middleware/rateLimit.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
 import { securityHeadersMiddleware } from './middleware/securityHeaders.js';
 import { sessionMiddleware } from './middleware/session.js';
+import { deviceMiddleware } from './middleware/device.js';
 import { sendFailure } from './respond.js';
 import { AUTHZ_DENIED_MESSAGE } from './auth/authorization.js';
 import { hasPermission, roleAtLeast } from '@drobon/shared';
@@ -29,6 +30,35 @@ import { createAuthzRoutes } from './routes/authz.js';
 import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
+import { createSubscriptionRoutes } from './routes/subscription.js';
+import { createUsageRoutes } from './routes/usage.js';
+import { createProjectRoutes } from './routes/projects.js';
+import { createUsageService, type UsageService } from './usage/service.js';
+import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
+import {
+  createJsonFileProjectStore,
+  createMemoryProjectStore,
+  type ProjectStore,
+} from './projects/store.js';
+import {
+  createJsonFileScanStore,
+  createMemoryScanStore,
+  type ScanStore,
+} from './scans/store.js';
+import {
+  createJsonFileSourceStore,
+  createMemorySourceStore,
+  type SourceSnapshotStore,
+} from './scans/sources.js';
+import { createSastEngine } from './scans/sast/engine.js';
+import { createScaEngine } from './scans/sca/engine.js';
+import { createSecretsEngine } from './scans/secrets/engine.js';
+import { createNullIntelligenceProvider } from './scans/sca/provider.js';
+import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
+import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
+import { createScanRoutes } from './routes/scans.js';
+import { createSourceRoutes } from './routes/sources.js';
+import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 
 export interface AppDeps {
@@ -51,12 +81,66 @@ export interface AppDeps {
   users?: UserRepository;
   /** Session store. Defaults to a fresh in-memory store (Pump 2). */
   sessions?: SessionStore;
+  /**
+   * Usage/quota store (Pump 5). Defaults to the durable JSON store at
+   * `config.usageStorePath` (`:memory:` for explicitly ephemeral setups).
+   * Tests inject their own instance to control persistence.
+   */
+  usageStore?: UsageStore;
+  /**
+   * Clock for usage period math (epoch ms, injectable so tests exercise
+   * UTC month boundaries deterministically).
+   */
+  usageNow?: () => number;
+  /**
+   * Project store (Pump 6). Defaults to the durable JSON store at
+   * `config.projectStorePath` (`:memory:` for explicitly ephemeral
+   * setups). Tests inject their own instance to control persistence.
+   */
+  projectStore?: ProjectStore;
+  /**
+   * Scan-job store (Pump 7). Defaults to the durable JSON store at
+   * `config.scanStorePath` (`:memory:` for explicitly ephemeral
+   * setups). Tests inject their own instance to control persistence.
+   */
+  scanStore?: ScanStore;
+  /**
+   * Source-snapshot store (Pump 8) — the SAST scan target. Defaults to
+   * the durable JSON store at `config.sourceStorePath` (`:memory:` for
+   * explicitly ephemeral setups). Tests inject their own instance to
+   * control persistence.
+   */
+  sourceStore?: SourceSnapshotStore;
+  /**
+   * Scanner engines. DEFAULT (Pump 8): the REAL SAST engine is
+   * registered — SAST scans actually analyze the project's source
+   * snapshot and produce real findings. SCA/SECRETS/DAST remain
+   * unimplemented (SCAN_ENGINE_NOT_IMPLEMENTED). Pass an explicit list
+   * (including `[]`) to control the registry exactly — tests do.
+   */
+  scanEngines?: readonly ScanEngine[];
+  /**
+   * Scan processor interval (Pump 7; default 5s, injectable for tests).
+   */
+  scanProcessorIntervalMs?: number;
+  /**
+   * Auto-start the scan processor (default true — the server runtime
+   * calls start() on boot: recover interrupted scans, drain QUEUED
+   * work, run the sweep). Tests disable it for deterministic control.
+   */
+  scanProcessorAutoStart?: boolean;
 }
 
 export interface App {
   handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   routes: Route[];
   resetRateLimit: () => void;
+  /**
+   * The scan processor (Pump 7): recovery + worker loop + periodic
+   * sweep. The server runtime starts it on boot; tests drive it
+   * explicitly.
+   */
+  scanProcessor: ScanProcessor;
 }
 
 /** Direct peer address only — proxy headers (`X-Forwarded-For`) are never trusted. */
@@ -97,6 +181,65 @@ export function createApp(deps: AppDeps): App {
       : createJsonFileUserRepository(config.authStorePath));
   const sessions: SessionStore =
     deps.sessions ?? createSessionStore({ ttlSeconds: config.authSessionTtlSeconds });
+  // Usage/quota store (Pump 5): durable by default (fail-fast on a
+  // corrupt document — the process refuses to start, quotas never
+  // silently reset); tests inject their own store.
+  const usageStore: UsageStore =
+    deps.usageStore ??
+    (config.usageStorePath === ':memory:'
+      ? createMemoryUsageStore()
+      : createUsageFileStore(config.usageStorePath));
+  const projectStore: ProjectStore =
+    deps.projectStore ??
+    (config.projectStorePath === ':memory:'
+      ? createMemoryProjectStore()
+      : createJsonFileProjectStore(config.projectStorePath));
+  // Scan-job store (Pump 7): durable by default (fail-fast on a corrupt
+  // document — createApp throws, the process refuses to start). Tests
+  // inject their own store; `:memory:` is the ephemeral dev opt-in.
+  const scanStore: ScanStore =
+    deps.scanStore ??
+    (config.scanStorePath === ':memory:'
+      ? createMemoryScanStore()
+      : createJsonFileScanStore(config.scanStorePath));
+  // Source-snapshot store (Pump 8): durable by default (fail-fast on a
+  // corrupt document — the process refuses to start). Tests inject
+  // their own store; `:memory:` is the ephemeral dev opt-in.
+  const sourceStore: SourceSnapshotStore =
+    deps.sourceStore ??
+    (config.sourceStorePath === ':memory:'
+      ? createMemorySourceStore()
+      : createJsonFileSourceStore(config.sourceStorePath));
+  // The engine registry (server-side composition ONLY). Pump 8: the
+  // REAL SAST engine (static analysis of the project's source
+  // snapshot — see scans/sast/). Pump 9: SCA joins as a REAL engine
+  // (manifests → inventory → SBOM → honest assessment; the
+  // intelligence provider comes from config — 'none', the only value
+  // today, enforced by the dataset lock → Null provider → honest
+  // NOT_ASSESSED). PUMP 10: SECRETS joins as a REAL engine
+  // (hardcoded-secret detection with mandatory evidence redaction —
+  // see scans/secrets/). DAST remains unregistered (honest
+  // NOT_IMPLEMENTED).
+  const intelligenceProvider = createNullIntelligenceProvider();
+  const scanEngines: ScanEngineRegistry = createEngineRegistry(
+    deps.scanEngines ?? [
+      createSastEngine({ sources: sourceStore }),
+      createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
+      createSecretsEngine({ sources: sourceStore }),
+    ],
+  );
+  const scanProcessor: ScanProcessor = createScanProcessor({
+    store: scanStore,
+    engines: scanEngines,
+    logger,
+    ...(deps.scanProcessorIntervalMs === undefined
+      ? {}
+      : { intervalMs: deps.scanProcessorIntervalMs }),
+  });
+  const usage: UsageService = createUsageService({
+    store: usageStore,
+    ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
+  });
 
   const routes: Route[] = [
     ...createHealthRoutes({ config }),
@@ -104,6 +247,19 @@ export function createApp(deps: AppDeps): App {
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
+    ...createSubscriptionRoutes(),
+    ...createUsageRoutes({ config, users, usage }),
+    ...createProjectRoutes({ config, projects: projectStore }),
+    ...createScanRoutes({
+      config,
+      users,
+      projects: projectStore,
+      scans: scanStore,
+      sources: sourceStore,
+      usage,
+      processor: scanProcessor,
+    }),
+    ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -135,7 +291,8 @@ export function createApp(deps: AppDeps): App {
 
   // Pipeline order (docs/ARCHITECTURE.md): request ID → security headers →
   // CORS → global rate limit → credential-endpoint rate limit → CSRF origin
-  // guard → session resolution → routing (with requireAuth boundary).
+  // guard → session resolution → device resolution (usage anti-abuse) →
+  // routing (with requireAuth boundary).
   const middlewares: Middleware[] = [
     requestIdMiddleware(),
     securityHeadersMiddleware(),
@@ -144,6 +301,7 @@ export function createApp(deps: AppDeps): App {
     authRateLimiter.middleware,
     originGuardMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     sessionMiddleware({ sessions, users, cookieSecure: config.cookieSecure }),
+    deviceMiddleware({ cookieSecure: config.cookieSecure }),
   ];
 
   const routeRequest = async (
@@ -151,10 +309,22 @@ export function createApp(deps: AppDeps): App {
     res: ServerResponse,
     ctx: RequestContext,
   ): Promise<void> => {
-    const match = routes.find(
-      (route) => route.method === ctx.method && route.path === ctx.pathname,
-    );
-    if (match !== undefined) {
+    // Pump 6: routes may be parameterized (`:segment`); exact-match
+    // routes keep their original semantics (see matchRoutePath).
+    let matchParams: Record<string, string> | undefined;
+    const match = routes.find((route) => {
+      if (route.method !== ctx.method) {
+        return false;
+      }
+      const params = matchRoutePath(route.path, ctx.pathname);
+      if (params === undefined) {
+        return false;
+      }
+      matchParams = params;
+      return true;
+    });
+    if (match !== undefined && matchParams !== undefined) {
+      ctx.params = matchParams;
       // Authentication first (401), then authorization (403) — one choke
       // point for every protected route, in the pipeline's documented
       // order. Handlers behind these flags can trust `ctx.user`/`ctx.authz`.
@@ -183,7 +353,7 @@ export function createApp(deps: AppDeps): App {
       return;
     }
     const allowed = routes
-      .filter((route) => route.path === ctx.pathname)
+      .filter((route) => matchRoutePath(route.path, ctx.pathname) !== undefined)
       .map((route) => route.method);
     if (allowed.length > 0) {
       throw methodNotAllowed(allowed);
@@ -199,6 +369,7 @@ export function createApp(deps: AppDeps): App {
       ip: clientIp(req),
       startedAtMs: clock(),
       logger,
+      params: {},
     };
     // A dead client socket must never crash the process: a write to an
     // aborted response emits 'error' on the response stream.
@@ -240,12 +411,23 @@ export function createApp(deps: AppDeps): App {
             err: error,
           });
         } else if (status === 429) {
-          logger.warn('Request rate limited', {
-            requestId: ctx.id,
-            method: ctx.method,
-            path: ctx.pathname,
-            status,
-          });
+          // Two distinct 429 causes with different meanings: transport
+          // rate limiting vs. plan quota exhaustion (Pump 5).
+          if (isAppError(error) && error.code === 'QUOTA_EXCEEDED') {
+            logger.warn('Scan quota exceeded', {
+              requestId: ctx.id,
+              method: ctx.method,
+              path: ctx.pathname,
+              status,
+            });
+          } else {
+            logger.warn('Request rate limited', {
+              requestId: ctx.id,
+              method: ctx.method,
+              path: ctx.pathname,
+              status,
+            });
+          }
         } else {
           logger.info('Request rejected', {
             requestId: ctx.id,
@@ -266,9 +448,19 @@ export function createApp(deps: AppDeps): App {
     }
   };
 
+  // Pump 7: the server runtime starts the scan processor on boot
+  // (recovery + drain + sweep). Tests disable auto-start for
+  // deterministic control (they call scanProcessor.drain() explicitly).
+  if (deps.scanProcessorAutoStart !== false) {
+    void scanProcessor.start().catch((error: unknown) => {
+      logger.error('Scan processor failed to start', { err: error });
+    });
+  }
+
   return {
     handle,
     routes,
+    scanProcessor,
     resetRateLimit: (): void => {
       rateLimiter.reset();
       authRateLimiter.reset();

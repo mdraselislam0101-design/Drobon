@@ -236,6 +236,12 @@ describe('auth security controls', () => {
             authRateLimitWindowMs: 60_000,
             cookieSecure: false,
             authzProbeRoutes: true,
+            usageStorePath: `${dir}/usage.json`,
+            usageConsumeRoutes: true,
+            projectStorePath: `${dir}/projects.json`,
+            scanStorePath: `${dir}/scans.json`,
+            sourceStorePath: ':memory:',
+    vulnIntelProvider: 'none' as const,
           },
           logger: createLogger({ level: 'error', out: () => undefined }),
         });

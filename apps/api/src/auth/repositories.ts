@@ -1,9 +1,11 @@
-import type { AccountRole, AuthUser, UserType } from '@drobon/shared';
+import type { AccountRole, AuthUser, Subscription, UserType } from '@drobon/shared';
+import { normalizeSubscription } from './subscriptions.js';
 
 /**
  * The minimum persistence boundary required by authentication (Pump 2),
  * extended by Pump 3 for authorization (role + user type live on the
- * account record — nothing else was added to persistence).
+ * account record) and by Pump 4 for the commercial foundation
+ * (subscription state lives on the account record — no second store).
  *
  * Everything account-related goes through this interface — the HTTP layer,
  * session middleware and tests only ever see `UserRepository`. The later
@@ -27,6 +29,15 @@ export interface UserRecord {
   role: AccountRole;
   /** Classification/visibility tag — never used for access decisions. */
   userType: UserType | null;
+  /**
+   * Commercial subscription state (Pump 4). `undefined` on records that
+   * predate Pump 4 — those resolve to the documented legacy default
+   * (FREE + ACTIVE) via `resolveSubscription`. When present it is ALWAYS
+   * normalized fail-closed by `parseStoredUser`: corrupt subscription
+   * data degrades the account to safe commercial defaults instead of
+   * refusing the store (it can only lose entitlements, never grant them).
+   */
+  subscription?: Subscription;
 }
 
 export interface UserRepository {
@@ -54,10 +65,17 @@ export function toAuthUser(record: UserRecord): AuthUser {
 /**
  * Parse + normalize a record loaded from durable storage.
  *
- * Migration rule (Pump 3): Pump 2-era records without `role`/`userType`
- * remain valid and are read as `MEMBER` / `null`. When the fields ARE
- * present they are validated strictly — a corrupt authorization field
- * refuses to load (fail fast, same posture as the rest of the store).
+ * Migration rules:
+ * - Pump 2→3: records without `role`/`userType` remain valid and are read
+ *   as `MEMBER` / `null`. When the fields ARE present they are validated
+ *   strictly — a corrupt authorization field refuses to load (fail fast,
+ *   same posture as the rest of the store).
+ * - Pump 3→4: records without `subscription` remain valid (the key stays
+ *   absent and resolves to FREE + ACTIVE). When present it is normalized
+ *   FAIL-CLOSED by `normalizeSubscription` — corrupt subscription data
+ *   never refuses the store and can never grant PRO; it degrades to safe
+ *   defaults (see `auth/subscriptions.ts` for the rationale).
+ *
  * Returns `undefined` when the record is structurally invalid.
  */
 export function parseStoredUser(value: unknown): UserRecord | undefined {
@@ -101,6 +119,7 @@ export function parseStoredUser(value: unknown): UserRecord | undefined {
   } else {
     return undefined;
   }
+  const subscriptionValue = record['subscription'];
   return {
     id: record['id'],
     email: record['email'],
@@ -108,6 +127,11 @@ export function parseStoredUser(value: unknown): UserRecord | undefined {
     createdAt: record['createdAt'],
     role,
     userType,
+    // Absent on pre-Pump-4 records (key stays absent → legacy default);
+    // present-but-corrupt degrades fail-closed instead of failing the store.
+    ...(subscriptionValue === undefined || subscriptionValue === null
+      ? {}
+      : { subscription: normalizeSubscription(subscriptionValue) }),
   };
 }
 

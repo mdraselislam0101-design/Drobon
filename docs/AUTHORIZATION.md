@@ -101,8 +101,13 @@ production functionality (tested).
 Role management UI/first-admin bootstrap (roles are assigned by operators
 directly on the store today), roles-as-claims in tokens, ABAC/ReBAC
 policies, per-resource ACLs, audit trail of role changes, UserType-based
-product features, plans/entitlements, admin/partner permissions beyond
+product features, admin/partner permissions beyond
 the table above.
+
+Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
+`docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never
+entitlement inputs: an ADMIN or ACCOUNT_OWNER on the FREE plan has
+exactly FREE entitlements.
 
 ## Test coverage map
 
@@ -120,4 +125,7 @@ the table above.
 - Web: verdicts/forbidden state/visibility/guards —
   `apps/web/test/authzUi.test.tsx`; client boundary —
   `authClient.test.ts` (authorization describe block).
+- Subscription/entitlement boundary (Pump 4, independent of roles):
+  `subscriptionApi.test.ts`, `subscriptionMatrix.test.ts`,
+  `apps/web/test/subscriptionUi.test.tsx` — see `docs/SUBSCRIPTIONS.md`.
 - End-to-end evidence: `docs/BUILD_VERIFICATION.md`.

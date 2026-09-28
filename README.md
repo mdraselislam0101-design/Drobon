@@ -1,18 +1,24 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 3: foundation + authentication +
-authorization**, cumulative on top of the verified Pump 1 + Pump 2 base.
+Cybersecurity application — **Pump 4: foundation + authentication +
+authorization + plans/subscriptions/entitlements**, cumulative on top of
+the verified Pump 1 + Pump 2 + Pump 3 base.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
 authentication (registration/login/logout, httpOnly sessions, protected
-routes, minimal durable account persistence). Pump 3 adds the
-authorization + access-control foundation on top: account roles
-(MEMBER < ADMIN < ACCOUNT_OWNER), a shared permission table, role/permission
-guards at the router, ownership checks, forbidden/unauthorized states, and
-role-aware UI (UX defense-in-depth — the API remains the real boundary).
-There is still **no database phase, no security dataset, and no product
-features** (scanning, findings, admin console, etc. arrive later).
+routes, minimal durable account persistence). Pump 3 added the
+authorization + access-control foundation (account roles
+MEMBER < ADMIN < ACCOUNT_OWNER, shared permission table, router guards,
+ownership checks, role-aware UI). Pump 4 adds the commercial foundation
+on top: exactly two plans (**FREE**, **PRO**), a minimal subscription
+state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
+store, a single server-authoritative entitlement decision point, a
+read-only self-only `GET /api/v1/subscription`, and plan/entitlement
+views on the Account page. Role and UserType never grant PRO.
+There is still **no database phase, no payment implementation, no
+security dataset, and no product features** (scanning, findings, admin
+console, etc. arrive later).
 
 ## Layout
 
@@ -68,31 +74,116 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/ARCHITECTURE.md` — components, contracts, request lifecycle
 - `docs/AUTHENTICATION.md` — auth design: sessions, hashing, persistence
 - `docs/AUTHORIZATION.md` — roles, permission table, guards, ownership
+- `docs/SUBSCRIPTIONS.md` — plans, subscription states, entitlement authority
+- `docs/USAGE.md` — usage quota, UTC periods, device policy, consume boundary
+- `docs/PROJECTS.md` — project model, ownership, CRUD, lifecycle, scan boundary
+- `docs/SCANS.md` — scan jobs, quota atomicity, idempotency, processor, engine boundary
+- `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
+- `docs/SCA.md` — the real SCA engine: manifest parsing, inventory, SBOM, the dataset lock
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 3, cumulative)
+## Scope (Pump 7, cumulative)
 
-**Included:** everything from Pumps 1–2 (Web shell, typed API client,
+**Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
 headers, worker contracts, redacted structured logging, authentication
-with sessions/scrypt/persistence) **plus**: `AccountRole` and `UserType`
-contracts, central permission table, `requireRole`/`requirePermission`
-router enforcement (401 vs 403 semantics), capability probes (dev/test
-only), ownership-checked user reads, forbidden state + role-aware route
-guards, permission-aware UI, role badges.
+with sessions/scrypt/persistence, roles + permission table + router
+enforcement + ownership checks + role-aware UI, plans/subscriptions/
+entitlements) **plus**: the usage quota foundation — `FREE_MONTHLY_SCAN_QUOTA`
+(3 scans/UTC month) and the shared `UsageResponse` contract with strict
+guards, a single server-authoritative usage service (UTC period
+derivation, account + shared-device counters, atomic
+check-and-increment consumption, PRO exemption through the Pump 4
+entitlement pipeline), a durable JSON usage store surviving restarts
+(atomic writes, corrupt documents refuse to start), the opaque
+server-issued `drobon_device` cookie (hashed at rest, hardened
+attributes, shared-device allowance for FREE accounts), read-only
+self-only `GET /api/v1/usage` (401 anonymous, no IDOR, no mutation
+methods, no device identifiers exposed), a dev/test-gated consumption
+probe (404 in production), and the Account-page monthly usage section
+(display-only, fail-closed). See `docs/USAGE.md`.
 
-**NOT included:** the broader database phase, any security dataset
-(CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds), role management console,
-email verification, password reset, MFA, plans/entitlements, scanning,
-findings, reports, remediation, AI assistance, admin dashboard, payments,
-partner/referral, UserType-specific product features. See the
-NOT_IMPLEMENTED sections in `docs/`.
+**PLUS Pump 6 (Projects foundation)**: the user-owned Project container
+for all future security work — shared `Project` contract with strict
+guards (no owner field in responses), server-authoritative ownership
+(uniform 403 cross-account, role/UserType never grant it), REST CRUD +
+explicit archive/unarchive lifecycle on parameterized routes, durable
+JSON project store (atomic, serialized, restart-persistent,
+fail-fast), NFC-normalized bounded text validation, and the Projects
+web experience (list/create/edit/lifecycle, protected routes,
+fail-closed states). Project CRUD never consumes a scan. See
+`docs/PROJECTS.md`.
+
+**PLUS Pump 7 (Secure scan-job foundation)**: the orchestration boundary
+future scanner engines plug into — durable scan jobs (`scan_` UUID ids,
+server-authoritative QUEUED→RUNNING→COMPLETED/FAILED lifecycle, no
+client mutation path), quota consumed EXACTLY once per created scan and
+atomically with the durable append (FREE 3/month + shared-device pool
+enforced under 10-way concurrency; PRO exempt), idempotency keys scoped
+per account for retry safety, a durable worker loop with
+claim-once/finish-once semantics, crash recovery (interrupted scans →
+FAILED/SCAN_INTERRUPTED), the empty-by-design scanner-engine registry
+(every scan honestly fails SCAN_ENGINE_NOT_IMPLEMENTED — never a fake
+result; NO vulnerability datasets, the dataset lock holds), archived
+projects reject new scans while history stays readable, and the web
+scan experience inside the project page. See `docs/SCANS.md`.
+
+**PLUS Pump 8 (Real SAST engine)**: the first REAL scanner — static
+analysis of an uploaded source snapshot (project-scoped, path-policy
+validated, 200 files / 256 KiB / 768 KiB caps, key material rejected).
+Six deterministic rules (command injection, SQL injection, raw-HTML
+sinks, eval, hardcoded credentials, weak hashes) produce genuine
+findings: stable rule ids, fixed severities, CWE mappings, bounded
+redacted evidence and remediation. Analysis only — source files are
+NEVER executed; every dimension is capped (files, bytes, findings,
+10 s deadline) with fail-closed codes. Findings persist atomically
+with COMPLETED, are readable only via the scan detail route, and
+render in the web UI as text. SECRETS (Pump 10) detects hardcoded
+secrets over the same snapshot with mandatory redaction; DAST still
+fails honestly
+with SCAN_ENGINE_NOT_IMPLEMENTED; the dataset lock holds. See
+`docs/SAST.md` and `docs/SCANS.md`.
+
+**PLUS Pump 9 (Real SCA engine — honest by construction)**: software-
+composition analysis of the same uploaded snapshot's dependency
+manifests (package.json, package-lock.json v1–v3, requirements.txt,
+pyproject.toml PEP 621 + Poetry). Defensive parsers (prototype-key
+discipline, entry/line bounds, invalid data dropped — never guessed)
+build a normalized inventory: direct vs transitive with lockfile
+evidence, declared AND resolved versions both preserved, deterministic
+fingerprints/ids (no random UUIDs), and a CycloneDX 1.5-subset SBOM
+with a content-derived serial. Analysis only — nothing is ever
+installed or executed (postinstall scripts are inert data, verified by
+marker-file tests). THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS
+data enters the repo; with no dataset the assessment is honestly
+NOT_ASSESSED with ZERO advisories while the inventory and SBOM stay
+real — a vulnerable-looking fixture yields no fabricated findings.
+The VulnerabilityIntelligenceProvider boundary is injectable and
+tested with synthetic fixtures (tests only), so the advisory path is
+real. SCA payloads persist atomically, ride the detail route only,
+survive restarts, and render distinctly from SAST in the web UI.
+See `docs/SCA.md`.
+
+**NOT included:** the remaining scan engines (DAST —
+SAST and SCA ship above), vulnerability
+datasets, the broader database phase,
+payments/billing (no gateway, coupons, partner/referral or approval
+UI), plan mutation workflow (`plan:manage` is granted to no one), usage
+analytics/history, operator quota adjustments, device-management UI,
+any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
+role management console, email verification, password reset, MFA,
+findings, reports, remediation, AI assistance, admin dashboard,
+UserType-specific product features. See the NOT_IMPLEMENTED sections in
+`docs/`.
 
 ## Status
 
-Pump 3 — foundation + authentication + authorization. See
-`docs/BUILD_VERIFICATION.md` for the latest verification evidence and
-`git log` for history.
+Pump 9 — foundation + authentication + authorization + plans/
+subscriptions/entitlements + usage quota & device anti-abuse +
+projects + secure scan-job foundation + the REAL SAST engine + the
+REAL SCA engine (dependency inventory, SBOM, honest NOT_ASSESSED
+dataset lock). See `docs/BUILD_VERIFICATION.md` for the latest
+verification evidence and `git log` for history.

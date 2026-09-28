@@ -47,6 +47,51 @@ export interface ApiConfig {
    * The ownership route (`GET /api/v1/users`) is always registered.
    */
   authzProbeRoutes: boolean;
+  /**
+   * Where durable usage/quota counters live (Pump 5): a filesystem path
+   * (same minimum-persistence pattern as the account store) or the
+   * literal `:memory:` for explicitly ephemeral setups — rejected in
+   * production by {@link loadConfig} (quota state must survive restarts,
+   * otherwise a restart would reset allowances).
+   */
+  usageStorePath: string;
+  /**
+   * Whether the scan-consumption probe (`POST /api/v1/usage/consume`) is
+   * registered. Derived: enabled outside production only — it exists so
+   * the usage boundary is observable and E2E-testable before the real
+   * Scan/Job system lands. In production it 404s; production scan
+   * consumption will happen inside the future scan workflow, never
+   * through a user-callable endpoint. `GET /api/v1/usage` is always
+   * registered (it is a real user-facing feature).
+   */
+  usageConsumeRoutes: boolean;
+  /**
+   * Where durable project records live (Pump 6): a filesystem path
+   * (same minimum-persistence pattern as the account and usage stores)
+   * or the literal `:memory:` for explicitly ephemeral setups — rejected
+   * in production by {@link loadConfig} (projects must survive restarts).
+   */
+  projectStorePath: string;
+  /**
+   * Durable scan-job store path (Pump 7). `:memory:` is the explicitly
+   * ephemeral dev/test opt-in — rejected in production (scan state must
+   * survive restarts).
+   */
+  scanStorePath: string;
+  /**
+   * Durable source-snapshot store path (Pump 8 — the SAST scan
+   * target). `:memory:` is the explicitly ephemeral dev/test opt-in —
+   * rejected in production (scan targets must survive restarts).
+   */
+  sourceStorePath: string;
+  /**
+   * The vulnerability-intelligence provider selector (Pump 9).
+   * `none` — the ONLY supported value — selects the locked Null
+   * provider (no dataset; assessments are honestly NOT_ASSESSED /
+   * NO_DATA_LOADED). A future real dataset integration registers a
+   * new selector here; anything unknown fails fast at startup.
+   */
+  vulnIntelProvider: 'none';
 }
 
 export class ConfigError extends Error {
@@ -209,6 +254,61 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('AUTH_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
   }
 
+  // --- Usage / quota (Pump 5) --------------------------------------------
+  const usageStorePath = (env['USAGE_STORE_PATH'] ?? '.data/usage.json').trim();
+  const usageMemoryStore = usageStorePath === ':memory:';
+  if (usageStorePath.length === 0) {
+    issues.push('USAGE_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (usageMemoryStore && environment === 'production') {
+    issues.push(
+      'USAGE_STORE_PATH=":memory:" is not allowed in production (quota state would not persist)',
+    );
+  }
+
+  // --- Scans (Pump 7) -------------------------------------------------------
+  const scanStorePath = (env['SCAN_STORE_PATH'] ?? '.data/scans.json').trim();
+  const scanMemoryStore = scanStorePath === ':memory:';
+  if (scanStorePath.length === 0) {
+    issues.push('SCAN_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (scanMemoryStore && environment === 'production') {
+    issues.push(
+      'SCAN_STORE_PATH=":memory:" is not allowed in production (scan jobs would not persist)',
+    );
+  }
+
+  // --- Sources (Pump 8) -----------------------------------------------------
+  // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
+  // only 'none' exists today, so any attempt to point the app at a
+  // "dataset" fails fast instead of silently pretending.
+  const vulnIntelProviderRaw = (env['VULN_INTEL_PROVIDER'] ?? 'none').trim();
+  if (vulnIntelProviderRaw !== 'none') {
+    issues.push(
+      `VULN_INTEL_PROVIDER must be "none" (no vulnerability dataset is bundled; external intelligence is a separate future integration)`,
+    );
+  }
+  const vulnIntelProvider = 'none' as const;
+
+  const sourceStorePath = (env['SOURCE_STORE_PATH'] ?? '.data/sources.json').trim();
+  const sourceMemoryStore = sourceStorePath === ':memory:';
+  if (sourceStorePath.length === 0) {
+    issues.push('SOURCE_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (sourceMemoryStore && environment === 'production') {
+    issues.push(
+      'SOURCE_STORE_PATH=":memory:" is not allowed in production (scan targets would not persist)',
+    );
+  }
+
+  // --- Projects (Pump 6) ----------------------------------------------------
+  const projectStorePath = (env['PROJECT_STORE_PATH'] ?? '.data/projects.json').trim();
+  const projectMemoryStore = projectStorePath === ':memory:';
+  if (projectStorePath.length === 0) {
+    issues.push('PROJECT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (projectMemoryStore && environment === 'production') {
+    issues.push(
+      'PROJECT_STORE_PATH=":memory:" is not allowed in production (projects would not persist)',
+    );
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -230,5 +330,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     authRateLimitWindowMs,
     cookieSecure: environment === 'production',
     authzProbeRoutes: environment !== 'production',
+    usageStorePath,
+    usageConsumeRoutes: environment !== 'production',
+    projectStorePath,
+    scanStorePath,
+    sourceStorePath,
+    vulnIntelProvider,
   };
 }

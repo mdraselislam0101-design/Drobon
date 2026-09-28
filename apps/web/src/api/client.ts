@@ -3,6 +3,14 @@ import {
   isCapabilityResponse,
   isCurrentUserResponse,
   isLogoutResponse,
+  isProjectResponse,
+  isProjectsResponse,
+  isScanDetailResponse,
+  isScanResponse,
+  isScansResponse,
+  isSourceSnapshotResponse,
+  isSubscriptionResponse,
+  isUsageResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AuthResponse,
@@ -12,7 +20,17 @@ import {
   type HealthResponse,
   type CurrentUserResponse,
   type LogoutResponse,
+  type ProjectResponse,
+  type ProjectsResponse,
+  type ScanDetailResponse,
+  type ScanResponse,
+  type ScansResponse,
+  type ScanType,
+  type SourceFileInput,
+  type SourceSnapshotResponse,
   type StatusResponse,
+  type SubscriptionResponse,
+  type UsageResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -100,6 +118,95 @@ export interface ApiClient {
    * account; ADMIN+ for others; uniform 403 otherwise.
    */
   getUserById(id: string, signal?: AbortSignal): Promise<CurrentUserResponse>;
+  /**
+   * The authenticated account's OWN subscription + the entitlements the
+   * server derives from it (Pump 4). Read-only; rejects with 401 when
+   * anonymous. The response is validated against the shared guard — the
+   * client renders the server's verdict and never recomputes it.
+   */
+  getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
+  /**
+   * The authenticated account's OWN usage view (Pump 5): plan, current
+   * UTC period, used/limit/remaining and the quota status. Read-only and
+   * display-only; rejects with 401 when anonymous. The response is
+   * validated against the shared guard — the server computes the quota,
+   * the client only renders it.
+   */
+  getUsage(signal?: AbortSignal): Promise<UsageResponse>;
+  /**
+   * The authenticated caller's OWN projects (Pump 6), ordered
+   * `updatedAt` DESC then `id` ASC by the server. Rejects with 401 when
+   * anonymous. Validated by the shared guard.
+   */
+  getProjects(signal?: AbortSignal): Promise<ProjectsResponse>;
+  /**
+   * One of the caller's OWN projects. A missing/foreign/malformed id
+   * rejects with 403 (the API's uniform no-oracle denial).
+   */
+  getProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /**
+   * Create a project. The server assigns id, ownership, status (ACTIVE)
+   * and timestamps — only name/description travel in the body.
+   */
+  createProject(
+    input: { name: string; description?: string },
+    signal?: AbortSignal,
+  ): Promise<ProjectResponse>;
+  /**
+   * Update a project's name/description (owner only). Status changes go
+   * through the explicit archive/unarchive operations.
+   */
+  updateProject(
+    projectId: string,
+    input: { name?: string; description?: string },
+    signal?: AbortSignal,
+  ): Promise<ProjectResponse>;
+  /** Archive a project (explicit lifecycle operation, owner only, idempotent). */
+  archiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /** Unarchive a project (explicit lifecycle operation, owner only, idempotent). */
+  unarchiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /**
+   * One project's scans (Pump 7), in the server's documented order.
+   * A missing/foreign/malformed project id fails with the server's
+   * uniform 403 — the honest error.
+   */
+  getScans(projectId: string, signal?: AbortSignal): Promise<ScansResponse>;
+  /**
+   * Request a scan (Pump 7). The client supplies ONLY the scan type and
+   * an idempotency key — ownership, quota, ids, status and timestamps
+   * are all server-authoritative. The key makes network retries safe:
+   * a retry returns the ORIGINAL scan instead of charging twice.
+   */
+  createScan(
+    projectId: string,
+    scanType: ScanType,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ScanResponse>;
+  /**
+   * One scan's detail (Pump 8): the scan AND its real findings (bounded,
+   * server-ordered) — the only read surface for findings.
+   */
+  getScan(
+    projectId: string,
+    scanId: string,
+    signal?: AbortSignal,
+  ): Promise<ScanDetailResponse>;
+  /**
+   * The project's source-snapshot metadata (Pump 8) — the SAST scan
+   * target. Content never travels back; 404 means no snapshot yet.
+   */
+  getSources(projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse>;
+  /**
+   * Replace (or clear) the project's source snapshot — the deterministic
+   * SAST input. Paths and content are validated by the server's single
+   * path policy; the client sends exactly { files: [{ path, content }] }.
+   */
+  uploadSources(
+    projectId: string,
+    files: SourceFileInput[],
+    signal?: AbortSignal,
+  ): Promise<SourceSnapshotResponse>;
 }
 
 /**
@@ -301,6 +408,127 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/users?id=${encodeURIComponent(id)}`,
         signal === undefined ? {} : { signal },
         isCurrentUserResponse,
+      ),
+    getSubscription: (signal?: AbortSignal): Promise<SubscriptionResponse> =>
+      authRequest<SubscriptionResponse>(
+        '/api/v1/subscription',
+        signal === undefined ? {} : { signal },
+        isSubscriptionResponse,
+      ),
+    getUsage: (signal?: AbortSignal): Promise<UsageResponse> =>
+      authRequest<UsageResponse>(
+        '/api/v1/usage',
+        signal === undefined ? {} : { signal },
+        isUsageResponse,
+      ),
+    getProjects: (signal?: AbortSignal): Promise<ProjectsResponse> =>
+      authRequest<ProjectsResponse>(
+        '/api/v1/projects',
+        signal === undefined ? {} : { signal },
+        isProjectsResponse,
+      ),
+    getProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}`,
+        signal === undefined ? {} : { signal },
+        isProjectResponse,
+      ),
+    createProject: (
+      input: { name: string; description?: string },
+      signal?: AbortSignal,
+    ): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        '/api/v1/projects',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isProjectResponse,
+      ),
+    updateProject: (
+      projectId: string,
+      input: { name?: string; description?: string },
+      signal?: AbortSignal,
+    ): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isProjectResponse,
+      ),
+    archiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/archive`,
+        { method: 'POST', ...(signal === undefined ? {} : { signal }) },
+        isProjectResponse,
+      ),
+    unarchiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
+      authRequest<ProjectResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/unarchive`,
+        { method: 'POST', ...(signal === undefined ? {} : { signal }) },
+        isProjectResponse,
+      ),
+    getScans: (projectId: string, signal?: AbortSignal): Promise<ScansResponse> =>
+      authRequest<ScansResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
+        signal === undefined ? {} : { signal },
+        isScansResponse,
+      ),
+    createScan: (
+      projectId: string,
+      scanType: ScanType,
+      idempotencyKey: string,
+      signal?: AbortSignal,
+    ): Promise<ScanResponse> =>
+      authRequest<ScanResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'idempotency-key': idempotencyKey,
+          },
+          body: JSON.stringify({ scanType }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isScanResponse,
+      ),
+    getScan: (
+      projectId: string,
+      scanId: string,
+      signal?: AbortSignal,
+    ): Promise<ScanDetailResponse> =>
+      authRequest<ScanDetailResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}`,
+        signal === undefined ? {} : { signal },
+        isScanDetailResponse,
+      ),
+    getSources: (projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse> =>
+      authRequest<SourceSnapshotResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/sources`,
+        signal === undefined ? {} : { signal },
+        isSourceSnapshotResponse,
+      ),
+    uploadSources: (
+      projectId: string,
+      files: SourceFileInput[],
+      signal?: AbortSignal,
+    ): Promise<SourceSnapshotResponse> =>
+      authRequest<SourceSnapshotResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/sources`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ files }),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isSourceSnapshotResponse,
       ),
   };
 }

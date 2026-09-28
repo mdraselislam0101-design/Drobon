@@ -7,6 +7,8 @@ import { Layout } from './components/Layout.js';
 import { ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { HomePage } from './pages/HomePage.js';
+import { ProjectDetailPage } from './pages/ProjectDetailPage.js';
+import { ProjectsPage } from './pages/ProjectsPage.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { NotFoundPage } from './pages/NotFoundPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
@@ -18,6 +20,8 @@ export const APP_ROUTES = {
   login: '/login',
   register: '/register',
   account: '/account',
+  projects: '/projects',
+  project: (projectId: string): string => `/projects/${projectId}`,
 } as const;
 
 /**
@@ -66,6 +70,8 @@ export function AppRoutes({
                   same boundary on every request. */}
               <Route element={<ProtectedRoute minRole="MEMBER" />}>
                 <Route path="account" element={<AccountPage />} />
+                <Route path="projects" element={<ProjectsPage />} />
+                <Route path="projects/:projectId" element={<ProjectDetailPage />} />
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>

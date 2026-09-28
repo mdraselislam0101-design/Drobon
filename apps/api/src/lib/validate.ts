@@ -129,7 +129,15 @@ export function object<TShape extends Shape>(shape: TShape): Schema<InferShape<T
       const issues: ValidationIssue[] = [];
       const out = {} as InferShape<TShape>;
       for (const key of Object.keys(record)) {
-        if (!(key in shape)) {
+        // hasOwnProperty, NOT `key in shape`: the well-known keys
+        // inherited from Object.prototype (the accessor that walks the
+        // prototype chain, and `constructor`) exist on every object,
+        // so the `in` operator would silently ACCEPT them as known
+        // keys — a strict-validation bypass found by the Pump 6 audit
+        // and fixed here (they are now rejected like every other
+        // unknown property; see the regression test in
+        // test/validate.test.ts, which names them explicitly).
+        if (!Object.prototype.hasOwnProperty.call(shape, key)) {
           issues.push({ path: where === 'value' ? key : `${where}.${key}`, message: 'Unexpected property.' });
         }
       }

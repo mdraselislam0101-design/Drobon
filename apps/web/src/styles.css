@@ -343,6 +343,49 @@ a:focus-visible {
   color: var(--ok);
 }
 
+.pill-danger {
+  color: var(--danger);
+}
+
+/* Security scans (Pump 7) — the project detail's scan section. */
+.scan-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 480px;
+}
+
+.scan-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.scan-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.scan-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.scan-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .state-card {
   text-align: center;
   max-width: 560px;
@@ -500,4 +543,78 @@ code {
 .lookup-row input {
   flex: 1;
   min-width: 0;
+}
+
+/* --- Projects (Pump 6) -------------------------------------------------- */
+
+.projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.project-card {
+  padding: 1rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.project-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.project-card-head a {
+  font-weight: 600;
+  color: inherit;
+}
+
+.project-desc {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.project-meta {
+  font-size: 0.85rem;
+}
+
+/* Pump 8: findings (per completed SAST scan) and source-snapshot uploads. */
+.findings {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--border, #d0d7de);
+}
+
+.findings-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.finding-item {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.finding-item pre {
+  margin: 0;
+  padding: 0.5rem;
+  border-radius: 6px;
+  background: rgba(110, 118, 129, 0.15);
+  overflow-x: auto;
+}
+
+.finding-item pre code {
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

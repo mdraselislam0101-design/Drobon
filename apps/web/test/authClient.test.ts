@@ -231,3 +231,410 @@ describe('authorization API client (Pump 3)', () => {
     });
   });
 });
+
+describe('subscription API client (Pump 4)', () => {
+  test('getSubscription hits the read-only endpoint with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          subscription: {
+            plan: 'PRO',
+            status: 'ACTIVE',
+            createdAt: '2026-09-01T00:00:00.000Z',
+            updatedAt: '2026-09-01T00:00:00.000Z',
+          },
+          entitlements: ['plan:view', 'feature:pro'],
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getSubscription();
+    expect(result.subscription.plan).toBe('PRO');
+    expect(result.entitlements).toContain('feature:pro');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/subscription');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('anonymous 401s surface as http ApiClientError with UNAUTHORIZED', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getSubscription()).rejects.toMatchObject({
+      kind: 'http',
+      status: 401,
+      code: 'UNAUTHORIZED',
+    });
+  });
+
+  test('subscription payloads failing the shared guard are rejected', async () => {
+    // Forged plan, unknown entitlement keys, missing halves — all fail
+    // closed at the client boundary as invalid-response.
+    const bad = [
+      { subscription: { plan: 'ENTERPRISE', status: 'ACTIVE', createdAt: null, updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'active', createdAt: null, updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: 'nope', updatedAt: null }, entitlements: [] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null }, entitlements: ['feature:pro', 'plan:godmode'] },
+      { subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null } },
+      { entitlements: ['plan:view'] },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getSubscription()).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+
+  test('the client exposes no subscription mutation method', () => {
+    const client = createApiClient({ baseUrl: '', fetchImpl: vi.fn() });
+    const methods = Object.keys(client).filter((key) => key.toLowerCase().includes('subscription'));
+    // Only the read exists — there is no post/patch/put/delete to call.
+    expect(methods).toEqual(['getSubscription']);
+  });
+});
+
+describe('usage API client (Pump 5)', () => {
+  test('getUsage hits the read-only endpoint with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          plan: 'FREE',
+          period: {
+            period: '2026-09',
+            startUtc: '2026-09-01T00:00:00.000Z',
+            endUtc: '2026-10-01T00:00:00.000Z',
+          },
+          used: 3,
+          limit: 3,
+          remaining: 0,
+          quotaStatus: 'EXHAUSTED',
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getUsage();
+    expect(result.quotaStatus).toBe('EXHAUSTED');
+    expect(result.remaining).toBe(0);
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/usage');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('the PRO exempt view (null limit/remaining) validates too', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(
+        envelope({
+          plan: 'PRO',
+          period: {
+            period: '2026-09',
+            startUtc: '2026-09-01T00:00:00.000Z',
+            endUtc: '2026-10-01T00:00:00.000Z',
+          },
+          used: 12,
+          limit: null,
+          remaining: null,
+          quotaStatus: 'EXEMPT',
+        }),
+      ),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getUsage();
+    expect(result.quotaStatus).toBe('EXEMPT');
+    expect(result.limit).toBeNull();
+  });
+
+  test('anonymous 401s surface as http ApiClientError with UNAUTHORIZED', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await expect(client.getUsage()).rejects.toMatchObject({
+      kind: 'http',
+      status: 401,
+      code: 'UNAUTHORIZED',
+    });
+  });
+
+  test('usage payloads failing the shared guard are rejected', async () => {
+    // Forged plans, negative counts, invented statuses, malformed
+    // periods — all fail closed at the client boundary.
+    const bad = [
+      { plan: 'ENTERPRISE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 0, limit: 3, remaining: 3, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: -1, limit: 3, remaining: 4, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: '2', quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'UNLIMITED' },
+      { plan: 'FREE', period: { period: '2026-9', startUtc: '2026-09-01T00:00:00.000Z', endUtc: '2026-10-01T00:00:00.000Z' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      { plan: 'FREE', period: { period: '2026-09' }, used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      { plan: 'FREE', used: 1, limit: 3, remaining: 2, quotaStatus: 'OK' },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getUsage()).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+
+  test('the client exposes no usage mutation method', () => {
+    const client = createApiClient({ baseUrl: '', fetchImpl: vi.fn() });
+    const methods = Object.keys(client).filter((key) => key.toLowerCase().includes('usage'));
+    // Only the read exists — consumption is a server-side decision the
+    // browser can never trigger on its own.
+    expect(methods).toEqual(['getUsage']);
+  });
+});
+
+describe('projects API client (Pump 6)', () => {
+  const projectPayload = {
+    id: 'prj_00000000-0000-4000-8000-0000000000aa',
+    name: 'Primary web app',
+    description: 'The checkout flow.',
+    status: 'ACTIVE',
+    createdAt: '2026-09-28T10:00:00.000Z',
+    updatedAt: '2026-09-28T10:00:00.000Z',
+  };
+
+  test('getProjects hits the collection with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ projects: [projectPayload] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getProjects();
+    expect(result.projects).toHaveLength(1);
+    expect(result.projects[0]?.name).toBe('Primary web app');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('getProject encodes the id and validates the payload', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: projectPayload })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getProject('prj_00000000-0000-4000-8000-0000000000aa');
+    expect(result.project.id).toBe('prj_00000000-0000-4000-8000-0000000000aa');
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa');
+  });
+
+  test('createProject posts ONLY name/description — never ownership or status', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: projectPayload }), 201),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.createProject({ name: 'x', description: 'y' });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify({ name: 'x', description: 'y' }));
+  });
+
+  test('updateProject PATCHes the resource with only editable fields', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: { ...projectPayload, name: 'after' } })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.updateProject('prj_00000000-0000-4000-8000-0000000000aa', { name: 'after' });
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ name: 'after' }));
+  });
+
+  test('archive/unarchive call the explicit lifecycle endpoints', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ project: { ...projectPayload, status: 'ARCHIVED' } })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.archiveProject('prj_00000000-0000-4000-8000-0000000000aa');
+    await client.unarchiveProject('prj_00000000-0000-4000-8000-0000000000aa');
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as Array<
+      [string, RequestInit]
+    >;
+    expect(calls[0]?.[0]).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/archive');
+    expect(calls[1]?.[0]).toBe(
+      '/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/unarchive',
+    );
+    expect(calls[0]?.[1].method).toBe('POST');
+  });
+
+  test('anonymous 401s and foreign 403s surface as typed errors', async () => {
+    const anon: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('UNAUTHORIZED', 'Authentication required.'), 401),
+    );
+    await expect(createApiClient({ baseUrl: '', fetchImpl: anon }).getProjects()).rejects.toMatchObject(
+      { kind: 'http', status: 401, code: 'UNAUTHORIZED' },
+    );
+    const foreign: FetchImpl = vi.fn(async () =>
+      jsonResponse(errorEnvelope('FORBIDDEN', 'You do not have access to this resource.'), 403),
+    );
+    await expect(
+      createApiClient({ baseUrl: '', fetchImpl: foreign }).getProject('prj_x'),
+    ).rejects.toMatchObject({ kind: 'http', status: 403, code: 'FORBIDDEN' });
+  });
+
+  test('project payloads failing the shared guards are rejected', async () => {
+    const bad = [
+      { projects: [{ ...projectPayload, status: 'DELETED' }] },
+      { projects: [{ ...projectPayload, name: '' }] },
+      { projects: [{ ...projectPayload, id: 'not-an-id' }] },
+      { project: null },
+      null,
+    ];
+    for (const payload of bad) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getProjects()).rejects.toMatchObject({ kind: 'invalid-response' });
+    }
+    for (const payload of [null, { project: { ...projectPayload, name: '' } }]) {
+      const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope(payload)));
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      await expect(client.getProject('prj_x')).rejects.toMatchObject({
+        kind: 'invalid-response',
+      });
+    }
+  });
+});
+
+describe('scans API client (Pump 7)', () => {
+  const scanPayload = {
+    id: 'scan_00000000-0000-4000-8000-000000000001',
+    projectId: 'prj_00000000-0000-4000-8000-0000000000aa',
+    scanType: 'SAST',
+    status: 'QUEUED',
+    createdAt: '2026-09-28T10:00:00.000Z',
+    updatedAt: '2026-09-28T10:00:00.000Z',
+  };
+
+  test('getScans hits the project-scoped collection with cookie credentials', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scans: [scanPayload] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.getScans('prj_00000000-0000-4000-8000-0000000000aa');
+    expect(result.scans).toHaveLength(1);
+    expect(result.scans[0]?.status).toBe('QUEUED');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/scans');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.credentials).toBe('include');
+  });
+
+  test('getScans encodes the project id', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scans: [] })),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    await client.getScans('prj_ id%needs"encoding');
+    const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/projects/${encodeURIComponent('prj_ id%needs"encoding')}/scans`);
+  });
+
+  test('createScan posts ONLY the scan type + idempotency key header', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () =>
+      jsonResponse(envelope({ scan: scanPayload }), 201),
+    );
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.createScan(
+      'prj_00000000-0000-4000-8000-0000000000aa',
+      'DAST',
+      'retry-key-0001',
+    );
+    expect(result.scan.scanType).toBe('SAST');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/scans');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    // The body carries exactly { scanType } — never status, ownership,
+    // timestamps or results (those are all server-authoritative).
+    expect(JSON.parse(String(init.body))).toEqual({ scanType: 'DAST' });
+    const headers = init.headers as Record<string, string>;
+    expect(headers['idempotency-key']).toBe('retry-key-0001');
+    expect(headers['content-type']).toBe('application/json');
+  });
+
+  test('scan responses with forged/invalid payloads are rejected by guards', async () => {
+    // Owner field smuggled into a scan payload.
+    const withOwner = { scan: { ...scanPayload, ownerId: 'usr_1' } };
+    const ownerFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(withOwner)));
+    const ownerClient = createApiClient({ baseUrl: '', fetchImpl: ownerFetch });
+    await expect(
+      ownerClient.getScans('prj_00000000-0000-4000-8000-0000000000aa'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+
+    // State-machine forgery: QUEUED scan carrying a completedAt.
+    const forged = {
+      scans: [
+        { ...scanPayload, completedAt: '2026-09-28T10:01:00.000Z' },
+      ],
+    };
+    const forgedFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(forged)));
+    const forgedClient = createApiClient({ baseUrl: '', fetchImpl: forgedFetch });
+    await expect(
+      forgedClient.getScans('prj_00000000-0000-4000-8000-0000000000aa'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+
+    // Not an object at all.
+    const nullFetch: FetchImpl = vi.fn(async () => jsonResponse(envelope(null)));
+    const nullClient = createApiClient({ baseUrl: '', fetchImpl: nullFetch });
+    await expect(
+      nullClient.createScan('prj_00000000-0000-4000-8000-0000000000aa', 'SAST', 'retry-key-2'),
+    ).rejects.toMatchObject({ name: 'ApiClientError', kind: 'invalid-response' });
+  });
+
+  test('401/403/429 scan failures map to typed ApiClientErrors', async () => {
+    const cases: Array<[number, string, string]> = [
+      [401, 'UNAUTHORIZED', 'Authentication required.'],
+      [403, 'FORBIDDEN', 'You do not have access to this resource.'],
+      [429, 'QUOTA_EXCEEDED', 'Monthly free scan limit reached.'],
+    ];
+    for (const [status, code, message] of cases) {
+      const fetchImpl: FetchImpl = vi.fn(async () =>
+        jsonResponse({ ok: false, error: { code, message }, meta: { requestId: 'r' } }, status),
+      );
+      const client = createApiClient({ baseUrl: '', fetchImpl });
+      const attempt = client.createScan(
+        'prj_00000000-0000-4000-8000-0000000000aa',
+        'SAST',
+        `retry-key-${status}`,
+      );
+      await expect(attempt).rejects.toMatchObject({
+        name: 'ApiClientError',
+        kind: 'http',
+        status,
+        code,
+      });
+    }
+  });
+});
