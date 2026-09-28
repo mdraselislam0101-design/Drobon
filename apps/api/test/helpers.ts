@@ -29,6 +29,7 @@ import type { ScanProcessor } from '../src/scans/processor.js';
 import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
+import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -60,6 +61,8 @@ export interface TestServer {
    * inspect/seed scan targets directly.
    */
   sources: SourceSnapshotStore;
+  /** Durable or in-memory payment store under test. */
+  payments: PaymentStore;
   /**
    * The scan processor (Pump 7). Auto-start is DISABLED in tests:
    * suites drive drain() explicitly for deterministic lifecycle
@@ -94,6 +97,12 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   sourceStoreDir?: string;
   /** Inject a source store directly (defaults: memory or sourceStoreDir). */
   sourceStore?: SourceSnapshotStore;
+  /** Use a real JSON payment store at a temp path for restart proofs. */
+  paymentStoreDir?: string;
+  /** Inject a payment store directly (defaults: memory or paymentStoreDir). */
+  paymentStore?: PaymentStore;
+  /** Deterministic payment timestamps. */
+  paymentNow?: () => number;
   /**
    * Inject scanner engines (Pump 8 default: the REAL SAST engine —
    * SAST scans analyze the project's uploaded source snapshot and
@@ -155,6 +164,9 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStore,
     sourceStoreDir,
     sourceStore,
+    paymentStoreDir,
+    paymentStore,
+    paymentNow,
     scanEngines,
     dastTargetPolicy,
     dastTransport,
@@ -185,6 +197,16 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStorePath: ':memory:',
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
+    paymentStorePath: ':memory:',
+    proPriceMinorUnits: 100_000,
+    paymentReviewerIds: [],
+    manualPaymentMethods: ['MANUAL_TRANSFER'],
+    manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds. A submitted reference is user-provided evidence and is not payment verification.',
+    paymentRateLimitMaxRequests: 1000,
+    paymentRateLimitWindowMs: 60_000,
+    platformAdminIds: [],
+    adminRateLimitMaxRequests: 1000,
+    adminRateLimitWindowMs: 60_000,
     ...configOverrides,
   };
   const effectiveStorePath =
@@ -197,12 +219,15 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
   const effectiveSourceStorePath =
     sourceStoreDir === undefined ? config.sourceStorePath : join(sourceStoreDir, 'sources.json');
+  const effectivePaymentStorePath =
+    paymentStoreDir === undefined ? config.paymentStorePath : join(paymentStoreDir, 'payments.json');
   const configWithStore: ApiConfig =
     authStoreDir === undefined &&
     usageStoreDir === undefined &&
     projectStoreDir === undefined &&
     scanStoreDir === undefined &&
-    sourceStoreDir === undefined
+    sourceStoreDir === undefined &&
+    paymentStoreDir === undefined
       ? config
       : {
           ...config,
@@ -211,6 +236,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
           ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
           ...(sourceStoreDir === undefined ? {} : { sourceStorePath: effectiveSourceStorePath }),
+          ...(paymentStoreDir === undefined ? {} : { paymentStorePath: effectivePaymentStorePath }),
         };
   // A single resolved project-store instance: the app AND the returned
   // TestServer must share it (inject-or-default, never two stores).
@@ -234,6 +260,11 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     (sourceStoreDir === undefined
       ? createMemorySourceStore()
       : createJsonFileSourceStore(effectiveSourceStorePath));
+  const resolvedPaymentStore =
+    paymentStore ??
+    (paymentStoreDir === undefined
+      ? createMemoryPaymentStore()
+      : createJsonFilePaymentStore(effectivePaymentStorePath));
   const resolvedUsers =
     users ??
     (authStoreDir === undefined
@@ -256,6 +287,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     logger,
     users: resolvedUsers,
     sessions: resolvedSessions,
+    paymentStore: resolvedPaymentStore,
+    ...(paymentNow === undefined ? {} : { paymentNow }),
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
@@ -280,6 +313,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(resolvedProjectStore === undefined ? {} : { projects: resolvedProjectStore }),
     scans: resolvedScanStore,
     sources: resolvedSourceStore,
+    payments: resolvedPaymentStore,
     scanProcessor: started.app.scanProcessor,
     resetRateLimit: started.resetRateLimit,
     stop: started.stop,

@@ -24,6 +24,16 @@ import type {
   StatusResponse,
   SubscriptionResponse,
   UsageResponse,
+  PaymentConfigResponse,
+  PaymentHistoryResponse,
+  PaymentDetailResponse,
+  AdminPaymentsResponse,
+  AdminDashboardResponse,
+  AdminAccountsResponse,
+  AdminScansResponse,
+  AdminFindingsResponse,
+  AdminAuditResponse,
+  PaymentAuditResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -115,6 +125,26 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       },
       entitlements: ['plan:view'],
     })),
+    getPaymentConfig: vi.fn(async (): Promise<PaymentConfigResponse> => ({
+      currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
+      manualPaymentMethods: ['MANUAL_TRANSFER'],
+      manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
+      onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED',
+    })),
+    getPaymentHistory: vi.fn(async (): Promise<PaymentHistoryResponse> => ({ payments: [], page: 1, pageSize: 20, total: 0 })),
+    createPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    cancelPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getAdminDashboard: vi.fn(async (): Promise<AdminDashboardResponse> => { throw forbiddenError(); }),
+    getAdminAccounts: vi.fn(async (): Promise<AdminAccountsResponse> => ({ accounts: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminScans: vi.fn(async (): Promise<AdminScansResponse> => ({ scans: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminFindings: vi.fn(async (): Promise<AdminFindingsResponse> => ({ findings: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminAudit: vi.fn(async (): Promise<AdminAuditResponse> => ({ events: [], page: 1, pageSize: 50, total: 0, coverage: 'PAYMENT_EVENTS_ONLY' })),
+    getAdminPayments: vi.fn(async (): Promise<AdminPaymentsResponse> => { throw forbiddenError(); }),
+    startPaymentReview: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    approvePayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    rejectPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getPaymentAudit: vi.fn(async (): Promise<PaymentAuditResponse> => ({ events: [] })),
     // Pump 5 default: a fresh FREE usage view (nothing consumed this
     // UTC month). Suites override it to model exhaustion or PRO.
     getUsage: vi.fn(async (): Promise<UsageResponse> => ({

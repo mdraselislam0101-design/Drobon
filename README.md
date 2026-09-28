@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 14: cumulative security foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, finding remediation lifecycle, and a read-only AI Security Assistant foundation**.
+Cybersecurity application — **Pump 16: cumulative security foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, finding remediation lifecycle, a read-only AI Security Assistant, manual payment review, and restricted read-only platform operations**.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -14,7 +14,7 @@ state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
 store, a single server-authoritative entitlement decision point, a
 read-only self-only `GET /api/v1/subscription`, and plan/entitlement
 views on the Account page. Role and UserType never grant PRO.
-There is still **no database phase, no payment implementation, and no bundled security dataset**. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP and is not a browser or full DAST crawler.
+There is still **no database phase, online payment gateway, automated payment verification, or bundled security dataset**. Pump 15 provides a manual reference-submission and explicitly allowlisted admin-review foundation; it never claims an online gateway is integrated. Pump 16 adds read-only platform operations views gated by a server-configured administrator ID list plus the live `ADMIN` role; account status/role/UserType/subscription admin mutations are not implemented. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP and is not a browser or full DAST crawler.
 
 ## Layout
 
@@ -80,6 +80,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/FINDINGS.md` — lifecycle transitions, verification semantics, notes, guidance, authorization and persistence
 - `docs/REPORTS.md` — findings routes, persisted single-scan reports, workflow snapshots, exports, digests and honesty limits
 - `docs/ASSISTANT.md` — Pump 14 assistant authorization, evidence, no-provider behavior, redaction, bounds and limitations
+- `docs/PAYMENTS.md` — Pump 15 manual payment request, audit/state lifecycle, platform reviewer allowlist, consistency saga and gateway-unavailable boundary
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
@@ -214,23 +215,29 @@ See `docs/ASSISTANT.md`.
 
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
-payments/billing (no gateway, coupons, partner/referral or approval
-UI), plan mutation workflow (`plan:manage` is granted to no one), usage
+online payment gateway/webhooks/automatic verification, coupons/discounts,
+partner/referral/commission; plan mutation outside the authorized payment
+approval workflow (`plan:manage` is granted to no plan), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-external generative AI provider, durable assistant chat history, admin dashboard, UserType-specific
+external generative AI provider, durable assistant chat history, UserType-specific
 product features, multi-scan reports, PDF/signature workflows, and a
 database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 14 — cumulative security foundation, authenticated project targets,
+Pump 16 — cumulative security foundation, authenticated project targets,
 secure scan lifecycle/quota, real SAST/SCA/Secrets engines, limited
 passive DAST, bounded findings, durable single-scan reports, persisted
 finding remediation lifecycle, and a read-only deterministic assistant
-foundation. No generative provider is active; SCA vulnerability intelligence
-remains NOT ASSESSED / NO_DATA_LOADED without a configured dataset. See
-`docs/BUILD_VERIFICATION.md`, `docs/DAST.md`, `docs/FINDINGS.md`,
-`docs/REPORTS.md`, and `docs/ASSISTANT.md` for verification evidence and scope.
+foundation, plus durable manual payment requests, platform-allowlisted review,
+audited and recoverable PRO activation through the existing subscription
+record, and a restricted read-only operational dashboard with bounded account,
+scan, finding and payment-audit pages. No online gateway, account-admin
+mutation console, or separate production worker is implemented. No generative
+provider is active; SCA vulnerability intelligence remains NOT ASSESSED /
+NO_DATA_LOADED without a configured dataset. See `docs/BUILD_VERIFICATION.md`,
+`docs/ADMIN.md`, `docs/DAST.md`, `docs/FINDINGS.md`, `docs/REPORTS.md`,
+`docs/ASSISTANT.md`, and `docs/PAYMENTS.md` for verification evidence and scope.

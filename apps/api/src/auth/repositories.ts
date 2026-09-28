@@ -1,4 +1,4 @@
-import type { AccountRole, AuthUser, Subscription, UserType } from '@drobon/shared';
+import type { AccountRole, AuthUser, Plan, Subscription, SubscriptionStatus, UserType } from '@drobon/shared';
 import { normalizeSubscription } from './subscriptions.js';
 
 /**
@@ -40,6 +40,28 @@ export interface UserRecord {
   subscription?: Subscription;
 }
 
+export type AdminUserRecord = Omit<UserRecord, 'passwordHash'>;
+
+export interface AdminAccountFilters {
+  role?: AccountRole;
+  userType?: UserType | 'NONE';
+  plan?: Plan;
+  search?: string;
+}
+
+export interface AdminAccountPage {
+  accounts: AdminUserRecord[];
+  total: number;
+}
+
+export interface AdminAccountCounts {
+  total: number;
+  byPlan: Record<Plan, number>;
+  bySubscriptionStatus: Record<SubscriptionStatus, number>;
+  byRole: Record<AccountRole, number>;
+  byUserType: Record<UserType | 'NONE', number>;
+}
+
 export interface UserRepository {
   /**
    * Atomically check uniqueness and insert. Returns `true` when the account
@@ -49,6 +71,12 @@ export interface UserRepository {
   create(record: UserRecord): Promise<boolean>;
   findByEmail(email: string): Promise<UserRecord | undefined>;
   findById(id: string): Promise<UserRecord | undefined>;
+  /** Server-only entitlement mutation used by the payment approval saga. */
+  activatePro(id: string, at: string): Promise<'ACTIVATED' | 'ALREADY_ACTIVE' | 'NOT_FOUND'>;
+  /** Bounded safe account projection for platform-admin read-only operations. */
+  adminPage(filters: AdminAccountFilters, page: number, pageSize: number): Promise<AdminAccountPage>;
+  /** Aggregate counts from the existing account/subscription records. */
+  adminCounts(): Promise<AdminAccountCounts>;
 }
 
 /** Project the internal record to the ONLY user shape allowed to leave. */

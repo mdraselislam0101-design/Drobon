@@ -25,6 +25,13 @@ describe('loadConfig', () => {
     expect(config.usageStorePath).toBe('.data/usage.json');
     // Projects default (Pump 6): same persistence pattern.
     expect(config.projectStorePath).toBe('.data/projects.json');
+    // Pump 15 payments: durable store, fixed BDT minor-unit price, no
+    // implicit platform reviewers, and manual-only processing.
+    expect(config.paymentStorePath).toBe('.data/payments.json');
+    expect(config.proPriceMinorUnits).toBe(100_000);
+    expect(config.paymentReviewerIds).toEqual([]);
+    expect(config.manualPaymentMethods).toEqual(['MANUAL_TRANSFER']);
+    expect(config.paymentRateLimitMaxRequests).toBe(10);
   });
 
   test('authorization probes are on outside production, off in it', () => {
@@ -91,6 +98,31 @@ describe('loadConfig', () => {
       loadConfig({ NODE_ENV: 'production', PROJECT_STORE_PATH: ':memory:' }),
     ).toThrow(ConfigError);
     expect(() => loadConfig({ PROJECT_STORE_PATH: '  ' })).toThrow(ConfigError);
+  });
+
+  test('payment configuration is bounded, server-owned and durable in production', () => {
+    const configured = loadConfig({
+      PAYMENT_STORE_PATH: '/var/lib/drobon/payments.json',
+      PRO_PRICE_MINOR_UNITS: '125000',
+      PAYMENT_REVIEWER_IDS: 'usr_platform_1, usr_platform_2,usr_platform_1',
+      PAYMENT_MANUAL_METHODS: 'manual_transfer',
+      PAYMENT_MANUAL_INSTRUCTIONS: 'Contact billing support first.',
+      PAYMENT_RATE_LIMIT_MAX_REQUESTS: '7',
+      PAYMENT_RATE_LIMIT_WINDOW_MS: '30000',
+    });
+    expect(configured.paymentStorePath).toBe('/var/lib/drobon/payments.json');
+    expect(configured.proPriceMinorUnits).toBe(125_000);
+    expect(configured.paymentReviewerIds).toEqual(['usr_platform_1', 'usr_platform_2']);
+    expect(configured.manualPaymentMethods).toEqual(['MANUAL_TRANSFER']);
+    expect(configured.manualPaymentInstructions).toBe('Contact billing support first.');
+    expect(configured.paymentRateLimitMaxRequests).toBe(7);
+    expect(configured.paymentRateLimitWindowMs).toBe(30_000);
+    expect(() => loadConfig({ NODE_ENV: 'production', PAYMENT_STORE_PATH: ':memory:' })).toThrow(ConfigError);
+    expect(() => loadConfig({ PRO_PRICE_MINOR_UNITS: '0' })).toThrow(ConfigError);
+    expect(() => loadConfig({ PRO_PRICE_MINOR_UNITS: '-10' })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAYMENT_REVIEWER_IDS: 'ADMIN' })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAYMENT_MANUAL_METHODS: 'BKASH' })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAYMENT_MANUAL_INSTRUCTIONS: 'x'.repeat(501) })).toThrow(ConfigError);
   });
 
   test('the scan-consumption probe is on outside production, off in it', () => {

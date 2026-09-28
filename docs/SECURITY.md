@@ -309,26 +309,36 @@ test in `apps/api/test/validate.test.ts`.
 - Extend `connect-src` if the API ever lives on a different origin than the
   Web app (same-origin is the default).
 
+### Payment workflow — Pump 15
+
+The manual-only upgrade workflow uses server-derived account identity, an exact server-configured BDT quote, an explicit platform reviewer ID allowlist plus a live account `ADMIN` role, owner-scoped reads/cancellation, idempotent transitions, audit events and a recoverable `APPROVING` saga. The account subscription remains the sole PRO entitlement authority. No payment gateway, provider credential, webhook, file proof upload, automatic verification, coupon, or partner feature is present; the API tells clients that online processing is unavailable. See `docs/PAYMENTS.md` and `apps/api/test/paymentApi.test.ts` for state, IDOR, pricing, review-role, restart/recovery, rate-limit and audit tests.
+
+### Platform operations — Pump 16
+
+Dashboard/account/scan/finding/audit reads require both the live session-resolved `ADMIN` role and an exact ID in `PLATFORM_ADMIN_IDS`; `ACCOUNT_OWNER`, UserType, client fields, and ordinary account `ADMIN` alone do not grant platform access. These endpoints have a dedicated rate limit and bounded strict-query pagination. Payment-review mutations still require the separate `PAYMENT_REVIEWER_IDS` plus live `ADMIN` check and self-review denial. Account role/UserType/status/subscription admin mutations, hard deletion, broad exports and dataset operations are absent. Admin finding indexes omit content, source paths and fingerprint-derived identifiers; corrupt local stores fail startup rather than returning invented dashboard zeros. Audit coverage is explicitly payment events only and has no cryptographic immutability guarantee. See `docs/ADMIN.md`, `apps/api/test/adminApi.test.ts`, and `packages/shared/test/admin.test.ts`.
+
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator
-action on the store today), role-change audit trail, payment/billing
-workflows and any subscription mutation path (subscription state changes
-only via the operator store-edit + restart workflow — see
-`docs/SUBSCRIPTIONS.md`), per-feature metering beyond the single scan
+action on the store today), role-change audit trail, online payment gateway
+and signed webhook integrations, automatic payment verification, coupons,
+partner/referral/commission behavior, and multi-process/database transactions
+(the Pump 15 manual request/reviewer approval foundation is implemented — see
+`docs/PAYMENTS.md`; subscription state still derives only from the existing
+account subscription record — see `docs/SUBSCRIPTIONS.md`), per-feature
+metering beyond the single scan
 allowance, usage analytics/history, operator quota adjustments,
 device-management UI (the usage quota + device foundation itself is DONE
 in Pump 5 — see `docs/USAGE.md`), project deletion (hard delete is
 deliberately absent — ARCHIVED is the lifecycle end-state; the projects
 foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
-project sharing/collaboration, admin/operator project visibility,
+project sharing/collaboration,
 scan cancellation (deliberately absent until explicitly designed —
 the scan-job foundation itself is DONE in Pump 7 — see
 `docs/SCANS.md`), browser/full DAST and findings-aggregation reports
 (the limited passive DAST engine is DONE in Pump 11 — see
 `docs/DAST.md`; source "upload" is a JSON-body snapshot, NOT multipart
-file storage), admin/operator scan visibility,
-account email
+file storage), account email
 verification, password reset, MFA, account lockout (deliberate — rate
 limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,

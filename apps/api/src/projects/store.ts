@@ -66,6 +66,8 @@ export interface ProjectStore {
    * `updatedAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByOwner(ownerId: string): Promise<ProjectRecord[]>;
+  /** Aggregate-only platform overview; exposes no owner-scoped project rows. */
+  adminCounts(): Promise<{ total: number; active: number; archived: number }>;
   findById(id: string): Promise<ProjectRecord | undefined>;
   /**
    * Apply a partial update (name/description only) inside the mutation
@@ -250,6 +252,15 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
           )
           .map(toPublic),
       ),
+    adminCounts: () => {
+      let active = 0;
+      let archived = 0;
+      for (const record of byId.values()) {
+        if (record.status === 'ACTIVE') active += 1;
+        else archived += 1;
+      }
+      return Promise.resolve({ total: byId.size, active, archived });
+    },
     findById: (id) => {
       const record = byId.get(id);
       return Promise.resolve(record === undefined ? undefined : toPublic(record));

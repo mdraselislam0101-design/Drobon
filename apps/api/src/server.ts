@@ -15,6 +15,9 @@ export interface StartedServer {
 export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const { config, logger } = deps;
   const app = createApp(deps);
+  // Payment approval is a recoverable cross-file saga. Complete or fail
+  // closed any interrupted approval before exposing an HTTP listener.
+  await app.ready;
   const server: Server = createServer(app.handle);
   server.headersTimeout = 10_000;
   server.requestTimeout = 30_000;

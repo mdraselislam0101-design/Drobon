@@ -14,8 +14,11 @@ import {
   isDastResult,
   isSafeDastUrl,
   type DastResult,
+  type AdminFindingSummary,
+  type AdminScanSummary,
   type SecurityReport,
   FINDING_HISTORY_EVENTS_MAX,
+  FINDING_SEVERITIES,
   FINDING_NOTES_MAX_COUNT,
   FINDING_HISTORY_PAGE_MAX,
   FINDING_HISTORY_PAGE_SIZE_MAX,
@@ -175,6 +178,36 @@ export type CreateScanOutcome =
   | { outcome: 'invalid-target' }
   | { outcome: 'quota-denied'; retryAfterSec: number };
 
+export interface AdminScanFilters {
+  status?: ScanStatus;
+  scanType?: ScanType;
+  accountId?: string;
+  projectId?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface AdminFindingFilters {
+  severity?: (typeof FINDING_SEVERITIES)[number];
+  scanner?: ScanType;
+  lifecycleState?: FindingLifecycleState;
+  projectId?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface ScanAdminSummary {
+  total: number;
+  byStatus: Record<ScanStatus, number>;
+  byType: Record<ScanType, number>;
+  recentlyCompleted: number;
+  findingsBySeverity: Record<(typeof FINDING_SEVERITIES)[number], number>;
+  findingsByLifecycleState: Record<FindingLifecycleState, number>;
+  unresolvedFindings: number;
+  dastObservations: number;
+  scaNotAssessed: number;
+}
+
 export interface ScanStore {
   /**
    * THE atomic creation operation (see the module doc). Linearizes
@@ -186,6 +219,12 @@ export interface ScanStore {
    * `createdAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByProject(projectId: string): Promise<ScanRecord[]>;
+  /** Aggregate-only platform summary; never returns source content or all scan rows. */
+  adminSummary(now: number): Promise<ScanAdminSummary>;
+  /** Bounded metadata-only platform scan page. */
+  adminScanPage(filters: AdminScanFilters, page: number, pageSize: number): Promise<{ scans: AdminScanSummary[]; total: number }>;
+  /** Bounded redacted finding index; excludes evidence, file paths, and hashes. */
+  adminFindingPage(filters: AdminFindingFilters, page: number, pageSize: number): Promise<{ findings: AdminFindingSummary[]; total: number }>;
   /** At most one latest completed scan per scanner type (bounded assistant context query). */
   listLatestCompletedByScannerForAssistant(projectId: string): Promise<ScanRecord[]>;
   /** One scan of one project (ownership is resolved by the caller). */
@@ -928,6 +967,107 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           )
           .map(toPublic),
       ),
+
+    adminSummary: (now) => {
+      const byStatus: Record<ScanStatus, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 };
+      const byType: Record<ScanType, number> = { SAST: 0, SCA: 0, SECRETS: 0, DAST: 0 };
+      const findingsBySeverity: Record<(typeof FINDING_SEVERITIES)[number], number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+      const findingsByLifecycleState: Record<FindingLifecycleState, number> = { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 };
+      const latestFindingByIdentity = new Map<string, { finding: Finding; completedAt: string }>();
+      let recentlyCompleted = 0;
+      let dastObservations = 0;
+      let scaNotAssessed = 0;
+      const recentBoundary = now - 30 * 24 * 60 * 60 * 1000;
+      for (const scan of scansById.values()) {
+        byStatus[scan.status] += 1;
+        byType[scan.scanType] += 1;
+        if (scan.status !== 'COMPLETED') continue;
+        const completedAt = scan.completedAt ?? '';
+        if (completedAt !== '' && Date.parse(completedAt) >= recentBoundary) recentlyCompleted += 1;
+        if (scan.scanType === 'DAST') dastObservations += scan.dast?.observations.length ?? 0;
+        if (scan.scanType === 'SCA' && scan.sca?.summary.assessmentState === 'NOT_ASSESSED') scaNotAssessed += 1;
+        for (const finding of scan.findings ?? []) {
+          const key = findingWorkflowKey(scan.projectId, finding.fingerprint);
+          const prior = latestFindingByIdentity.get(key);
+          if (prior === undefined || completedAt > prior.completedAt) latestFindingByIdentity.set(key, { finding, completedAt });
+        }
+      }
+      let unresolvedFindings = 0;
+      for (const workflow of findingWorkflowsByKey.values()) {
+        findingsByLifecycleState[workflow.state] += 1;
+        if (workflow.state !== 'RESOLVED') unresolvedFindings += 1;
+      }
+      for (const [key, entry] of latestFindingByIdentity) {
+        const workflow = findingWorkflowsByKey.get(key);
+        if (workflow?.state === 'RESOLVED') continue;
+        findingsBySeverity[entry.finding.severity] += 1;
+      }
+      return Promise.resolve({ total: scansById.size, byStatus, byType, recentlyCompleted, findingsBySeverity, findingsByLifecycleState, unresolvedFindings, dastObservations, scaNotAssessed });
+    },
+
+    adminScanPage: (filters, page, pageSize) => {
+      const offset = (page - 1) * pageSize;
+      const retain = offset + pageSize;
+      const candidates: AdminScanSummary[] = [];
+      let total = 0;
+      const compare = (a: AdminScanSummary, b: AdminScanSummary): number =>
+        b.createdAt.localeCompare(a.createdAt) || a.scanId.localeCompare(b.scanId);
+      for (const scan of scansById.values()) {
+        const observedAt = scan.completedAt ?? scan.createdAt;
+        if (filters.status !== undefined && scan.status !== filters.status) continue;
+        if (filters.scanType !== undefined && scan.scanType !== filters.scanType) continue;
+        if (filters.accountId !== undefined && scan.ownerId !== filters.accountId) continue;
+        if (filters.projectId !== undefined && scan.projectId !== filters.projectId) continue;
+        if (filters.from !== undefined && observedAt < filters.from) continue;
+        if (filters.to !== undefined && observedAt > filters.to) continue;
+        total += 1;
+        candidates.push({
+          scanId: scan.id, projectId: scan.projectId, accountId: scan.ownerId,
+          scanType: scan.scanType, status: scan.status, createdAt: scan.createdAt,
+          completedAt: scan.completedAt ?? null, findingsTotal: scan.resultSummary?.findingsTotal ?? 0,
+        });
+        if (candidates.length >= retain + 1000) {
+          candidates.sort(compare);
+          candidates.length = retain;
+        }
+      }
+      candidates.sort(compare);
+      return Promise.resolve({ scans: candidates.slice(offset, offset + pageSize), total });
+    },
+
+    adminFindingPage: (filters, page, pageSize) => {
+      const offset = (page - 1) * pageSize;
+      const retain = offset + pageSize;
+      const candidates: AdminFindingSummary[] = [];
+      let total = 0;
+      const compare = (a: AdminFindingSummary, b: AdminFindingSummary): number =>
+        b.observedAt.localeCompare(a.observedAt) || a.scanId.localeCompare(b.scanId) || a.findingNumber - b.findingNumber;
+      for (const scan of scansById.values()) {
+        if (scan.status !== 'COMPLETED' || (filters.projectId !== undefined && scan.projectId !== filters.projectId)) continue;
+        const observedAt = scan.completedAt ?? scan.createdAt;
+        if (filters.from !== undefined && observedAt < filters.from) continue;
+        if (filters.to !== undefined && observedAt > filters.to) continue;
+        for (const [findingIndex, finding] of (scan.findings ?? []).entries()) {
+          const scanner = findingScanner(finding) ?? scan.scanType;
+          const workflow = findingWorkflowsByKey.get(findingWorkflowKey(scan.projectId, finding.fingerprint));
+          const lifecycleState = workflow?.state ?? 'OPEN';
+          if (filters.severity !== undefined && finding.severity !== filters.severity) continue;
+          if (filters.scanner !== undefined && scanner !== filters.scanner) continue;
+          if (filters.lifecycleState !== undefined && lifecycleState !== filters.lifecycleState) continue;
+          total += 1;
+          candidates.push({
+            findingNumber: findingIndex + 1, scanId: scan.id, projectId: scan.projectId, scanner,
+            ruleId: finding.ruleId, severity: finding.severity, lifecycleState, observedAt,
+          });
+          if (candidates.length >= retain + 1000) {
+            candidates.sort(compare);
+            candidates.length = retain;
+          }
+        }
+      }
+      candidates.sort(compare);
+      return Promise.resolve({ findings: candidates.slice(offset, offset + pageSize), total });
+    },
 
     listLatestCompletedByScannerForAssistant: (projectId) => {
       const latest = new Map<ScanType, ScanRecord>();

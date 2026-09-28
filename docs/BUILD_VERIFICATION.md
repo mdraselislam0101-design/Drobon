@@ -927,3 +927,42 @@ DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passiv
   public target or vulnerability dataset was used. No provider is active;
   unsupported generation stays unavailable, and chat history is not
   persisted. This is not a public-target security assessment.
+
+## Verification evidence (Pump 15 — manual payment-review foundation)
+
+Pump 16's current full verification includes the payment regression suites:
+manual quote/request/state behavior, reviewer allowlist plus live `ADMIN`,
+self-review denial, restart recovery, audit pagination and credential-like
+reference masking. See `apps/api/test/paymentApi.test.ts`,
+`apps/web/test/paymentUi.test.tsx`, and `docs/PAYMENTS.md`. No real payment,
+gateway or payment proof was used. The current full-run totals and exact
+check results are recorded below; this is not a separate E2E run.
+
+## Verification evidence (Pump 16 — restricted platform operations)
+
+- Date: 2026-09-29
+- `npm run verify` result: **PASS** — all 9 verification stages passed:
+  scope boundaries, secret matcher self-test, source scan, typecheck, lint,
+  tests, production builds, post-build secret scan, dependency audit.
+- Secret scan: PASS over 482 source files and again after builds (482 files).
+- Typecheck: PASS for shared, API, worker and web workspaces.
+- Lint: PASS.
+- Tests: **1,091 passed, 0 failed** — shared 172, API 683, worker 28,
+  web 208. These are unit, API integration and UI component tests; no
+  browser end-to-end test was run.
+- Manual local `curl` smoke using a synthetic disposable preview account:
+  Web shell GET **200**, proxied login **200**, authenticated dashboard
+  **200**; response reports `aiProvider: NONE` and
+  `vulnerabilityDataset: NO_DATA_LOADED`. This is a smoke check, not E2E.
+- Production builds: PASS for shared, API, worker and web.
+- `npm audit --audit-level=high`: PASS, zero vulnerabilities reported.
+- Pump 16-specific tests cover platform authorization (allowlist plus live
+  role and role revocation), bounded/malformed pagination and filters,
+  admin rate limiting, unavailable aggregate handling, status honesty,
+  secret/source/evidence/fingerprint redaction, credential-like payment
+  reference masking, payment-audit pagination/partial coverage, and
+  read-only/denied UI states. Synthetic local fixtures only; no real
+  payments, credentials, external targets or vulnerability datasets.
+  See `docs/ADMIN.md`, `apps/api/test/adminApi.test.ts`,
+  `packages/shared/test/admin.test.ts`, and
+  `apps/web/test/adminOperationsUi.test.tsx`.

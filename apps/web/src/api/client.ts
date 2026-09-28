@@ -18,6 +18,16 @@ import {
   isSourceSnapshotResponse,
   isSubscriptionResponse,
   isUsageResponse,
+  isPaymentConfigResponse,
+  isPaymentHistoryResponse,
+  isPaymentDetailResponse,
+  isAdminPaymentsResponse,
+  isAdminDashboardResponse,
+  isAdminAccountsResponse,
+  isAdminScansResponse,
+  isAdminFindingsResponse,
+  isAdminAuditResponse,
+  isPaymentAuditResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AssistantQuestionRequest,
@@ -48,6 +58,23 @@ import {
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
+  type PaymentConfigResponse,
+  type PaymentHistoryResponse,
+  type PaymentDetailResponse,
+  type AdminPaymentsResponse,
+  type AdminDashboardResponse,
+  type AdminAccountsResponse,
+  type AdminScansResponse,
+  type AdminFindingsResponse,
+  type AdminAuditResponse,
+  type AccountRole,
+  type UserType,
+  type Plan,
+  type ScanStatus,
+  type PaymentAuditAction,
+  type PaymentAuditResponse,
+  type PaymentMethod,
+  type PaymentStatus,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -148,6 +175,21 @@ export interface ApiClient {
    * client renders the server's verdict and never recomputes it.
    */
   getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
+  getPaymentConfig(signal?: AbortSignal): Promise<PaymentConfigResponse>;
+  getPaymentHistory(page?: number, pageSize?: number, signal?: AbortSignal): Promise<PaymentHistoryResponse>;
+  createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  getPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  cancelPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  getAdminDashboard(signal?: AbortSignal): Promise<AdminDashboardResponse>;
+  getAdminAccounts(query?: { page?: number; pageSize?: number; role?: AccountRole; userType?: UserType | 'NONE'; plan?: Plan; search?: string }, signal?: AbortSignal): Promise<AdminAccountsResponse>;
+  getAdminScans(query?: { page?: number; pageSize?: number; status?: ScanStatus; type?: ScanType; accountId?: string; projectId?: string; from?: string; to?: string }, signal?: AbortSignal): Promise<AdminScansResponse>;
+  getAdminFindings(query?: { page?: number; pageSize?: number; severity?: FindingSeverity; scanner?: ScanType; state?: FindingLifecycleState; projectId?: string; from?: string; to?: string }, signal?: AbortSignal): Promise<AdminFindingsResponse>;
+  getAdminAudit(query?: { page?: number; pageSize?: number; action?: PaymentAuditAction; accountId?: string; paymentId?: string; from?: string; to?: string }, signal?: AbortSignal): Promise<AdminAuditResponse>;
+  getAdminPayments(page?: number, pageSize?: number, status?: PaymentStatus, signal?: AbortSignal): Promise<AdminPaymentsResponse>;
+  startPaymentReview(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  approvePayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  rejectPayment(paymentId: string, reason: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  getPaymentAudit(paymentId: string, signal?: AbortSignal): Promise<PaymentAuditResponse>;
   /**
    * The authenticated account's OWN usage view (Pump 5): plan, current
    * UTC period, used/limit/remaining and the quota status. Read-only and
@@ -266,6 +308,15 @@ export interface ApiClient {
  * - races against a timeout (default 10s) plus optional caller signal,
  * - validates the response envelope against the shared contracts.
  */
+function adminQuery(values: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const serialized = params.toString();
+  return serialized === '' ? '' : `?${serialized}`;
+}
+
 export function createApiClient(options: ApiClientOptions): ApiClient {
   const baseUrl = options.baseUrl;
   const timeoutMs = options.timeoutMs ?? 10_000;
@@ -539,6 +590,47 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSubscriptionResponse,
       ),
+    getPaymentConfig: (signal?: AbortSignal): Promise<PaymentConfigResponse> =>
+      authRequest<PaymentConfigResponse>('/api/v1/payments/config', signal === undefined ? {} : { signal }, isPaymentConfigResponse),
+    getPaymentHistory: (page = 1, pageSize = 20, signal?: AbortSignal): Promise<PaymentHistoryResponse> =>
+      authRequest<PaymentHistoryResponse>(`/api/v1/payments?page=${page}&pageSize=${pageSize}`, signal === undefined ? {} : { signal }, isPaymentHistoryResponse),
+    createPayment: (input, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>('/api/v1/payments', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': generateId() },
+        body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, isPaymentDetailResponse),
+    getPayment: (paymentId, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>(`/api/v1/payments/${encodeURIComponent(paymentId)}`, signal === undefined ? {} : { signal }, isPaymentDetailResponse),
+    cancelPayment: (paymentId, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>(`/api/v1/payments/${encodeURIComponent(paymentId)}/cancel`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isPaymentDetailResponse),
+    getAdminDashboard: (signal?: AbortSignal): Promise<AdminDashboardResponse> =>
+      authRequest<AdminDashboardResponse>('/api/v1/admin/dashboard', signal === undefined ? {} : { signal }, isAdminDashboardResponse),
+    getAdminAccounts: (query = {}, signal?: AbortSignal): Promise<AdminAccountsResponse> =>
+      authRequest<AdminAccountsResponse>(`/api/v1/admin/accounts${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminAccountsResponse),
+    getAdminScans: (query = {}, signal?: AbortSignal): Promise<AdminScansResponse> =>
+      authRequest<AdminScansResponse>(`/api/v1/admin/scans${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminScansResponse),
+    getAdminFindings: (query = {}, signal?: AbortSignal): Promise<AdminFindingsResponse> =>
+      authRequest<AdminFindingsResponse>(`/api/v1/admin/findings${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminFindingsResponse),
+    getAdminAudit: (query = {}, signal?: AbortSignal): Promise<AdminAuditResponse> =>
+      authRequest<AdminAuditResponse>(`/api/v1/admin/audit${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminAuditResponse),
+    getAdminPayments: (page = 1, pageSize = 20, status, signal?: AbortSignal): Promise<AdminPaymentsResponse> => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (status !== undefined) params.set('status', status);
+      return authRequest<AdminPaymentsResponse>(`/api/v1/admin/payments?${params.toString()}`, signal === undefined ? {} : { signal }, isAdminPaymentsResponse);
+    },
+    startPaymentReview: (paymentId, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/review`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isPaymentDetailResponse),
+    approvePayment: (paymentId, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/approve`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isPaymentDetailResponse),
+    rejectPayment: (paymentId, reason, signal?: AbortSignal): Promise<PaymentDetailResponse> =>
+      authRequest<PaymentDetailResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/reject`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }),
+        ...(signal === undefined ? {} : { signal }),
+      }, isPaymentDetailResponse),
+    getPaymentAudit: (paymentId, signal?: AbortSignal): Promise<PaymentAuditResponse> =>
+      authRequest<PaymentAuditResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/audit`, signal === undefined ? {} : { signal }, isPaymentAuditResponse),
     getUsage: (signal?: AbortSignal): Promise<UsageResponse> =>
       authRequest<UsageResponse>(
         '/api/v1/usage',

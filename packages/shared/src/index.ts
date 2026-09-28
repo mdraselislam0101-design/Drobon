@@ -1,5 +1,6 @@
 export * from './api.js';
 export * from './assistant.js';
+export * from './admin.js';
 export * from './auth.js';
 export * from './authz.js';
 export * from './config.js';
@@ -9,6 +10,7 @@ export * from './guards.js';
 export * from './jobs.js';
 export * from './models.js';
 export * from './plans.js';
+export * from './payments.js';
 export * from './usage.js';
 export * from './projects.js';
 export * from './scans.js';

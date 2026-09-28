@@ -1,4 +1,5 @@
 import type { UserRepository, UserRecord } from './repositories.js';
+import { buildAdminAccountCounts, buildAdminAccountPage } from './adminProjection.js';
 
 /**
  * Process-local user repository. Two uses:
@@ -34,5 +35,19 @@ export function createMemoryUserRepository(): UserRepository {
       }),
     findByEmail: (email) => runExclusive(() => byEmail.get(email)),
     findById: (id) => runExclusive(() => byId.get(id)),
+    activatePro: (id, at) => runExclusive(() => {
+      const current = byId.get(id);
+      if (current === undefined) return 'NOT_FOUND' as const;
+      if (current.subscription?.plan === 'PRO' && current.subscription.status === 'ACTIVE') return 'ALREADY_ACTIVE' as const;
+      const updated: UserRecord = {
+        ...current,
+        subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: at, updatedAt: at },
+      };
+      byId.set(id, updated);
+      byEmail.set(updated.email, updated);
+      return 'ACTIVATED' as const;
+    }),
+    adminPage: (filters, page, pageSize) => Promise.resolve(buildAdminAccountPage(byId.values(), filters, page, pageSize)),
+    adminCounts: () => Promise.resolve(buildAdminAccountCounts(byId.values())),
   };
 }

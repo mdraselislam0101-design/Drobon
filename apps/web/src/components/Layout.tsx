@@ -58,6 +58,12 @@ export function Layout({
                 >
                   Account
                 </NavLink>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/admin/operations"
+                >
+                  Platform operations
+                </NavLink>
               </>
             )}
             {state.status === 'anonymous' && (

@@ -1,9 +1,8 @@
 # Architecture
 
-Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
-(authorization), Pump 4 (plans/subscriptions/entitlements), Pump 5
-(usage quota + device anti-abuse foundation), Pump 6 (projects
-foundation) and Pump 7 (secure scan-job foundation): an
+Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
+plans/entitlements, quotas, projects, scans, reports, assistant, and manual
+payments) and Pump 16 (restricted platform operations): an
 npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
@@ -39,6 +38,7 @@ browser bundle and the servers can all consume it:
   decision table `SUBSCRIPTION_ENTITLEMENTS` (`feature:pro` exists in
   exactly one cell: PRO + ACTIVE; `plan:manage` in none). Role and
   UserType are deliberately not inputs to any of it.
+- `payments.ts` — Pump 15 payment request/state/audit contracts, strict runtime guards, bounded self-only history projections and reviewer-only record projections. The contract explicitly reports online gateway `UNAVAILABLE` and coupons `NOT_IMPLEMENTED`.
 - `usage.ts` — usage/quota contracts (Pump 5): `FREE_MONTHLY_SCAN_QUOTA` /
   `FREE_DEVICE_MONTHLY_SCAN_QUOTA` (3/3), the strict UTC period pattern
   (`YYYY-MM`), `UsagePeriodInfo` (end-exclusive month window),
@@ -99,7 +99,7 @@ minimal attack surface):
 
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)
-        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
+        → rateLimit(/api/v1/auth) → rateLimit(payment mutations) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
         → device(cookie→ctx.deviceHash; issue/replace drobon_device when authenticated)
         → router: match → authenticate (401) → authorize (403) → handler
 ```
@@ -107,8 +107,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
 - `config.ts` — the ONLY module that reads `process.env`; validates every
   variable (including the Pump 2 `AUTH_*` set) and throws one `ConfigError`
   listing all issues (fail fast). Rejects `AUTH_STORE_PATH=:memory:` and
-  `USAGE_STORE_PATH=:memory:` in production. Derives `cookieSecure` and
-  `usageConsumeRoutes` (dev/test probe gating) from the environment.
+  `USAGE_STORE_PATH=:memory:` and `PAYMENT_STORE_PATH=:memory:` in production. Payment price, manual instructions/methods, reviewer ID allowlist and mutation limits are validated here. Derives `cookieSecure` and `usageConsumeRoutes` (dev/test probe gating) from the environment.
 - `logger.ts` — structured JSON-lines logger with level filtering and
   deep secret redaction (sensitive keys, bearer-like values, credentialed
   URLs, cycles). Error stacks are logged in dev/test only.
@@ -209,17 +208,27 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
   `GET …/scans/:scanId` (uniform 404 inside the caller's own project),
   plus Pump 12's authenticated findings page/detail and report routes,
-  Pump 13's authenticated lifecycle/note/history routes, and Pump 14's
-  authenticated assistant status/project-ask routes, all scoped through
-  the same own-project resolver. Finding filters, workflow records, history
-  and export bodies are bounded; archived projects are read-only for
+  Pump 13's authenticated lifecycle/note/history routes, Pump 14's
+  authenticated assistant status/project-ask routes, all project-scoped
+  through the same own-project resolver. Pump 15 adds self-only manual
+  payment routes and separate platform-reviewer-only admin routes; these use
+  the authenticated account context, not project ownership. Finding filters,
+  workflow records, history and export bodies are bounded; archived projects are read-only for
   workflow mutation. Reports share the scan store and do not consume quota.
   No scan-job lifecycle mutation endpoint exists — the processor owns scan
   transitions. The Pump 14 assistant is deterministic/read-only with no
   active provider, provider calls, chat persistence, tools or quota usage;
   its bounded provenance context reuses the same project/scan/finding/report
-  stores (see `docs/ASSISTANT.md`). See docs/SCANS.md, `docs/FINDINGS.md`,
-  and `docs/REPORTS.md`.
+  stores (see `docs/ASSISTANT.md`). Payment records/audit events are held in
+  one atomic JSON document; approval uses a recoverable saga over the existing
+  payment and account JSON stores (see `docs/PAYMENTS.md`). Pump 16 adds
+  `/api/v1/admin/dashboard`, bounded `/accounts`, `/scans`, `/findings`, and
+  `/audit` read routes plus the operations UI. These require both a live
+  `ADMIN` role and an ID in `PLATFORM_ADMIN_IDS`; payment review retains its
+  separate `PAYMENT_REVIEWER_IDS` gate. No account status/role/UserType/
+  subscription control or broad export is exposed (see `docs/ADMIN.md`). See
+  docs/SCANS.md, `docs/FINDINGS.md`, `docs/REPORTS.md`, `docs/PAYMENTS.md`,
+  and `docs/ADMIN.md`.
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original
@@ -234,8 +243,8 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   store refuses to start), SIGTERM/SIGINT graceful shutdown.
 
 Security defaults: binds loopback (`HOST=127.0.0.1`), empty CORS allowlist,
-100 req/min/IP globally + 30 req/min/IP on credential endpoints, 1 MiB
-bodies. Proxy headers are never trusted (`X-Forwarded-For` is ignored — see
+100 req/min/IP globally + 30 req/min/IP on credential endpoints + the
+configured payment-mutation limit (default 10/min/IP), 1 MiB bodies. Proxy headers are never trusted (`X-Forwarded-For` is ignored — see
 NOT_IMPLEMENTED).
 
 ### `@drobon/web` — web app (`apps/web`, React 18 + Vite 6 + React Router 7)
@@ -359,10 +368,12 @@ NOT_IMPLEMENTED).
 ## NOT_IMPLEMENTED (future Pumps)
 
 Role management console / first-admin bootstrap and role-change audit
-trail (authorization primitives themselves are DONE in Pump 3), payment /
-billing integration and any subscription mutation workflow (the
-subscription + entitlement foundation itself is DONE in Pump 4 — see
-`docs/SUBSCRIPTIONS.md`), account
+trail (authorization primitives themselves are DONE in Pump 3), online
+payment gateway/webhook processing, automatic payment verification, coupons,
+partner/referral/commission features, and database transactions across stores
+(the manual payment request/review/PRO activation foundation is implemented
+in Pump 15 — see `docs/PAYMENTS.md`; authoritative subscription and
+entitlement semantics remain Pump 4 — see `docs/SUBSCRIPTIONS.md`), account
 email verification, password reset, trusted-proxy support, distributed
 rate limiting, durable/persistent sessions and out-of-process queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
@@ -371,5 +382,5 @@ remediation tracking and active testing (the existing bounded scan
 engines and Pump 5 quota integration are DONE — see docs/SCANS.md and
 `docs/REPORTS.md`), external generative-provider integration and durable
 assistant history (the deterministic assistant foundation is implemented
-in Pump 14 — see `docs/ASSISTANT.md`), admin dashboard, multi-instance
-deployment, metrics/tracing.
+in Pump 14 — see `docs/ASSISTANT.md`), multi-instance deployment,
+metrics/tracing.

@@ -21,6 +21,25 @@ const STATUS_PAYLOAD = {
   meta: { requestId: 'req-server-1' },
 };
 
+describe('createApiClient — payment boundaries', () => {
+  test('reads server pricing and sends a manual request with idempotency but no account authority fields', async () => {
+    const config = { currentPlan: 'FREE', proPriceMinorUnits: 100000, currency: 'BDT', manualPaymentMethods: ['MANUAL_TRANSFER'], manualPaymentInstructions: 'Ask support.', onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED' };
+    const payment = { paymentId: 'pay_00000000-0000-4000-8000-000000000001', plan: 'PRO', amountMinorUnits: 100000, currency: 'BDT', paymentMethod: 'MANUAL_TRANSFER', reference: 'TXN-ABC123', status: 'PENDING', createdAt: '2026-09-29T10:00:00.000Z', submittedAt: '2026-09-29T10:00:00.000Z', updatedAt: '2026-09-29T10:00:00.000Z', reviewedAt: null, approvedAt: null, rejectedAt: null, rejectionReason: null };
+    const fetchImpl: FetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: config, meta: { requestId: 'payment-config' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { payment }, meta: { requestId: 'payment-create' } }, 201));
+    const client = createApiClient({ baseUrl: '', fetchImpl, generateId: () => 'idem-test-key-01' });
+    expect(await client.getPaymentConfig()).toEqual(config);
+    expect(await client.createPayment({ plan: 'PRO', amountMinorUnits: 100000, currency: 'BDT', paymentMethod: 'MANUAL_TRANSFER', reference: 'TXN-ABC123' })).toEqual({ payment });
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe('/api/v1/payments/config');
+    expect(calls[1]?.[0]).toBe('/api/v1/payments');
+    expect(new Headers(calls[1]?.[1].headers).get('idempotency-key')).toBe('idem-test-key-01');
+    expect(JSON.parse(String(calls[1]?.[1].body))).toEqual({ plan: 'PRO', amountMinorUnits: 100000, currency: 'BDT', paymentMethod: 'MANUAL_TRANSFER', reference: 'TXN-ABC123' });
+    expect(calls[1]?.[1].credentials).toBe('include');
+  });
+});
+
 describe('createApiClient', () => {
   test('returns typed data and sends correlation headers', async () => {
     const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(STATUS_PAYLOAD));

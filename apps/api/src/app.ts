@@ -60,6 +60,10 @@ import { createScanRoutes } from './routes/scans.js';
 import { createSourceRoutes } from './routes/sources.js';
 import { createReportsRoutes } from './routes/reports.js';
 import { createAssistantRoutes } from './routes/assistant.js';
+import { createPaymentRoutes } from './routes/payments.js';
+import { createAdminRoutes } from './routes/admin.js';
+import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
+import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
 import { createDastTargetPolicy, type DastTargetPolicy } from './scans/dast/target.js';
@@ -138,6 +142,10 @@ export interface AppDeps {
    * work, run the sweep). Tests disable it for deterministic control.
    */
   scanProcessorAutoStart?: boolean;
+  /** Durable payment + audit JSON store; tests may inject a local fixture. */
+  paymentStore?: PaymentStore;
+  /** Payment-service clock (epoch ms), injectable for deterministic tests. */
+  paymentNow?: () => number;
 }
 
 export interface App {
@@ -150,6 +158,8 @@ export interface App {
    * explicitly.
    */
   scanProcessor: ScanProcessor;
+  /** Startup recovery for interrupted cross-store payment approval sagas. */
+  ready: Promise<void>;
 }
 
 /** Direct peer address only — proxy headers (`X-Forwarded-For`) are never trusted. */
@@ -219,6 +229,20 @@ export function createApp(deps: AppDeps): App {
     (config.sourceStorePath === ':memory:'
       ? createMemorySourceStore()
       : createJsonFileSourceStore(config.sourceStorePath));
+  // Payment requests and their audit events share one atomic JSON document.
+  // The configured store is durable outside explicitly ephemeral development.
+  const paymentStore: PaymentStore =
+    deps.paymentStore ??
+    (config.paymentStorePath === ':memory:'
+      ? createMemoryPaymentStore()
+      : createJsonFilePaymentStore(config.paymentStorePath));
+  const payments: PaymentService = createPaymentService({
+    config,
+    store: paymentStore,
+    users,
+    ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
+  });
+  const ready = payments.recoverInterruptedApprovals();
   // One policy instance is shared by configuration preflight, scan
   // preflight and engine execution. The engine re-resolves and pins
   // every request independently, so saved configuration is never
@@ -259,6 +283,8 @@ export function createApp(deps: AppDeps): App {
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
+    ...createPaymentRoutes({ config, users, payments }),
+    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
     ...createUsageRoutes({ config, users, usage }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createScanRoutes({
@@ -303,16 +329,40 @@ export function createApp(deps: AppDeps): App {
         },
   );
 
-  // Pipeline order (docs/ARCHITECTURE.md): request ID → security headers →
-  // CORS → global rate limit → credential-endpoint rate limit → CSRF origin
-  // guard → session resolution → device resolution (usage anti-abuse) →
-  // routing (with requireAuth boundary).
+  const paymentRateLimiter = createRateLimiter(
+    deps.rateLimitNow === undefined
+      ? { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs }
+      : { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs, now: deps.rateLimitNow },
+  );
+  const paymentMutationRateLimit: Middleware = async (req, res, ctx, next) => {
+    const paymentMutation = ctx.method === 'POST' &&
+      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') || ctx.pathname.startsWith('/api/v1/admin/payments/'));
+    if (paymentMutation) await paymentRateLimiter.middleware(req, res, ctx, next);
+    else await next();
+  };
+
+  const adminRateLimiter = createRateLimiter(
+    deps.rateLimitNow === undefined
+      ? { maxRequests: config.adminRateLimitMaxRequests, windowMs: config.adminRateLimitWindowMs }
+      : { maxRequests: config.adminRateLimitMaxRequests, windowMs: config.adminRateLimitWindowMs, now: deps.rateLimitNow },
+  );
+  const adminEndpointRateLimit: Middleware = async (req, res, ctx, next) => {
+    if (ctx.pathname === '/api/v1/admin' || ctx.pathname.startsWith('/api/v1/admin/')) {
+      await adminRateLimiter.middleware(req, res, ctx, next);
+    } else await next();
+  };
+
+  // Pipeline order: request ID → security headers → CORS → global rate limit
+  // → credential + payment mutation + admin-read limits → CSRF origin guard → session →
+  // device resolution → routing (with the existing authentication boundary).
   const middlewares: Middleware[] = [
     requestIdMiddleware(),
     securityHeadersMiddleware(),
     corsMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     rateLimiter.middleware,
     authRateLimiter.middleware,
+    paymentMutationRateLimit,
+    adminEndpointRateLimit,
     originGuardMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     sessionMiddleware({ sessions, users, cookieSecure: config.cookieSecure }),
     deviceMiddleware({ cookieSecure: config.cookieSecure }),
@@ -475,9 +525,12 @@ export function createApp(deps: AppDeps): App {
     handle,
     routes,
     scanProcessor,
+    ready,
     resetRateLimit: (): void => {
       rateLimiter.reset();
       authRateLimiter.reset();
+      paymentRateLimiter.reset();
+      adminRateLimiter.reset();
     },
   };
 }
