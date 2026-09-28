@@ -38,6 +38,8 @@ DAST runs through the existing authenticated project scans route, scan engine re
 
 The project UI makes target configuration explicit, disables the DAST option until the server confirms a target, and displays the server's observed request summary, observations, partial status, and bounded findings as text. It does not imply broader coverage.
 
+The Pentester workspace (Pump 20) is a classification/presentation over this same project route and scan lifecycle, not a DAST privilege or separate engine. Its dashboard target count and per-project configured indicators are derived from the authenticated account's server-side project records; they do not assert that the user has legal permission from a third party. Only a project owner can save that project's target. The scan API ignores no policy based on UserType and never accepts a client authorization flag, target override, owner ID, account/project selector, plan, quota, or entitlement claim. Login/route guards remain UI behavior; existing server authentication, owner checks, account/device quota, entitlements, rate limits, and DAST target policy apply unchanged.
+
 ## Not implemented
 
 Browser/DOM analysis, JavaScript execution, authenticated crawling, link discovery, unrestricted spidering, form submission, injection, fuzzing, active exploit checks, port scanning, TLS-certificate grading, vulnerability-database matching, CVSS scoring, scheduling, and out-of-process DAST workers are **NOT_IMPLEMENTED**. Pump 12 reports can include the existing bounded DAST result and findings; they do not add DAST coverage. SCA vulnerability data remains unavailable without a loaded provider dataset; this pump adds no security dataset or import.

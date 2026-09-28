@@ -100,7 +100,7 @@ async function runScan(server: TestServer, cookies: Cookies, projectId: string, 
   return { id, detail: detail.scan };
 }
 
-async function seedProUser(dataDir: string, userType: 'DEVELOPER' | 'STUDENT' | 'SECURITY_PROFESSIONAL' = 'DEVELOPER'): Promise<void> {
+async function seedProUser(dataDir: string, userType: 'DEVELOPER' | 'STUDENT' | 'SECURITY_PROFESSIONAL' | 'PENTESTER' = 'DEVELOPER'): Promise<void> {
   const users = createJsonFileUserRepository(join(dataDir, 'users.json'));
   const createdAt = '2026-09-01T00:00:00.000Z';
   const user: UserRecord = {
@@ -810,6 +810,141 @@ describe('findings and reports production API', () => {
       const restoredOverview = await responseData<{ overview: { scans: { recent: Array<{ scanType: string; dastObservationsCount: number | null }> } } }>(await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(proAfterRestart) } }));
       expect(restoredOverview.overview.scans.recent.find((entry) => entry.scanType === 'DAST')?.dastObservationsCount).toBe(dast.detail.dast?.observations.length);
       expect(server.logs.join('\n')).not.toContain('AKIAP10QZ9WM7XK2BR4J');
+    } finally {
+      cleanupTempStoreDir(dataDir);
+    }
+  });
+
+  test('Pentester journey: server-owned passive DAST, findings and retest, assistant/report history, FREE quota, PRO exemption, and restart', async () => {
+    const dataDir = makeTempStoreDir('pump20-pentester-e2e');
+    try {
+      await seedProUser(dataDir, 'PENTESTER');
+      let server = await startPersistentServer(dataDir);
+      expect((await fetch(`${server.baseUrl}/api/v1/me/security-overview`)).status).toBe(401);
+
+      const rejectedRegistration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'pentester-free@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'PENTESTER', role: 'ADMIN', plan: 'PRO' }),
+      });
+      expect(rejectedRegistration.status).toBe(422);
+      const registration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'pentester-free@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'PENTESTER' }),
+      });
+      expect(registration.status).toBe(201);
+      const registered = await responseData<{ user: { role: string; userType: string | null } }>(registration);
+      expect(registered.user).toMatchObject({ role: 'MEMBER', userType: 'PENTESTER' });
+      const free = await login(server, 'pentester-free@example.test');
+      const me = await responseData<{ user: { role: string; userType: string | null } }>(await fetch(`${server.baseUrl}/api/v1/me`, { headers: { cookie: cookieHeader(free) } }));
+      expect(me.user).toMatchObject({ role: 'MEMBER', userType: 'PENTESTER' });
+      expect(await responseData<{ subscription: { plan: string; status: string }; entitlements: string[] }>(await fetch(
+        `${server.baseUrl}/api/v1/subscription`, { headers: { cookie: cookieHeader(free) } },
+      ))).toEqual({ subscription: expect.objectContaining({ plan: 'FREE', status: 'ACTIVE' }), entitlements: ['plan:view'] });
+
+      const projectId = await createProject(server, free, 'Pentester controlled passive assessment');
+      const targetResponse = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/dast-target`, {
+        method: 'PUT', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) },
+        body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+      });
+      expect(targetResponse.status).toBe(200);
+      const targetMassAssignment = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/dast-target`, {
+        method: 'PUT', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) },
+        body: JSON.stringify({ targetUrl: 'https://fixture.example.org/', authorized: true, ownerId: 'usr_attacker', plan: 'PRO', userType: 'PENTESTER' }),
+      });
+      expect(targetMassAssignment.status).toBe(422);
+      const forgedScanContext = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'pentester-forged-scan-context', cookie: cookieHeader(free) },
+        body: JSON.stringify({ scanType: 'DAST', targetUrl: 'https://attacker.example/', authorized: true, ownerId: 'usr_attacker', plan: 'PRO', userType: 'PENTESTER' }),
+      });
+      expect(forgedScanContext.status).toBe(422);
+      expect((await responseData<UsageResponse>(await fetch(`${server.baseUrl}/api/v1/usage`, { headers: { cookie: cookieHeader(free) } }))).used).toBe(0);
+
+      const first = await runScan(server, free, projectId, 'DAST', 'pentester-free-dast-001');
+      expect(first.detail.dast?.observations.length).toBeGreaterThan(0);
+      expect(first.detail.dast?.observations.every((observation) => observation.method === 'GET')).toBe(true);
+      expect(first.detail.findings.length).toBeGreaterThan(0);
+      const finding = first.detail.findings[0];
+      if (finding === undefined) throw new Error('Expected only scanner-produced fixture DAST findings.');
+      const findingUrl = `${server.baseUrl}/api/v1/projects/${projectId}/scans/${first.id}/findings/${finding.id}`;
+      const findingDetail = await responseData<FindingDetailResponse>(await fetch(findingUrl, { headers: { cookie: cookieHeader(free) } }));
+      expect(findingDetail.finding.evidence.length).toBeGreaterThan(0);
+      expect(findingDetail.guidance?.actions.length).toBeGreaterThan(0);
+      expect((await fetch(`${findingUrl}/lifecycle`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) }, body: JSON.stringify({ state: 'IN_PROGRESS' }),
+      })).status).toBe(200);
+      expect((await fetch(`${findingUrl}/notes`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) },
+        body: JSON.stringify({ note: 'Review this observed response, remediate the configuration, then retest.' }),
+      })).status).toBe(200);
+      expect((await responseData<{ total: number }>(await fetch(`${findingUrl}/history`, { headers: { cookie: cookieHeader(free) } }))).total).toBeGreaterThanOrEqual(2);
+
+      expect(await responseData<{ providerState: string }>(await fetch(`${server.baseUrl}/api/v1/assistant/status`, { headers: { cookie: cookieHeader(free) } }))).toMatchObject({ providerState: 'NONE' });
+      const assistant = await responseData<{ state: string; mode: string; providerState: string; evidence: Array<{ projectId: string }> }>(await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/assistant/ask`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) }, body: JSON.stringify({ question: 'Explain DAST observations' }),
+      }));
+      expect(assistant).toMatchObject({ state: 'SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
+      expect(assistant.evidence.every((entry) => entry.projectId === projectId)).toBe(true);
+      expect(JSON.stringify(assistant)).not.toContain('FIXTURE_COOKIE_SECRET_DO_NOT_LEAK');
+
+      const report = await generateReport(server, free, projectId, first.id);
+      expect(report.response.status).toBe(201);
+      expect(report.body.report.dast?.observations.length).toBe(first.detail.dast?.observations.length);
+      expect(report.body.report.findingSummary.total).toBe(first.detail.findings.length);
+
+      const retest = await runScan(server, free, projectId, 'DAST', 'pentester-free-dast-002');
+      expect(retest.detail.findings.some((entry) => entry.fingerprint === finding.fingerprint)).toBe(true);
+      const verified = await responseData<FindingDetailResponse>(await fetch(findingUrl, { headers: { cookie: cookieHeader(free) } }));
+      expect(verified.workflow?.verificationState).toBe('OBSERVED');
+      await runScan(server, free, projectId, 'DAST', 'pentester-free-dast-003');
+      expect(await responseData<UsageResponse>(await fetch(`${server.baseUrl}/api/v1/usage`, { headers: { cookie: cookieHeader(free) } }))).toMatchObject({ plan: 'FREE', used: 3, limit: 3, remaining: 0, quotaStatus: 'EXHAUSTED' });
+      expect((await requestScan(server, free, projectId, 'DAST', 'pentester-free-dast-004')).status).toBe(429);
+
+      const outsiderRegistration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'pentester-outsider@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'PENTESTER' }),
+      });
+      expect(outsiderRegistration.status).toBe(201);
+      const outsider = await login(server, 'pentester-outsider@example.test');
+      const outsiderProject = await createProject(server, outsider, 'Another Pentester-owned project');
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}`, { headers: { cookie: cookieHeader(outsider) } })).status).toBe(403);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${first.id}`, { headers: { cookie: cookieHeader(outsider) } })).status).toBe(403);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${outsiderProject}/dast-target`, {
+        method: 'PUT', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) },
+        body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+      })).status).toBe(403);
+
+      const overviewResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(free) } });
+      const overviewPayload = await responseData<unknown>(overviewResponse);
+      expect(isWorkspaceSecurityOverviewResponse(overviewPayload)).toBe(true);
+      const overview = overviewPayload as { overview: { projects: { dastTargetsConfigured: number; recent: Array<{ id: string; dastTargetConfigured: boolean }> }; scans: { total: number; recent: Array<{ scanType: string; dastObservationsCount: number | null }> } } };
+      expect(overview.overview.projects.dastTargetsConfigured).toBe(1);
+      expect(overview.overview.projects.recent).toEqual([expect.objectContaining({ id: projectId, dastTargetConfigured: true })]);
+      expect(overview.overview.scans.total).toBe(3);
+      expect(overview.overview.scans.recent.filter((entry) => entry.scanType === 'DAST').every((entry) => (entry.dastObservationsCount ?? 0) > 0)).toBe(true);
+      expect(JSON.stringify(overviewPayload)).not.toContain(outsiderProject);
+
+      await server.stop();
+      SERVERS.splice(SERVERS.indexOf(server), 1);
+      server = await startPersistentServer(dataDir);
+      const restored = await login(server, 'pentester-free@example.test');
+      const restoredOverview = await responseData<unknown>(await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(restored) } }));
+      expect(isWorkspaceSecurityOverviewResponse(restoredOverview)).toBe(true);
+      expect(restoredOverview).toMatchObject({ overview: { projects: { dastTargetsConfigured: 1 }, scans: { total: 3 }, reports: { availableCount: 1 } } });
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${first.id}/report`, { headers: { cookie: cookieHeader(restored) } })).status).toBe(200);
+      const restoredFindingUrl = `${server.baseUrl}/api/v1/projects/${projectId}/scans/${first.id}/findings/${finding.id}`;
+      expect((await responseData<FindingDetailResponse>(await fetch(restoredFindingUrl, { headers: { cookie: cookieHeader(restored) } }))).workflow?.verificationState).toBe('OBSERVED');
+      expect((await requestScan(server, restored, projectId, 'DAST', 'pentester-free-after-restart')).status).toBe(429);
+
+      const pro = await login(server, 'pro@example.test');
+      expect((await responseData<{ subscription: { plan: string; status: string }; entitlements: string[] }>(await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: cookieHeader(pro) } }))).entitlements).toContain('feature:pro');
+      const proProject = await createProject(server, pro, 'Pentester PRO passive assessment');
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${proProject}/dast-target`, {
+        method: 'PUT', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) },
+        body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+      })).status).toBe(200);
+      await runScan(server, pro, proProject, 'DAST', 'pentester-pro-dast-001');
+      expect(await responseData<UsageResponse>(await fetch(`${server.baseUrl}/api/v1/usage`, { headers: { cookie: cookieHeader(pro) } }))).toMatchObject({ plan: 'PRO', used: 1, limit: null, quotaStatus: 'EXEMPT' });
+      expect(server.logs.join('\n')).not.toContain('FIXTURE_COOKIE_SECRET_DO_NOT_LEAK');
     } finally {
       cleanupTempStoreDir(dataDir);
     }

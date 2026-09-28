@@ -22,7 +22,9 @@ export function PublicOnlyRoute({ children }: { children: ReactElement }): React
         ? '/student/dashboard'
         : state.user.userType === 'SECURITY_PROFESSIONAL'
           ? '/security-professional/dashboard'
-          : '/account';
+          : state.user.userType === 'PENTESTER'
+            ? '/pentester/dashboard'
+            : '/account';
     return <Navigate to={from ?? landing} replace />;
   }
   // `error` on the session probe falls through to the form: logging in is
@@ -107,6 +109,15 @@ export function StudentDashboardRoute(): React.JSX.Element {
 export function SecurityProfessionalDashboardRoute(): React.JSX.Element {
   const { state } = useAuth();
   if (state.status === 'ready' && state.user.userType !== 'SECURITY_PROFESSIONAL') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; project and scan APIs still enforce owner/plan/quota policy. */
+export function PentesterDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'PENTESTER') {
     return <Navigate to="/projects" replace />;
   }
   return <Outlet />;

@@ -47,7 +47,9 @@ export function LoginPage(): React.JSX.Element {
           ? '/student/dashboard'
           : authenticated.userType === 'SECURITY_PROFESSIONAL'
             ? '/security-professional/dashboard'
-            : '/account';
+            : authenticated.userType === 'PENTESTER'
+              ? '/pentester/dashboard'
+              : '/account';
       navigate(readSafePath(location.state) ?? landing, { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {

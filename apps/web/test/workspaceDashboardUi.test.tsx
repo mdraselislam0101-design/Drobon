@@ -4,7 +4,7 @@ import type { SubscriptionResponse, UsageResponse, WorkspaceSecurityOverviewResp
 import type { ApiClient } from '../src/api/client.js';
 import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
-function signedIn(userType: 'DEVELOPER' | 'STUDENT' | null, overrides: Partial<ApiClient> = {}): ApiClient {
+function signedIn(userType: 'DEVELOPER' | 'STUDENT' | 'SECURITY_PROFESSIONAL' | 'PENTESTER' | null, overrides: Partial<ApiClient> = {}): ApiClient {
   return stubClient({
     getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType } })),
     ...overrides,
@@ -13,8 +13,8 @@ function signedIn(userType: 'DEVELOPER' | 'STUDENT' | null, overrides: Partial<A
 
 const STUDENT_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
   generatedAt: '2026-09-01T00:00:00.000Z',
-  projects: { total: 1, active: 1, archived: 0, recent: [{
-    id: 'prj_00000000-0000-4000-8000-000000000001', name: 'Learning project', status: 'ACTIVE', updatedAt: '2026-09-01T00:00:00.000Z',
+  projects: { total: 1, active: 1, archived: 0, dastTargetsConfigured: 0, recent: [{
+    id: 'prj_00000000-0000-4000-8000-000000000001', name: 'Learning project', status: 'ACTIVE', updatedAt: '2026-09-01T00:00:00.000Z', dastTargetConfigured: false,
   }] },
   scans: { total: 1, byStatus: { QUEUED: 0, RUNNING: 0, COMPLETED: 1, FAILED: 0, TIMED_OUT: 0 }, recent: [{
     scanId: 'scan_00000000-0000-4000-8000-000000000001', projectId: 'prj_00000000-0000-4000-8000-000000000001',
@@ -40,8 +40,8 @@ const STUDENT_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
 
 const PROFESSIONAL_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
   generatedAt: '2026-09-02T00:00:00.000Z',
-  projects: { total: 1, active: 1, archived: 0, recent: [{
-    id: 'prj_00000000-0000-4000-8000-000000000001', name: 'Professional assessment', status: 'ACTIVE', updatedAt: '2026-09-02T00:00:00.000Z',
+  projects: { total: 1, active: 1, archived: 0, dastTargetsConfigured: 0, recent: [{
+    id: 'prj_00000000-0000-4000-8000-000000000001', name: 'Professional assessment', status: 'ACTIVE', updatedAt: '2026-09-02T00:00:00.000Z', dastTargetConfigured: false,
   }] },
   scans: { total: 3, byStatus: { QUEUED: 0, RUNNING: 0, COMPLETED: 3, FAILED: 0, TIMED_OUT: 0 }, recent: [
     { scanId: 'scan_00000000-0000-4000-8000-000000000001', projectId: 'prj_00000000-0000-4000-8000-000000000001', scanType: 'DAST', status: 'COMPLETED', createdAt: '2026-09-02T00:00:00.000Z', completedAt: '2026-09-02T00:01:00.000Z', findingsTotal: 0, partial: false, reportAvailable: false, dastObservationsCount: 2, scaAssessmentState: null, scaDatasetStatus: null },
@@ -50,6 +50,14 @@ const PROFESSIONAL_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
   ] },
   findings: STUDENT_OVERVIEW.overview.findings,
   reports: STUDENT_OVERVIEW.overview.reports,
+} };
+
+const PENTESTER_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
+  ...PROFESSIONAL_OVERVIEW.overview,
+  projects: {
+    total: 1, active: 1, archived: 0, dastTargetsConfigured: 1,
+    recent: [{ ...PROFESSIONAL_OVERVIEW.overview.projects.recent[0]!, dastTargetConfigured: true }],
+  },
 } };
 
 describe('Developer workspace dashboard UX', () => {
@@ -179,6 +187,33 @@ describe('Developer workspace dashboard UX', () => {
     expect(planCard).toHaveTextContent(/Server-reported plan: PRO/);
     expect(planCard).toHaveTextContent(/6 used · quota exempt/);
     expect(planCard).toHaveTextContent(/PRO entitlement: granted by server/);
+  });
+
+  test('Pentester dashboard exposes only server-configured project targets and shared passive-assessment workflows', async () => {
+    const client = signedIn('PENTESTER', {
+      getSecurityOverview: vi.fn(async () => PENTESTER_OVERVIEW),
+    });
+    await renderAt('/pentester/dashboard', client);
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Pentester dashboard' })).toHaveAttribute('href', '/pentester/dashboard');
+    expect(screen.getByRole('heading', { name: 'Authorized targets' }).parentElement).toHaveTextContent('1 project target configured on the server');
+    expect(screen.getByText(/does not itself verify third-party authorization/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Projects & authorized targets' })).toBeInTheDocument();
+    expect(screen.getByText(/Server target configuration: configured/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Assessment history & recent activity' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Findings & retest status' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Assessment reports' })).toBeInTheDocument();
+    expect(screen.getByText(/Passive DAST: 2 bounded response observations/)).toBeInTheDocument();
+    const workflow = screen.getByRole('navigation', { name: 'Pentester assessment workflow' });
+    for (const label of ['Assessments & projects', 'Authorized targets', 'Start or review DAST', 'Observations', 'Findings & evidence', 'Remediation', 'Retest & verification', 'Reports', 'AI Security Assistant', 'Settings']) {
+      expect(within(workflow).getByRole('link', { name: label })).toBeInTheDocument();
+    }
+    expect(within(workflow).getByRole('link', { name: 'Authorized targets' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#dast-target');
+    expect(within(workflow).getByRole('link', { name: 'Findings & evidence' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#security-scans');
+    expect(within(workflow).getByRole('link', { name: 'AI Security Assistant' })).toHaveAttribute('href', '/projects/prj_00000000-0000-4000-8000-000000000001#assistant-title');
+    expect(screen.queryByRole('link', { name: 'Platform operations' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Payment review' })).toBeNull();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
   test('Professional classification does not suppress role-based admin navigation', async () => {

@@ -261,17 +261,20 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
       let total = 0;
       let active = 0;
       let archived = 0;
+      let dastTargetsConfigured = 0;
       const recent: WorkspaceProjectCard[] = [];
       for (const record of byId.values()) {
         if (record.ownerId !== ownerId) continue;
         total += 1;
         if (record.status === 'ACTIVE') active += 1;
         else archived += 1;
-        recent.push({ id: record.id, name: record.name, status: record.status, updatedAt: record.updatedAt });
+        const dastTargetConfigured = record.dastTargetUrl !== undefined;
+        if (dastTargetConfigured) dastTargetsConfigured += 1;
+        recent.push({ id: record.id, name: record.name, status: record.status, updatedAt: record.updatedAt, dastTargetConfigured });
         recent.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
         if (recent.length > WORKSPACE_PROJECTS_MAX) recent.pop();
       }
-      return Promise.resolve({ total, active, archived, recent });
+      return Promise.resolve({ total, active, archived, dastTargetsConfigured, recent });
     },
     adminCounts: () => {
       let active = 0;

@@ -30,9 +30,16 @@ credential rate limit → CSRF origin guard → session resolution → routing).
 single choke point every future protected route reuses.
 
 Registration optionally submits one server-validated `UserType` from the
-closed shared vocabulary. Developer and Student selectors are profile classifications
-only: every self-registration is still `MEMBER` + `FREE` + `ACTIVE`, and
-role/plan/entitlement/account-state fields remain server-controlled. Developer and Student classifications route to their respective workspace presentations; other classifications retain the account landing. UserType never bypasses authentication, ownership, permissions or quota; see `AUTHORIZATION.md`, `DEVELOPER.md` and `STUDENT.md`.
+closed shared vocabulary. Every self-registration remains
+`MEMBER` + `FREE` + `ACTIVE`; role, plan, entitlement and account-state
+fields remain server-controlled. Developer, Student, Security Professional and Pentester
+classifications route to workspace presentations; the route guard is UX-only.
+UserType never bypasses authentication, ownership, permissions, authorization,
+quota, rate limits or DAST safety. In particular, Pentester classification is
+not proof of authority over a target: target configuration is project-owner
+scoped and the server applies its existing destination policy. See
+`AUTHORIZATION.md`, `DEVELOPER.md`, `STUDENT.md`, `SECURITY_PROFESSIONAL.md`
+and `DAST.md`.
 
 ## Credentials and sessions
 

@@ -162,7 +162,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     })),
     getSecurityOverview: vi.fn(async (): Promise<WorkspaceSecurityOverviewResponse> => ({ overview: {
       generatedAt: '2026-09-01T00:00:00.000Z',
-      projects: { total: 0, active: 0, archived: 0, recent: [] },
+      projects: { total: 0, active: 0, archived: 0, dastTargetsConfigured: 0, recent: [] },
       scans: { total: 0, byStatus: { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 }, recent: [] },
       findings: {
         currentObserved: 0, unresolved: 0,

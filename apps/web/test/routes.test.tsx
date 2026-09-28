@@ -23,6 +23,25 @@ describe('routing', () => {
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
+  test('an existing Pentester session visiting login lands on the Pentester dashboard', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'PENTESTER' as const } })),
+    });
+    await renderAt('/login', client);
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('non-Pentester classification cannot enter the Pentester dashboard directly', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'DEVELOPER' as const } })),
+    });
+    await renderAt('/pentester/dashboard', client);
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Pentester assessment dashboard' })).toBeNull();
+    expect(client.getSecurityOverview).not.toHaveBeenCalled();
+  });
+
   test('home renders the hero and foundation grid', async () => {
     await renderAt('/');
     expect(screen.getByRole('heading', { name: 'Drobon Aegis AI' })).toBeInTheDocument();
@@ -33,7 +52,7 @@ describe('routing', () => {
     expect(screen.getByText('Projects & source')).toBeInTheDocument();
     expect(screen.getByText(/SCA\/SBOM inventory/)).toBeInTheDocument();
     expect(screen.getByText('Professional assessments')).toBeInTheDocument();
-    expect(screen.getByText(/developers, students and security professionals/)).toBeInTheDocument();
+    expect(screen.getByText(/developers, students, security professionals and pentesters/)).toBeInTheDocument();
   });
 
   test('unknown routes render the 404 page', async () => {

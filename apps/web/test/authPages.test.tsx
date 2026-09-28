@@ -97,6 +97,20 @@ describe('login page', () => {
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
+  test('Pentester login lands on the Pentester assessment dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'PENTESTER' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'pentester@example.test');
+    await user.type(screen.getByLabelText('Password'), 'pentester-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
   test('server 401 is shown verbatim without leaking which factor failed', async () => {
     const user = userEvent.setup();
     const client = stubClient({
@@ -254,6 +268,25 @@ describe('register page', () => {
     await user.click(screen.getByRole('button', { name: 'Create account' }));
     expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
     expect(client.postRegister).toHaveBeenCalledWith('professional@example.test', 'professional-password', 'SECURITY_PROFESSIONAL');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Pentester registration records the classification only and opens the assessment dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'PENTESTER' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'pentester@example.test');
+    await user.type(screen.getByLabelText('Password'), 'pentester-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'PENTESTER');
+    expect(screen.getByText(/profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('pentester@example.test', 'pentester-password', 'PENTESTER');
     expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 

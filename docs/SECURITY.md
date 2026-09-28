@@ -323,6 +323,10 @@ The Developer classification is a navigation/display tag only. The `/api/v1/me/s
 
 No enabled/disabled account-state model exists, so this workspace neither claims nor changes account state. Counts describe persisted activity, not complete scanner coverage or an overall security verdict. SCA remains `NOT_ASSESSED` / `NO_DATA_LOADED` without provider data; assistant generation stays unavailable with provider state `NONE`. No database or external vulnerability feed/catalog is introduced.
 
+### Pentester workspace — Pump 20
+
+Pentester is a profile classification and dashboard presentation, not an AccountRole, target authorization grant, plan or entitlement. The shared `/api/v1/me/security-overview` remains session-scoped; its target-configured booleans/count come from the caller's owned project records. They indicate only stored project settings, not legal permission. Target writes remain authenticated and owner-only, while DAST scan creation still uses the server-held target and the existing DNS/SSRF/redirect/transport policy, FREE/PRO quota and device controls, entitlements, rate limits, and persisted scan/finding/report workflow. No alternate scanner or client-supplied authorization field is introduced. See `docs/DAST.md`, `docs/AUTHORIZATION.md`, `apps/api/test/workspaceApi.test.ts`, and the controlled Pump 20 journey in `apps/api/test/reportsApi.test.ts`.
+
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator

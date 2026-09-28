@@ -4,7 +4,7 @@ import type { ApiClient } from './api/client.js';
 import { AuthProvider } from './auth/context.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { Layout } from './components/Layout.js';
-import { DeveloperDashboardRoute, ProtectedRoute, PublicOnlyRoute, SecurityProfessionalDashboardRoute, StudentDashboardRoute } from './components/RouteGuards.js';
+import { DeveloperDashboardRoute, PentesterDashboardRoute, ProtectedRoute, PublicOnlyRoute, SecurityProfessionalDashboardRoute, StudentDashboardRoute } from './components/RouteGuards.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { AdminPaymentsPage } from './pages/AdminPaymentsPage.js';
 import { AdminOperationsPage } from './pages/AdminOperationsPage.js';
@@ -26,6 +26,7 @@ export const APP_ROUTES = {
   dashboard: '/dashboard',
   studentDashboard: '/student/dashboard',
   securityProfessionalDashboard: '/security-professional/dashboard',
+  pentesterDashboard: '/pentester/dashboard',
   adminOperations: '/admin/operations',
   adminPayments: '/admin/payments',
   projects: '/projects',
@@ -88,6 +89,9 @@ export function AppRoutes({
                 </Route>
                 <Route element={<SecurityProfessionalDashboardRoute />}>
                   <Route path="security-professional/dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+                <Route element={<PentesterDashboardRoute />}>
+                  <Route path="pentester/dashboard" element={<DeveloperDashboardPage />} />
                 </Route>
               </Route>
               <Route element={<ProtectedRoute minRole="ADMIN" />}>

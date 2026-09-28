@@ -40,7 +40,7 @@ describe('passive DAST project UI', () => {
 
     const typeSelect = await screen.findByTestId('scan-type-select');
     expect(typeSelect.querySelector('option[value="DAST"]')).toBeDisabled();
-    await userEvent.type(screen.getByLabelText('Authorized target URL'), TARGET);
+    await userEvent.type(screen.getByLabelText('Project target URL'), TARGET);
     await userEvent.click(screen.getByRole('button', { name: 'Save target' }));
     await waitFor(() => expect(setDastTarget).toHaveBeenCalledWith(PROJECT_ID, TARGET));
     expect(await screen.findByTestId('dast-configured-target')).toHaveTextContent(TARGET);

@@ -47,22 +47,50 @@ describe('self-scoped workspace security overview', () => {
 
     const developer = await createAccount(server, 'dev-overview@example.test', 'DEVELOPER');
     const student = await createAccount(server, 'student-overview@example.test', 'STUDENT');
+    const pentester = await createAccount(server, 'pentester-overview@example.test', 'PENTESTER');
     const developerProject = await createProject(server, developer, 'Developer-owned fixture');
     const studentProject = await createProject(server, student, 'Student-owned fixture');
+    const pentesterProject = await createProject(server, pentester, 'Pentester-owned fixture');
+    const configuredTarget = await fetch(`${server.baseUrl}/api/v1/projects/${pentesterProject}/dast-target`, {
+      method: 'PUT', headers: { 'content-type': 'application/json', cookie: cookieHeader(pentester) },
+      body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+    });
+    expect(configuredTarget.status).toBe(200);
 
     const developerResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(developer) } });
     const studentResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(student) } });
+    const pentesterResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(pentester) } });
     expect(developerResponse.status).toBe(200);
     expect(studentResponse.status).toBe(200);
+    expect(pentesterResponse.status).toBe(200);
     const developerOverview = await data<unknown>(developerResponse);
     const studentOverview = await data<unknown>(studentResponse);
+    const pentesterOverview = await data<{ overview: { projects: { dastTargetsConfigured: number; recent: Array<{ id: string; dastTargetConfigured: boolean }> } } }>(pentesterResponse);
     expect(isWorkspaceSecurityOverviewResponse(developerOverview)).toBe(true);
     expect(isWorkspaceSecurityOverviewResponse(studentOverview)).toBe(true);
     expect(JSON.stringify(developerOverview)).toContain(developerProject);
     expect(JSON.stringify(developerOverview)).not.toContain(studentProject);
     expect(JSON.stringify(studentOverview)).toContain(studentProject);
     expect(JSON.stringify(studentOverview)).not.toContain(developerProject);
+    expect(JSON.stringify(developerOverview)).not.toContain(pentesterProject);
+    expect(JSON.stringify(pentesterOverview)).toContain(pentesterProject);
+    expect(JSON.stringify(pentesterOverview)).not.toContain(developerProject);
+    expect(JSON.stringify(pentesterOverview)).not.toContain(studentProject);
+    expect(pentesterOverview.overview.projects.dastTargetsConfigured).toBe(1);
+    expect(pentesterOverview.overview.projects.recent).toEqual([
+      expect.objectContaining({ id: pentesterProject, dastTargetConfigured: true }),
+    ]);
     expect(JSON.stringify(developerOverview)).not.toContain('ownerId');
+
+    const invalidTargetCount = JSON.parse(JSON.stringify(pentesterOverview)) as typeof pentesterOverview;
+    invalidTargetCount.overview.projects.dastTargetsConfigured = -1;
+    expect(isWorkspaceSecurityOverviewResponse(invalidTargetCount)).toBe(false);
+    const impossibleTargetCount = JSON.parse(JSON.stringify(pentesterOverview)) as typeof pentesterOverview;
+    impossibleTargetCount.overview.projects.dastTargetsConfigured = 2;
+    expect(isWorkspaceSecurityOverviewResponse(impossibleTargetCount)).toBe(false);
+    const invalidProjectTargetFlag = JSON.parse(JSON.stringify(pentesterOverview)) as { overview: { projects: { recent: Array<{ dastTargetConfigured: unknown }> } } };
+    invalidProjectTargetFlag.overview.projects.recent[0]!.dastTargetConfigured = 'authorized';
+    expect(isWorkspaceSecurityOverviewResponse(invalidProjectTargetFlag)).toBe(false);
 
     expect((await fetch(`${server.baseUrl}/api/v1/me/security-overview?accountId=usr_someone-else`, { headers: { cookie: cookieHeader(developer) } })).status).toBe(422);
   });

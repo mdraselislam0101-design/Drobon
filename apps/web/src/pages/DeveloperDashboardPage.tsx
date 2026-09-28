@@ -33,6 +33,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
   const { state: authState } = useAuth();
   const isStudent = authState.status === 'ready' && authState.user.userType === 'STUDENT';
   const isProfessional = authState.status === 'ready' && authState.user.userType === 'SECURITY_PROFESSIONAL';
+  const isPentester = authState.status === 'ready' && authState.user.userType === 'PENTESTER';
   const client = useApiClient();
   const [dashboard, setDashboard] = useState<DashboardState>({ status: 'loading' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -68,18 +69,27 @@ export function DeveloperDashboardPage(): React.JSX.Element {
   const activeProject = dashboard.status === 'ready'
     ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE')
     : undefined;
-  const classificationLabel = isStudent ? 'Student' : isProfessional ? 'Security Professional' : 'Developer';
+  const configuredTargetProject = dashboard.status === 'ready'
+    ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE' && project.dastTargetConfigured) ??
+      dashboard.overview.projects.recent.find((project) => project.dastTargetConfigured)
+    : undefined;
+  const targetProject = configuredTargetProject ?? activeProject;
+  const pentesterTargetLink = targetProject === undefined ? '/projects' : `/projects/${targetProject.id}#dast-target`;
+  const pentesterActivityLink = activeProject === undefined ? '/projects' : `/projects/${activeProject.id}#security-scans`;
+  const classificationLabel = isStudent ? 'Student' : isProfessional ? 'Security Professional' : isPentester ? 'Pentester' : 'Developer';
 
   return (
     <section className="panel developer-dashboard" aria-labelledby="workspace-dashboard-title">
       <p className="eyebrow">{classificationLabel} workspace</p>
-      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : isProfessional ? 'Security Professional dashboard' : 'Security overview'}</h1>
+      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : isProfessional ? 'Security Professional dashboard' : isPentester ? 'Pentester assessment dashboard' : 'Security overview'}</h1>
       <p className="muted">
         {isStudent
           ? 'Follow your own projects, scan evidence, finding workflows and reports. This is persisted progress—not a grade, complete-coverage claim, or security score.'
           : isProfessional
             ? 'Review your own persisted project assessments, recent engine activity, finding lifecycle, verification and reports. Recent lists are bounded; they are not global security scores or complete engine coverage.'
-            : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
+            : isPentester
+              ? 'Review server-configured project targets, bounded passive DAST observations, findings, retest state and reports. Targets and scans remain project-owned; this is not an unrestricted testing surface.'
+              : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
       </p>
       {dashboard.status === 'loading' && <LoadingState label="Loading your security overview…" />}
       {dashboard.status === 'error' && (
@@ -103,6 +113,14 @@ export function DeveloperDashboardPage(): React.JSX.Element {
               <p><strong>{dashboard.overview.scans.byStatus.COMPLETED}</strong> completed · {dashboard.overview.scans.total} recorded</p>
               <p className="muted">{countEntries(dashboard.overview.scans.byStatus).map(([status, count]) => `${displayState(String(status))}: ${count}`).join(' · ') || 'No scans recorded yet.'}</p>
             </article>
+            {isPentester && (
+              <article className="card">
+                <h2>Authorized targets</h2>
+                <p><strong>{dashboard.overview.projects.dastTargetsConfigured}</strong> project target{dashboard.overview.projects.dastTargetsConfigured === 1 ? '' : 's'} configured on the server</p>
+                <p className="muted">This counts owner-configured project settings; it does not itself verify third-party authorization.</p>
+                <Link to={targetProject === undefined ? '/projects' : `/projects/${targetProject.id}#dast-target`}>Review target configurations</Link>
+              </article>
+            )}
             <article className="card">
               <h2>Plan &amp; usage</h2>
               <p>Server-reported plan: <strong>{dashboard.subscription.subscription.plan}</strong> ({displayState(dashboard.subscription.subscription.status)})</p>
@@ -136,6 +154,24 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             </nav>
           )}
 
+          {isPentester && (
+            <nav className="workspace-workflow-nav" aria-label="Pentester assessment workflow">
+              <Link to="/projects">Assessments &amp; projects</Link>
+              <Link to={pentesterTargetLink}>Authorized targets</Link>
+              <Link to={pentesterActivityLink}>Start or review DAST</Link>
+              <Link to={pentesterActivityLink}>Observations</Link>
+              <Link to={pentesterActivityLink}>Findings &amp; evidence</Link>
+              <Link to={pentesterActivityLink}>Remediation</Link>
+              <Link to={pentesterActivityLink}>Retest &amp; verification</Link>
+              <Link to={pentesterActivityLink}>Reports</Link>
+              {activeProject === undefined
+                ? <Link to="/projects">AI Security Assistant</Link>
+                : <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>}
+              <a href="#assessment-history-summary">Assessment history</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
+
           {isStudent && (
             <nav className="workspace-workflow-nav" aria-label="Student security workflow">
               <Link to="/projects">My projects</Link>
@@ -158,7 +194,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="workspace-projects-title">
             <div className="section-heading-row">
-              <h2 id="workspace-projects-title">My projects</h2>
+              <h2 id="workspace-projects-title">{isPentester ? 'Projects & authorized targets' : 'My projects'}</h2>
               <Link to="/projects">All projects</Link>
             </div>
             {dashboard.overview.projects.recent.length === 0 ? (
@@ -172,21 +208,22 @@ export function DeveloperDashboardPage(): React.JSX.Element {
                       <span className={project.status === 'ACTIVE' ? 'pill pill-ok' : 'pill'}>{project.status === 'ACTIVE' ? 'Active' : 'Archived'}</span>
                     </div>
                     <p className="muted project-meta">Updated {project.updatedAt}</p>
+                    {isPentester && <p className="muted">Server target configuration: {project.dastTargetConfigured ? 'configured' : 'not configured'} · {project.status === 'ACTIVE' ? 'scans may be requested subject to server policy and quota' : 'archived projects cannot start scans'}</p>}
                   </li>
                 ))}
               </ul>
             )}
           </section>
 
-          <section id={isProfessional ? 'assessment-history-summary' : 'student-progress-summary'} className="dashboard-section" aria-labelledby="security-history-title">
+          <section id={isProfessional || isPentester ? 'assessment-history-summary' : 'student-progress-summary'} className="dashboard-section" aria-labelledby="security-history-title">
             <div className="section-heading-row">
-              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : isProfessional ? 'Assessment history & engine status' : 'Recent security history'}</h2>
+              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : isProfessional ? 'Assessment history & engine status' : isPentester ? 'Assessment history & recent activity' : 'Recent security history'}</h2>
               <span className="muted">Updated {dashboard.overview.generatedAt}</span>
             </div>
             {dashboard.overview.scans.recent.length === 0 ? (
-              <p className="form-alert" role="status">No scans have been recorded. Submit source to a project and start with a SAST scan.</p>
+              <p className="form-alert" role="status">{isPentester ? 'No assessments have been recorded. Configure an owner-managed target in a project, then request a bounded passive DAST scan.' : 'No scans have been recorded. Submit source to a project and start with a SAST scan.'}</p>
             ) : (
-              <ul className="projects-list" aria-label={isProfessional ? 'Recent bounded engine activity' : 'Recent scans'}>
+              <ul className="projects-list" aria-label={isPentester ? 'Recent Pentester assessment activity' : isProfessional ? 'Recent bounded engine activity' : 'Recent scans'}>
                 {dashboard.overview.scans.recent.map((scan) => (
                   <li key={scan.scanId} className="card">
                     <div className="project-card-head">
@@ -209,7 +246,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="finding-workflows-title">
             <div className="section-heading-row">
-              <h2 id="finding-workflows-title">{isStudent ? 'Understand & fix findings' : 'Finding & remediation status'}</h2>
+              <h2 id="finding-workflows-title">{isStudent ? 'Understand & fix findings' : isPentester ? 'Findings & retest status' : 'Finding & remediation status'}</h2>
               <span className="pill">{dashboard.overview.findings.unresolved} unresolved</span>
             </div>
             <p className="muted">Counts use the latest persisted observation per project and finding identity. “Not observed” is not a remediation confirmation; lifecycle state and scan evidence remain available in the project.</p>
@@ -238,7 +275,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <section className="dashboard-section" aria-labelledby="reports-title">
             <div className="section-heading-row">
-              <h2 id="reports-title">{isStudent ? 'My reports' : 'Reports'}</h2>
+              <h2 id="reports-title">{isStudent ? 'My reports' : isPentester ? 'Assessment reports' : 'Reports'}</h2>
               <span>{dashboard.overview.reports.availableCount} persisted</span>
             </div>
             {dashboard.overview.reports.recent.length === 0 ? (
@@ -260,6 +297,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
 
           <aside className="form-alert" role="note">
             {isProfessional && <>Recent engine activity is server-backed and bounded; open a project for its full persisted assessment history. </>}
+            {isPentester && <>Target indicators mean only that a project owner saved a canonical target. Configure only targets you have permission to assess; DAST revalidates public DNS and uses bounded passive GET requests. </>}
             SCA inventory and dependency intelligence are shown per scan. When no vulnerability data provider is configured, results remain explicitly NOT_ASSESSED / NO_DATA_LOADED; this overview does not turn that into a zero-vulnerability claim.
           </aside>
         </>

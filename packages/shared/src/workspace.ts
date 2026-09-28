@@ -27,12 +27,16 @@ export interface WorkspaceProjectCard {
   name: string;
   status: ProjectStatus;
   updatedAt: string;
+  /** Only indicates a canonical target is stored on this owned project; it is not authorization proof. */
+  dastTargetConfigured: boolean;
 }
 
 export interface WorkspaceProjectsSummary {
   total: number;
   active: number;
   archived: number;
+  /** Exact account-scoped count of project records with a configured DAST target. */
+  dastTargetsConfigured: number;
   recent: WorkspaceProjectCard[];
 }
 
@@ -131,10 +135,10 @@ function sumCounts(value: Record<string, number>): number {
 }
 
 function isProjectCard(value: unknown): value is WorkspaceProjectCard {
-  return isRecord(value) && exactKeys(value, ['id', 'name', 'status', 'updatedAt']) &&
+  return isRecord(value) && exactKeys(value, ['id', 'name', 'status', 'updatedAt', 'dastTargetConfigured']) &&
     typeof value['id'] === 'string' && PROJECT_ID_PATTERN.test(value['id']) &&
     typeof value['name'] === 'string' && value['name'].length > 0 && value['name'].length <= 120 &&
-    isProjectStatus(value['status']) && isTimestamp(value['updatedAt']);
+    isProjectStatus(value['status']) && isTimestamp(value['updatedAt']) && typeof value['dastTargetConfigured'] === 'boolean';
 }
 
 function isScanCard(value: unknown): value is WorkspaceScanCard {
@@ -187,10 +191,12 @@ function isCountRecord<K extends string>(value: unknown, keys: readonly K[]): va
 export function isWorkspaceSecurityOverview(value: unknown): value is WorkspaceSecurityOverview {
   if (!isRecord(value) || !exactKeys(value, ['generatedAt', 'projects', 'scans', 'findings', 'reports']) || !isTimestamp(value['generatedAt'])) return false;
   const projects = value['projects'];
-  if (!isRecord(projects) || !exactKeys(projects, ['total', 'active', 'archived', 'recent']) ||
+  if (!isRecord(projects) || !exactKeys(projects, ['total', 'active', 'archived', 'dastTargetsConfigured', 'recent']) ||
       !isCount(projects['total']) || !isCount(projects['active']) || !isCount(projects['archived']) ||
+      !isCount(projects['dastTargetsConfigured']) || projects['dastTargetsConfigured'] > projects['total'] ||
       projects['active'] + projects['archived'] !== projects['total'] || !Array.isArray(projects['recent']) ||
-      projects['recent'].length > WORKSPACE_PROJECTS_MAX || projects['recent'].length > projects['total'] || !projects['recent'].every(isProjectCard)) return false;
+      projects['recent'].length > WORKSPACE_PROJECTS_MAX || projects['recent'].length > projects['total'] ||
+      !projects['recent'].every(isProjectCard) || projects['recent'].filter((project) => project.dastTargetConfigured).length > projects['dastTargetsConfigured']) return false;
   const scans = value['scans'];
   if (!isRecord(scans) || !exactKeys(scans, ['total', 'byStatus', 'recent']) || !isCount(scans['total']) ||
       !isCountRecord(scans['byStatus'], SCAN_STATUSES) ||

@@ -4,8 +4,9 @@ Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
 plans/entitlements, quotas, projects, scans, reports, assistant, and manual
 payments), Pump 16 (restricted platform operations), Pump 17 (Developer
 workspace completion), Pump 18 (Student presentation over the shared
-overview), and Pump 19 (Security Professional presentation and bounded
-assistant summaries over the shared records):
+overview), Pump 19 (Security Professional presentation and bounded
+assistant summaries over shared records), and Pump 20 (Pentester target and
+assessment presentation over the same owner-scoped DAST/workflow systems):
 an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
@@ -187,7 +188,9 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   validation — the same architecture as the account and usage stores)
   exposing create/listByOwner/findById/update/setStatus. The stored
   record carries `ownerId`; ordinary responses never do. Its bounded
-  `workspaceSummary` powers the current account's Developer overview.
+  `workspaceSummary` powers the current authenticated account's shared
+  overview, including Pentester target-configuration indicators derived from
+  owner-held project records.
 - `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
   base64url device token issuance + hashed lookup, hardened cookie
   serialization), `store.ts` (the single persistence boundary — durable
@@ -236,7 +239,9 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   stores (see `docs/ASSISTANT.md`). Pump 19 adds assessment/DAST summaries
   from latest completed engine records and unresolved/verification/attention
   aggregates from the same project-filtered workflow summary; no engine or
-  store is duplicated. Payment records/audit events are held in
+  store is duplicated. Pump 20 also derives Pentester target-configured
+  indicators from caller-owned project records; they are not authorization
+  proof. Payment records/audit events are held in
   one atomic JSON document; approval uses a recoverable saga over the existing
   payment and account JSON stores (see `docs/PAYMENTS.md`). Pump 16 adds
   `/api/v1/admin/dashboard`, bounded `/accounts`, `/scans`, `/findings`, and
@@ -287,16 +292,18 @@ NOT_IMPLEMENTED).
   *expired*, authenticated-but-insufficient → `ForbiddenState` — never a
   login redirect), `PublicOnlyRoute` (authed visitors bounce off /login
   and /register), and `readSafePath()` (open-redirect defense for
-  post-login navigation); Developer and Student workspace guards only control
-  UX routing and confer no API permission. `components/ForbiddenState.tsx`
+  post-login navigation); Developer, Student, Security Professional and
+  Pentester workspace guards only control UX routing and confer no API
+  permission. `components/ForbiddenState.tsx`
   is the generic 403 view (alert, no role hints).
 - `routes.tsx` / `App.tsx` — `BrowserRouter` in prod, `MemoryRouter` in
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
   `/register`, `/account` (protected, `minRole="MEMBER"`), `/projects`
   and `/projects/:projectId` (protected, `minRole="MEMBER"` — Pump 6),
-  `/dashboard` (Developer-classification UX routing over the generic
-  self-only overview endpoint), and `/admin/*` (role-gated UX plus the
-  API's independent allowlist checks), `*` (404).
+  `/dashboard`, `/student/dashboard`, `/security-professional/dashboard`,
+  and `/pentester/dashboard` (classification-only UX routing over the same
+  self-only overview and owner-scoped project APIs), and `/admin/*`
+  (role-gated UX plus the API's independent allowlist checks), `*` (404).
 - `components/` — `Layout` (auth-aware header/nav/main/footer, skip link),
   `LoadingState` (`role=status`), `ErrorState` (`role=alert` + request ID +
   retry), `ErrorBoundary`, `AuthFormError` (form-level alert + strict

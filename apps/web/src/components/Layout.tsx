@@ -71,11 +71,19 @@ export function Layout({
                     Security Professional dashboard
                   </NavLink>
                 )}
+                {state.user.userType === 'PENTESTER' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/pentester/dashboard"
+                  >
+                    Pentester dashboard
+                  </NavLink>
+                )}
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
                   to="/projects"
                 >
-                  {state.user.userType === 'DEVELOPER' || state.user.userType === 'STUDENT' || state.user.userType === 'SECURITY_PROFESSIONAL' ? 'My projects' : 'Projects'}
+                  {state.user.userType === 'DEVELOPER' || state.user.userType === 'STUDENT' || state.user.userType === 'SECURITY_PROFESSIONAL' || state.user.userType === 'PENTESTER' ? 'My projects' : 'Projects'}
                 </NavLink>
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}

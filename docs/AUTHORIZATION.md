@@ -105,10 +105,14 @@ Role management UI/first-admin bootstrap (roles are assigned by operators
 directly on the store today), roles-as-claims in tokens, ABAC/ReBAC
 policies, per-resource ACLs, audit trail of role changes, UserType-based
 authorization or entitlements, and admin/partner permissions beyond the
-table above. Pump 17's Developer, Pump 18's Student, and Pump 19's Security
-Professional dashboards use UserType only for workspace routing/navigation; the shared overview API
-remains authenticated and self-scoped, and ordinary resource authorization
-continues to use the existing role, plan, quota and ownership checks.
+table above are not implemented. The Developer (Pump 17), Student (Pump 18),
+Security Professional (Pump 19) and Pentester (Pump 20) dashboards use
+UserType only for workspace routing/navigation; the shared overview API
+remains authenticated and self-scoped. Pentester target indicators reflect
+server-stored settings on the caller's owned projects, not independent proof
+of third-party authorization. Ordinary resource access and DAST scan creation
+continue to use the existing role, project ownership, plan, quota, rate-limit
+and target-safety checks.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

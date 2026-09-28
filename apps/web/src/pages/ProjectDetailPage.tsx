@@ -448,16 +448,17 @@ function DastTargetSection({
     <div className="dast-target" data-testid="dast-target-section">
       <h2 id="dast-target">Passive DAST target</h2>
       <p className="muted">
-        Configure one HTTP(S) URL owned or authorized for this project. The server rejects local, private,
-        reserved, or unsafe destinations and rechecks DNS at scan time. This is a bounded GET-only passive
-        check: no browser, JavaScript execution, login, crawling, fuzzing, or exploit attempts.
+        Configure one project-scoped HTTP(S) URL only when you are authorized to assess it. The authenticated
+        project owner stores this target on the server; there is no client-supplied authorization flag. The
+        server rejects local, private, reserved, or unsafe destinations and rechecks DNS at scan time. This is
+        a bounded GET-only passive check: no browser, JavaScript execution, login, crawling, fuzzing, or exploit attempts.
       </p>
       {targetUrl !== undefined && (
         <p data-testid="dast-configured-target">Configured target: <code>{targetUrl}</code></p>
       )}
       <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
         <div className="field">
-          <label htmlFor="dast-target-url">Authorized target URL</label>
+          <label htmlFor="dast-target-url">Project target URL</label>
           <input
             id="dast-target-url"
             name="targetUrl"
