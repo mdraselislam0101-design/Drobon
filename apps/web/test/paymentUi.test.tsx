@@ -19,7 +19,7 @@ const config: PaymentConfigResponse = {
   onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED',
 };
 function signedInClient(overrides: Partial<ApiClient> = {}): ApiClient {
-  return stubClient({ getMe: vi.fn(async () => ({ user: TEST_USER })), ...overrides });
+  return stubClient({ getMe: vi.fn(async () => ({ user: { ...TEST_USER, role: 'ADMIN' as const } })), ...overrides });
 }
 
 describe('Account payment panel', () => {

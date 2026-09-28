@@ -82,7 +82,10 @@ production functionality (tested).
   redirect — and `/account` wires `minRole="MEMBER"` in the real tree.
 - Permission-aware visibility (`hasPermission` from the shared table)
   decides what UI renders (e.g. the privileged lookup section is
-  ADMIN+-only).
+  ADMIN+-only). The optional registration UserType selector is descriptive;
+  Developers get a dashboard link and default post-login route for UX only.
+  Admin pages use a MEMBER/ADMIN role guard in the Web tree, while the API
+  independently checks the live role and configured operator allowlist.
 - **Hiding UI is not authorization**: capability verdicts and lookups ask
   the API and render its 200/403 answer; the API suite proves direct API
   bypass fails regardless of what the UI does.
@@ -101,8 +104,9 @@ production functionality (tested).
 Role management UI/first-admin bootstrap (roles are assigned by operators
 directly on the store today), roles-as-claims in tokens, ABAC/ReBAC
 policies, per-resource ACLs, audit trail of role changes, UserType-based
-product features, admin/partner permissions beyond
-the table above.
+authorization or entitlements, and admin/partner permissions beyond the
+table above. Pump 17's Developer dashboard uses UserType only for routing
+and navigation; its API is authenticated and self-scoped for any user type.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

@@ -28,6 +28,7 @@ import {
   isAdminFindingsResponse,
   isAdminAuditResponse,
   isPaymentAuditResponse,
+  isWorkspaceSecurityOverviewResponse,
   parseApiResponse,
   type ApiErrorDetail,
   type AssistantQuestionRequest,
@@ -73,6 +74,7 @@ import {
   type ScanStatus,
   type PaymentAuditAction,
   type PaymentAuditResponse,
+  type WorkspaceSecurityOverviewResponse,
   type PaymentMethod,
   type PaymentStatus,
 } from '@drobon/shared';
@@ -147,7 +149,7 @@ export interface ApiClient {
   getLivez(signal?: AbortSignal): Promise<HealthResponse>;
   postEcho(message: string, signal?: AbortSignal): Promise<EchoResponse>;
   /** Create an account; the API sets the session cookie on success. */
-  postRegister(email: string, password: string, signal?: AbortSignal): Promise<AuthResponse>;
+  postRegister(email: string, password: string, userTypeOrSignal?: UserType | AbortSignal, signal?: AbortSignal): Promise<AuthResponse>;
   /** Authenticate; the API sets the session cookie on success. */
   postLogin(email: string, password: string, signal?: AbortSignal): Promise<AuthResponse>;
   /** Revoke the session. Idempotent (always resolves on HTTP success). */
@@ -198,6 +200,8 @@ export interface ApiClient {
    * the client only renders it.
    */
   getUsage(signal?: AbortSignal): Promise<UsageResponse>;
+  /** Bounded, authenticated overview of the caller's own project security activity. */
+  getSecurityOverview(signal?: AbortSignal): Promise<WorkspaceSecurityOverviewResponse>;
   /**
    * The authenticated caller's OWN projects (Pump 6), ordered
    * `updatedAt` DESC then `id` ASC by the server. Rejects with 401 when
@@ -532,17 +536,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         },
         generateId(),
       ),
-    postRegister: (email: string, password: string, signal?: AbortSignal): Promise<AuthResponse> =>
-      authRequest<AuthResponse>(
+    postRegister: (email: string, password: string, userTypeOrSignal?: UserType | AbortSignal, suppliedSignal?: AbortSignal): Promise<AuthResponse> => {
+      const userType = typeof userTypeOrSignal === 'string' ? userTypeOrSignal : undefined;
+      const signal = typeof userTypeOrSignal === 'string' ? suppliedSignal : userTypeOrSignal;
+      return authRequest<AuthResponse>(
         '/api/v1/auth/register',
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email, password }),
+          body: JSON.stringify({ email, password, ...(userType === undefined ? {} : { userType }) }),
           ...(signal === undefined ? {} : { signal }),
         },
         isAuthResponse,
-      ),
+      );
+    },
     postLogin: (email: string, password: string, signal?: AbortSignal): Promise<AuthResponse> =>
       authRequest<AuthResponse>(
         '/api/v1/auth/login',
@@ -636,6 +643,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         '/api/v1/usage',
         signal === undefined ? {} : { signal },
         isUsageResponse,
+      ),
+    getSecurityOverview: (signal?: AbortSignal): Promise<WorkspaceSecurityOverviewResponse> =>
+      authRequest<WorkspaceSecurityOverviewResponse>(
+        '/api/v1/me/security-overview',
+        signal === undefined ? {} : { signal },
+        isWorkspaceSecurityOverviewResponse,
       ),
     getProjects: (signal?: AbortSignal): Promise<ProjectsResponse> =>
       authRequest<ProjectsResponse>(

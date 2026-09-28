@@ -317,6 +317,12 @@ The manual-only upgrade workflow uses server-derived account identity, an exact 
 
 Dashboard/account/scan/finding/audit reads require both the live session-resolved `ADMIN` role and an exact ID in `PLATFORM_ADMIN_IDS`; `ACCOUNT_OWNER`, UserType, client fields, and ordinary account `ADMIN` alone do not grant platform access. These endpoints have a dedicated rate limit and bounded strict-query pagination. Payment-review mutations still require the separate `PAYMENT_REVIEWER_IDS` plus live `ADMIN` check and self-review denial. Account role/UserType/status/subscription admin mutations, hard deletion, broad exports and dataset operations are absent. Admin finding indexes omit content, source paths and fingerprint-derived identifiers; corrupt local stores fail startup rather than returning invented dashboard zeros. Audit coverage is explicitly payment events only and has no cryptographic immutability guarantee. See `docs/ADMIN.md`, `apps/api/test/adminApi.test.ts`, and `packages/shared/test/admin.test.ts`.
 
+### Developer workspace — Pump 17
+
+The Developer classification is a navigation/display tag only. The `/api/v1/me/security-overview` route is authenticated and derives all scope from the session account; it has no caller-selected account/project filter and emits fixed-cap project, scan, finding-workflow and report summaries. It excludes owner IDs, source content, evidence, fingerprints, report bodies and secret values. The strict shared guard rejects extra fields and oversized projections. The UI uses existing server endpoints for plan, entitlement and quota and never makes an authorization decision from UserType. See `docs/DEVELOPER.md`, `apps/api/test/workspaceApi.test.ts` and the Developer journey in `apps/api/test/reportsApi.test.ts`.
+
+No enabled/disabled account-state model exists, so this workspace neither claims nor changes account state. Counts describe persisted activity, not complete scanner coverage or an overall security verdict. SCA remains `NOT_ASSESSED` / `NO_DATA_LOADED` without provider data; assistant generation stays unavailable with provider state `NONE`. No database or external vulnerability feed/catalog is introduced.
+
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator
@@ -340,7 +346,7 @@ the scan-job foundation itself is DONE in Pump 7 — see
 `docs/DAST.md`; source "upload" is a JSON-body snapshot, NOT multipart
 file storage), account email
 verification, password reset, MFA, account lockout (deliberate — rate
-limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
+limits instead), account enabled/disabled lifecycle state, OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,
 trusted-proxy (`X-Forwarded-For`) handling, WAF, durable queues, the
 database phase, dataset ingestion, file uploads, arbitrary outbound fetch

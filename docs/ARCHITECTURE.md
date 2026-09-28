@@ -2,7 +2,8 @@
 
 Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
 plans/entitlements, quotas, projects, scans, reports, assistant, and manual
-payments) and Pump 16 (restricted platform operations): an
+payments), Pump 16 (restricted platform operations), and Pump 17 (Developer
+workspace completion): an
 npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
@@ -26,6 +27,8 @@ browser bundle and the servers can all consume it:
   `CurrentUserResponse`, `LogoutResponse`, the shared email/password
   policy (`isValidEmail`, `passwordPolicyIssue`) and payload guards
   (`isAuthUser` — also rejects credential material and forged roles).
+  Registration may include one validated optional UserType; no role/plan
+  authority is accepted.
 - `authz.ts` — authorization contracts (Pump 3): `AccountRole`
   (MEMBER/ADMIN/ACCOUNT_OWNER + ranks), `UserType` (classification only),
   the central `PERMISSIONS` table + `hasPermission`/`roleAtLeast`,
@@ -83,6 +86,10 @@ browser bundle and the servers can all consume it:
   name/description lengths, the public `Project` shape (deliberately
   owner-free — the API is self-only), the documented deterministic
   ordering comparator (updatedAt DESC, then id ASC) and payload guards.
+- `workspace.ts` — Pump 17 fixed-cap `WorkspaceSecurityOverview` contracts
+  and strict guards for a self-only, evidence-free summary of owned project,
+  scan, finding-workflow and report metadata. Counts do not represent an
+  overall security verdict.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -175,7 +182,8 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   serialized mutation queue, atomic temp+rename writes, fail-fast load
   validation — the same architecture as the account and usage stores)
   exposing create/listByOwner/findById/update/setStatus. The stored
-  record carries `ownerId`; responses never do.
+  record carries `ownerId`; ordinary responses never do. Its bounded
+  `workspaceSummary` powers the current account's Developer overview.
 - `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
   base64url device token issuance + hashed lookup, hardened cookie
   serialization), `store.ts` (the single persistence boundary — durable
@@ -199,7 +207,9 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   mutation methods), plus Pump 5's `GET /api/v1/usage` (self-only usage
   view; always registered) and the dev/test-gated consumption probe
   `POST /api/v1/usage/consume` (404 in production — see docs/USAGE.md),
-  plus Pump 6's project routes: `POST/GET /api/v1/projects`,
+  plus Pump 17's authenticated `GET /api/v1/me/security-overview` (strictly
+  session-scoped and fixed-cap, independent of UserType authority), plus
+  Pump 6's project routes: `POST/GET /api/v1/projects`,
   `GET/PATCH /api/v1/projects/:projectId` and the explicit lifecycle
   operations `POST …/archive` / `…/unarchive` — all self-only, uniform
   403 for unknown/foreign/malformed ids (see docs/PROJECTS.md) — and
@@ -256,6 +266,7 @@ NOT_IMPLEMENTED).
 - `api/client.ts` — the single HTTP boundary: typed methods (including the
   Pump 2 auth methods `postRegister`/`postLogin`/`postLogout`/`getMe`),
   per-request correlation IDs, timeout + caller-signal cancellation,
+  optional UserType registration classification, bounded workspace overview,
   `credentials: 'include'` for the session cookie, envelope validation via
   shared `parseApiResponse()`, auth payload guards, user-safe typed errors
   (`ApiClientError`, now carrying 422 `details`).
@@ -275,7 +286,9 @@ NOT_IMPLEMENTED).
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
   `/register`, `/account` (protected, `minRole="MEMBER"`), `/projects`
   and `/projects/:projectId` (protected, `minRole="MEMBER"` — Pump 6),
-  `*` (404).
+  `/dashboard` (Developer-classification UX routing over the generic
+  self-only overview endpoint), and `/admin/*` (role-gated UX plus the
+  API's independent allowlist checks), `*` (404).
 - `components/` — `Layout` (auth-aware header/nav/main/footer, skip link),
   `LoadingState` (`role=status`), `ErrorState` (`role=alert` + request ID +
   retry), `ErrorBoundary`, `AuthFormError` (form-level alert + strict

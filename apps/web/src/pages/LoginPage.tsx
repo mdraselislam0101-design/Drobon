@@ -22,8 +22,6 @@ export function LoginPage(): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false);
 
   const expired = readReason(location.state) === 'expired';
-  const redirectTo = readSafePath(location.state) ?? '/account';
-
   const onSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const errors: FieldErrors = {};
@@ -42,8 +40,8 @@ export function LoginPage(): React.JSX.Element {
     }
     setSubmitting(true);
     try {
-      await login(trimmedEmail, password);
-      navigate(redirectTo, { replace: true });
+      const authenticated = await login(trimmedEmail, password);
+      navigate(readSafePath(location.state) ?? (authenticated.userType === 'DEVELOPER' ? '/dashboard' : '/account'), { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {
         if (error.code === 'VALIDATION_ERROR') {

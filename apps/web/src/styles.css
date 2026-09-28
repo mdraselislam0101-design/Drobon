@@ -310,6 +310,35 @@ a:focus-visible {
   gap: 1rem;
 }
 
+.developer-dashboard {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.dashboard-section {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.section-heading-row h2,
+.dashboard-section p {
+  margin: 0;
+}
+
+.dashboard-section .pill {
+  margin-left: 0.4rem;
+}
+
 .card,
 .panel,
 .state-card {

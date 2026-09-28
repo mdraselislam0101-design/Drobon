@@ -5,6 +5,7 @@ import {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   isValidEmail,
+  type UserType,
   normalizeEmail,
   passwordPolicyIssue,
 } from '@drobon/shared';
@@ -28,11 +29,10 @@ export function RegisterPage(): React.JSX.Element {
   const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [userType, setUserType] = useState<UserType | ''>('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<{ message: string; requestId?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const redirectTo = readSafePath(location.state) ?? '/account';
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -52,8 +52,8 @@ export function RegisterPage(): React.JSX.Element {
     }
     setSubmitting(true);
     try {
-      await register(trimmedEmail, password);
-      navigate(redirectTo, { replace: true });
+      const registered = await register(trimmedEmail, password, userType || undefined);
+      navigate(readSafePath(location.state) ?? (registered.userType === 'DEVELOPER' ? '/dashboard' : '/account'), { replace: true });
     } catch (error: unknown) {
       if (error instanceof ApiClientError) {
         if (error.code === 'VALIDATION_ERROR') {
@@ -127,6 +127,25 @@ export function RegisterPage(): React.JSX.Element {
               {fieldErrors.password}
             </p>
           )}
+        </div>
+        <div className="field">
+          <label htmlFor="register-user-type">What best describes your work?</label>
+          <select
+            id="register-user-type"
+            name="userType"
+            value={userType}
+            onChange={(event) => setUserType(event.target.value as UserType | '')}
+            aria-describedby="register-user-type-hint"
+          >
+            <option value="">Select a type (optional)</option>
+            <option value="DEVELOPER">Developer</option>
+            <option value="STUDENT">Student</option>
+            <option value="SECURITY_PROFESSIONAL">Security professional</option>
+            <option value="PENTESTER">Pentester</option>
+          </select>
+          <p id="register-user-type-hint" className="field-hint">
+            This is a profile classification only. It does not grant access or change your plan.
+          </p>
         </div>
         <button type="submit" className="button" disabled={submitting} aria-busy={submitting}>
           {submitting ? 'Creating account…' : 'Create account'}

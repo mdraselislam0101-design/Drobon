@@ -11,7 +11,8 @@ describe('routing', () => {
       'href',
       '/status',
     );
-    expect(screen.getByText('Shared contracts')).toBeInTheDocument();
+    expect(screen.getByText('Projects & source')).toBeInTheDocument();
+    expect(screen.getByText(/SCA\/SBOM inventory/)).toBeInTheDocument();
   });
 
   test('unknown routes render the 404 page', async () => {

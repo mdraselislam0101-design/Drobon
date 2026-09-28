@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet } from 'react-router-dom';
+import { roleAtLeast } from '@drobon/shared';
 import { useAuth } from '../auth/context.js';
 
 export function Layout({
@@ -46,11 +47,19 @@ export function Layout({
             </NavLink>
             {state.status === 'ready' && (
               <>
+                {state.user.userType === 'DEVELOPER' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/dashboard"
+                  >
+                    Developer dashboard
+                  </NavLink>
+                )}
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
                   to="/projects"
                 >
-                  Projects
+                  {state.user.userType === 'DEVELOPER' ? 'My projects' : 'Projects'}
                 </NavLink>
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
@@ -58,12 +67,22 @@ export function Layout({
                 >
                   Account
                 </NavLink>
-                <NavLink
-                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
-                  to="/admin/operations"
-                >
-                  Platform operations
-                </NavLink>
+                {roleAtLeast(state.user.role, 'ADMIN') && (
+                  <>
+                    <NavLink
+                      className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                      to="/admin/operations"
+                    >
+                      Platform operations
+                    </NavLink>
+                    <NavLink
+                      className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                      to="/admin/payments"
+                    >
+                      Payment review
+                    </NavLink>
+                  </>
+                )}
               </>
             )}
             {state.status === 'anonymous' && (
@@ -95,7 +114,6 @@ export function Layout({
           <span>
             {appName} · v{appVersion}
           </span>
-          <span className="footer-note">Restricted operations foundation · Pump 16</span>
         </div>
       </footer>
     </div>

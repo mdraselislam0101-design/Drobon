@@ -34,6 +34,7 @@ import type {
   AdminFindingsResponse,
   AdminAuditResponse,
   PaymentAuditResponse,
+  WorkspaceSecurityOverviewResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -159,6 +160,18 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       remaining: 3,
       quotaStatus: 'OK',
     })),
+    getSecurityOverview: vi.fn(async (): Promise<WorkspaceSecurityOverviewResponse> => ({ overview: {
+      generatedAt: '2026-09-01T00:00:00.000Z',
+      projects: { total: 0, active: 0, archived: 0, recent: [] },
+      scans: { total: 0, byStatus: { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 }, recent: [] },
+      findings: {
+        currentObserved: 0, unresolved: 0,
+        unresolvedBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
+        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+        byVerificationState: { OBSERVED: 0, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
+      },
+      reports: { availableCount: 0, recent: [] },
+    } })),
     // Pump 6 default: no projects yet (the honest empty world). Suites
     // override these to model owned/foreign/lifecycle states.
     getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),

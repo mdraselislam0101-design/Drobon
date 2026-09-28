@@ -62,6 +62,7 @@ import { createReportsRoutes } from './routes/reports.js';
 import { createAssistantRoutes } from './routes/assistant.js';
 import { createPaymentRoutes } from './routes/payments.js';
 import { createAdminRoutes } from './routes/admin.js';
+import { createWorkspaceRoutes } from './routes/workspace.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
 import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
@@ -286,6 +287,7 @@ export function createApp(deps: AppDeps): App {
     ...createPaymentRoutes({ config, users, payments }),
     ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
     ...createUsageRoutes({ config, users, usage }),
+    ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createScanRoutes({
       config,

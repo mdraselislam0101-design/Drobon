@@ -150,7 +150,11 @@ shell, no second client:
   ProtectedRoute behavior (redirect to `/login` with a `from` path).
 - No project state in localStorage/sessionStorage or the URL beyond
   the id itself; the server response is the only source of truth.
-- Navigation: a "Projects" link joins the auth-aware header nav.
+- Navigation: a "Projects" link joins the auth-aware header nav. Pump 17
+  adds Developer-first "My projects" navigation, bounded overview links back
+  to owned projects, and in-project anchors for settings, DAST target, source,
+  scans/findings/reports and the project assistant. These links are UX only;
+  project ownership remains enforced by the same API resolver.
 
 ## Scans (Pump 7 — implemented foundation)
 

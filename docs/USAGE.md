@@ -186,6 +186,7 @@ section — no new page, no new client:
   guard, which also rejects cross-field inconsistencies like an
   "EXEMPT view with a numeric limit").
 - Fail closed on any error: honest error panel + retry, no numbers.
+- The Pump 17 Developer overview also displays this same usage response and the subscription endpoint's entitlement verdict; it does not derive plan, quota, or entitlement locally.
 - Display-only: the web has **no** consumption or usage-mutation code
   path at all (the client exposes exactly one usage method, `getUsage`).
 

@@ -16,7 +16,7 @@ const snapshot: AdminDashboardResponse = {
 };
 
 function signedIn(overrides: Partial<ApiClient> = {}): ApiClient {
-  return stubClient({ getMe: vi.fn(async () => ({ user: TEST_USER })), ...overrides });
+  return stubClient({ getMe: vi.fn(async () => ({ user: { ...TEST_USER, role: 'ADMIN' as const } })), ...overrides });
 }
 
 describe('platform operations dashboard UI', () => {

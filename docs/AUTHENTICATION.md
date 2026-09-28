@@ -29,6 +29,13 @@ credential rate limit → CSRF origin guard → session resolution → routing).
 `GET /api/v1/me` sits behind the router's `requireAuth` boundary — the
 single choke point every future protected route reuses.
 
+Registration optionally submits one server-validated `UserType` from the
+closed shared vocabulary. The Developer selector is a profile classification
+only: every self-registration is still `MEMBER` + `FREE` + `ACTIVE`, and
+role/plan/entitlement/account-state fields remain server-controlled. UserType
+never bypasses authentication, ownership, permissions or quota; see
+`AUTHORIZATION.md` and `DEVELOPER.md`.
+
 ## Credentials and sessions
 
 - **Passwords**: scrypt (`node:crypto`, memory-hard, OWASP-accepted),

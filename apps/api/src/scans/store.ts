@@ -31,6 +31,17 @@ import {
   type FindingWorkflow,
   REPORT_MAX_BYTES,
   REPORT_PERSISTED_MAX_COUNT,
+  WORKSPACE_FINDINGS_MAX,
+  WORKSPACE_REPORTS_MAX,
+  WORKSPACE_SCANS_MAX,
+  emptyWorkspaceFindingsSummary,
+  emptyWorkspaceScansSummary,
+  type WorkspaceFindingCard,
+  type WorkspaceFindingsSummary,
+  type WorkspaceReportCard,
+  type WorkspaceReportsSummary,
+  type WorkspaceScansSummary,
+  type WorkspaceScanCard,
   type Finding,
   compareFindings,
   findingScanner,
@@ -219,6 +230,12 @@ export interface ScanStore {
    * `createdAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByProject(projectId: string): Promise<ScanRecord[]>;
+  /** Bounded, account-scoped scan/finding/report projections for the workspace overview. */
+  workspaceSummary(ownerId: string): Promise<{
+    scans: WorkspaceScansSummary;
+    findings: WorkspaceFindingsSummary;
+    reports: WorkspaceReportsSummary;
+  }>;
   /** Aggregate-only platform summary; never returns source content or all scan rows. */
   adminSummary(now: number): Promise<ScanAdminSummary>;
   /** Bounded metadata-only platform scan page. */
@@ -967,6 +984,100 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           )
           .map(toPublic),
       ),
+
+    workspaceSummary: (ownerId) => {
+      const scansSummary = emptyWorkspaceScansSummary();
+      const findingsSummary = emptyWorkspaceFindingsSummary();
+      const reportsSummary: WorkspaceReportsSummary = { availableCount: 0, recent: [] };
+      const latestFindingByIdentity = new Map<string, {
+        finding: Finding;
+        projectId: string;
+        scanId: string;
+        observedAt: string;
+      }>();
+      const scanOrder = (a: WorkspaceScanCard, b: WorkspaceScanCard): number =>
+        b.createdAt.localeCompare(a.createdAt) || a.scanId.localeCompare(b.scanId);
+      const findingOrder = (a: WorkspaceFindingCard, b: WorkspaceFindingCard): number =>
+        b.workflowUpdatedAt.localeCompare(a.workflowUpdatedAt) || b.observedAt.localeCompare(a.observedAt) || a.projectId.localeCompare(b.projectId) ||
+        a.scanId.localeCompare(b.scanId) || a.findingId.localeCompare(b.findingId);
+      const reportOrder = (a: WorkspaceReportCard, b: WorkspaceReportCard): number =>
+        b.generatedAt.localeCompare(a.generatedAt) || a.reportId.localeCompare(b.reportId);
+
+      for (const scan of scansById.values()) {
+        if (scan.ownerId !== ownerId) continue;
+        scansSummary.total += 1;
+        scansSummary.byStatus[scan.status] += 1;
+        scansSummary.recent.push({
+          scanId: scan.id,
+          projectId: scan.projectId,
+          scanType: scan.scanType,
+          status: scan.status,
+          createdAt: scan.createdAt,
+          completedAt: scan.completedAt ?? null,
+          findingsTotal: scan.resultSummary?.findingsTotal ?? null,
+          partial: scan.resultSummary?.partial ?? null,
+          reportAvailable: reportsByScan.get(scan.id)?.project.id === scan.projectId,
+        });
+        scansSummary.recent.sort(scanOrder);
+        if (scansSummary.recent.length > WORKSPACE_SCANS_MAX) scansSummary.recent.pop();
+
+        if (scan.status !== 'COMPLETED') continue;
+        const observedAt = scan.completedAt ?? scan.createdAt;
+        for (const finding of scan.findings ?? []) {
+          const key = findingWorkflowKey(scan.projectId, finding.fingerprint);
+          const previous = latestFindingByIdentity.get(key);
+          if (previous === undefined || observedAt > previous.observedAt ||
+              (observedAt === previous.observedAt && scan.id < previous.scanId)) {
+            latestFindingByIdentity.set(key, { finding, projectId: scan.projectId, scanId: scan.id, observedAt });
+          }
+        }
+      }
+
+      findingsSummary.currentObserved = latestFindingByIdentity.size;
+      for (const [key, entry] of latestFindingByIdentity) {
+        const workflow = findingWorkflowsByKey.get(key);
+        const lifecycleState = workflow?.state ?? 'OPEN';
+        const verificationState = workflow?.verificationState ?? 'OBSERVED';
+        findingsSummary.byLifecycleState[lifecycleState] += 1;
+        findingsSummary.byVerificationState[verificationState] += 1;
+        if (lifecycleState !== 'RESOLVED') {
+          findingsSummary.unresolved += 1;
+          findingsSummary.unresolvedBySeverity[entry.finding.severity] += 1;
+        }
+        const observedScan = scansById.get(entry.scanId);
+        if (observedScan === undefined) continue;
+        findingsSummary.recent.push({
+          findingId: entry.finding.id,
+          projectId: entry.projectId,
+          scanId: entry.scanId,
+          scanner: findingScanner(entry.finding) ?? observedScan.scanType,
+          ruleId: entry.finding.ruleId,
+          severity: entry.finding.severity,
+          lifecycleState,
+          verificationState,
+          observedAt: entry.observedAt,
+          workflowUpdatedAt: workflow?.updatedAt ?? entry.observedAt,
+        });
+      }
+      findingsSummary.recent.sort(findingOrder);
+      findingsSummary.recent.length = Math.min(findingsSummary.recent.length, WORKSPACE_FINDINGS_MAX);
+
+      for (const report of reportsByScan.values()) {
+        const scan = scansById.get(report.scan.id);
+        if (scan === undefined || scan.ownerId !== ownerId || scan.projectId !== report.project.id) continue;
+        reportsSummary.availableCount += 1;
+        reportsSummary.recent.push({
+          reportId: report.reportId,
+          projectId: report.project.id,
+          scanId: report.scan.id,
+          generatedAt: report.generatedAt,
+        });
+        reportsSummary.recent.sort(reportOrder);
+        if (reportsSummary.recent.length > WORKSPACE_REPORTS_MAX) reportsSummary.recent.pop();
+      }
+
+      return Promise.resolve({ scans: scansSummary, findings: findingsSummary, reports: reportsSummary });
+    },
 
     adminSummary: (now) => {
       const byStatus: Record<ScanStatus, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 };

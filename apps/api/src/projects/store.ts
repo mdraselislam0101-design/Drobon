@@ -5,10 +5,13 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_ID_PATTERN,
   PROJECT_NAME_MAX_LENGTH,
+  WORKSPACE_PROJECTS_MAX,
   isProjectStatus,
   isSafeDastUrl,
   type Project,
   type ProjectStatus,
+  type WorkspaceProjectCard,
+  type WorkspaceProjectsSummary,
 } from '@drobon/shared';
 
 /**
@@ -66,6 +69,8 @@ export interface ProjectStore {
    * `updatedAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByOwner(ownerId: string): Promise<ProjectRecord[]>;
+  /** Bounded, account-scoped project counts/cards for the authenticated workspace overview. */
+  workspaceSummary(ownerId: string): Promise<WorkspaceProjectsSummary>;
   /** Aggregate-only platform overview; exposes no owner-scoped project rows. */
   adminCounts(): Promise<{ total: number; active: number; archived: number }>;
   findById(id: string): Promise<ProjectRecord | undefined>;
@@ -252,6 +257,22 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
           )
           .map(toPublic),
       ),
+    workspaceSummary: (ownerId) => {
+      let total = 0;
+      let active = 0;
+      let archived = 0;
+      const recent: WorkspaceProjectCard[] = [];
+      for (const record of byId.values()) {
+        if (record.ownerId !== ownerId) continue;
+        total += 1;
+        if (record.status === 'ACTIVE') active += 1;
+        else archived += 1;
+        recent.push({ id: record.id, name: record.name, status: record.status, updatedAt: record.updatedAt });
+        recent.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+        if (recent.length > WORKSPACE_PROJECTS_MAX) recent.pop();
+      }
+      return Promise.resolve({ total, active, archived, recent });
+    },
     adminCounts: () => {
       let active = 0;
       let archived = 0;

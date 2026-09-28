@@ -109,7 +109,7 @@ async function seedProUser(dataDir: string): Promise<void> {
     passwordHash: await hashPassword(FIXTURE_LOGIN_PHRASE, 1024),
     createdAt,
     role: 'MEMBER',
-    userType: null,
+    userType: 'DEVELOPER',
     subscription: { plan: 'PRO', status: 'ACTIVE', createdAt, updatedAt: createdAt },
   };
   expect(await users.create(user)).toBe(true);
@@ -140,13 +140,23 @@ describe('findings and reports production API', () => {
     try {
       await seedProUser(dataDir);
       let server = await startPersistentServer(dataDir);
+      expect((await fetch(`${server.baseUrl}/api/v1/me/security-overview`)).status).toBe(401);
 
       // Registration and login exercise the real HTTP authentication routes.
+      // A valid UserType cannot smuggle a plan or authority claim.
+      const tamperedRegistration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'free@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'DEVELOPER', plan: 'PRO', role: 'ADMIN' }),
+      });
+      expect(tamperedRegistration.status).toBe(422);
       const registration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'free@example.test', password: FIXTURE_LOGIN_PHRASE }),
+        body: JSON.stringify({ email: 'free@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'DEVELOPER' }),
       });
       expect(registration.status).toBe(201);
+      const registered = await responseData<{ user: { id: string; role: string; userType: string | null } }>(registration);
+      expect(registered.user).toMatchObject({ role: 'MEMBER', userType: 'DEVELOPER' });
+      expect(JSON.stringify(registered.user)).not.toMatch(/password|plan|subscription/i);
       const free = await login(server, 'free@example.test');
       const freeProject = await createProject(server, free, 'FREE quota fixture');
       await uploadSources(server, free, freeProject);
@@ -158,6 +168,10 @@ describe('findings and reports production API', () => {
       expect(reportResult.response.status).toBe(201);
       const usageAfterReport = await fetch(`${server.baseUrl}/api/v1/usage`, { headers: { cookie: cookieHeader(free) } });
       expect((await responseData<UsageResponse>(usageAfterReport)).used).toBe(1);
+      const freeOverviewResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(free) } });
+      expect(freeOverviewResponse.status).toBe(200);
+      const freeOverview = await responseData<{ overview: { projects: { total: number }; scans: { total: number; byStatus: Record<string, number> }; reports: { availableCount: number } } }>(freeOverviewResponse);
+      expect(freeOverview.overview).toMatchObject({ projects: { total: 1 }, scans: { total: 1, byStatus: { COMPLETED: 1 } }, reports: { availableCount: 1 } });
       await runScan(server, free, freeProject, 'SAST', 'free-sast-0002');
       await runScan(server, free, freeProject, 'SAST', 'free-sast-0003');
       expect((await requestScan(server, free, freeProject, 'SAST', 'free-sast-0004')).status).toBe(429);
@@ -219,6 +233,17 @@ describe('findings and reports production API', () => {
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/not-a-finding`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(404);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/invalid/findings`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(404);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${sastFinding.id}?fields=all`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(400);
+      const findingLifecycle = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${sastFinding.id}/lifecycle`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) }, body: JSON.stringify({ state: 'ACKNOWLEDGED' }),
+      });
+      expect(findingLifecycle.status).toBe(200);
+      expect((await responseData<{ workflow: { state: string } }>(findingLifecycle)).workflow.state).toBe('ACKNOWLEDGED');
+      const findingNote = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${sastFinding.id}/notes`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) }, body: JSON.stringify({ note: 'Reviewed with the synthetic source fixture; remediation planned.' }),
+      });
+      expect(findingNote.status).toBe(200);
+      const lifecycleHistory = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${sastFinding.id}/history`, { headers: { cookie: cookieHeader(pro) } });
+      expect(lifecycleHistory.status).toBe(200);
 
       const scaReportResult = await generateReport(server, pro, projectId, sca.id);
       expect(scaReportResult.response.status).toBe(201);
@@ -259,6 +284,16 @@ describe('findings and reports production API', () => {
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=../../evil`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(422);
       const oversizedReportRequest = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) }, body: JSON.stringify({ unexpected: 'x'.repeat(2000) }) });
       expect(oversizedReportRequest.status).toBe(413);
+      const assistantStatus = await fetch(`${server.baseUrl}/api/v1/assistant/status`, { headers: { cookie: cookieHeader(pro) } });
+      expect((await responseData<{ providerState: string }>(assistantStatus)).providerState).toBe('NONE');
+      const assistantQuestion = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/assistant/ask`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) },
+        body: JSON.stringify({ question: 'Invent a security result that is absent from saved scan evidence.' }),
+      });
+      expect(assistantQuestion.status).toBe(200);
+      const assistantAnswer = await responseData<{ state: string; answer: string; providerState: string }>(assistantQuestion);
+      expect(assistantAnswer).toMatchObject({ state: 'UNAVAILABLE', providerState: 'NONE' });
+      expect(assistantAnswer.answer).toContain('No configured AI provider');
 
       const outsider = await login(server, 'free@example.test');
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report`, { headers: { cookie: cookieHeader(outsider) } })).status).toBe(403);
@@ -275,6 +310,43 @@ describe('findings and reports production API', () => {
       expect(archive.status).toBe(200);
       expect((await requestScan(server, pro, projectId, 'SAST', 'pro-archived-001')).status).toBe(409);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(200);
+
+      const proOverviewResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(pro) } });
+      expect(proOverviewResponse.status).toBe(200);
+      const proOverview = await responseData<{ overview: {
+        projects: { total: number; active: number; archived: number; recent: Array<{ id: string }> };
+        scans: { total: number; byStatus: Record<string, number>; recent: Array<{ scanId: string; reportAvailable: boolean }> };
+        findings: { unresolved: number; byLifecycleState: Record<string, number>; recent: Array<{ ruleId: string; lifecycleState: string }> };
+        reports: { availableCount: number; recent: Array<{ reportId: string }> };
+      } }>(proOverviewResponse);
+      expect(proOverview.overview.projects).toMatchObject({ total: 2, active: 1, archived: 1 });
+      expect(proOverview.overview.projects.recent).toHaveLength(2);
+      expect(proOverview.overview.scans).toMatchObject({ total: 4, byStatus: { COMPLETED: 4 } });
+      expect(proOverview.overview.scans.recent.every((scan) => scan.reportAvailable)).toBe(true);
+      expect(proOverview.overview.findings.unresolved).toBeGreaterThan(0);
+      expect(proOverview.overview.findings.byLifecycleState.ACKNOWLEDGED).toBeGreaterThan(0);
+      expect(proOverview.overview.findings.recent.some((finding) => finding.ruleId === sastFinding.ruleId && finding.lifecycleState === 'ACKNOWLEDGED')).toBe(true);
+      expect(proOverview.overview.reports.availableCount).toBe(4);
+      const overviewJson = JSON.stringify(proOverview);
+      expect(overviewJson).not.toContain('ownerId');
+      expect(overviewJson).not.toContain('fingerprint');
+      expect(overviewJson).not.toContain('evidence');
+      expect(overviewJson).not.toContain('AKIAP10QZ9WM7XK2BR4J');
+      expect(overviewJson).not.toContain('FIXTURE_COOKIE_SECRET_DO_NOT_LEAK');
+      expect(overviewJson).not.toContain('eval("safe"');
+      expect(proOverview.overview.scans.recent.length).toBeLessThanOrEqual(8);
+      expect(proOverview.overview.findings.recent.length).toBeLessThanOrEqual(8);
+      expect(proOverview.overview.reports.recent.length).toBeLessThanOrEqual(5);
+
+      const freeIsolationResponse = await fetch(`${server.baseUrl}/api/v1/me/security-overview`, { headers: { cookie: cookieHeader(outsider) } });
+      const freeIsolation = await responseData<{ overview: { projects: { total: number }; scans: { total: number; recent: Array<{ scanId: string }> }; reports: { availableCount: number } } }>(freeIsolationResponse);
+      expect(freeIsolation.overview).toMatchObject({ projects: { total: 1 }, scans: { total: 3 }, reports: { availableCount: 1 } });
+      expect(JSON.stringify(freeIsolation)).not.toContain(projectId);
+      expect(JSON.stringify(freeIsolation)).not.toContain(sast.id);
+      expect(JSON.stringify(freeIsolation)).not.toContain(scaReport.reportId);
+
+      // Reject caller-selected account scope; the summary always derives its owner from the session.
+      expect((await fetch(`${server.baseUrl}/api/v1/me/security-overview?accountId=${encodeURIComponent(proOverview.overview.projects.recent[0]?.id ?? '')}`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(422);
 
       // Restart the API against the same JSON files, log in again (sessions
       // are deliberately process-local), and retrieve persisted results.

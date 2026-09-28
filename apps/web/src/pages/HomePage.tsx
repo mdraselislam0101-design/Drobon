@@ -2,28 +2,28 @@ import { Link } from 'react-router-dom';
 
 const FOUNDATION = [
   {
-    title: 'Web',
-    body: 'Application shell, routing, typed API boundary, loading and error states.',
+    title: 'Projects & source',
+    body: 'Create account-owned projects and submit bounded source snapshots for analysis.',
   },
   {
-    title: 'API',
-    body: 'Validated requests, consistent envelopes, correlation IDs, security headers.',
+    title: 'SAST & dependency inventory',
+    body: 'Reuse the shared scan lifecycle, static analysis and SCA/SBOM inventory. Unavailable vulnerability intelligence remains NOT_ASSESSED.',
   },
   {
-    title: 'Authentication',
-    body: 'Registration, login, logout, httpOnly sessions and protected routes — end to end.',
+    title: 'Secrets & passive DAST',
+    body: 'Redacted secret findings and tightly bounded passive HTTP checks with server-side target policy.',
   },
   {
-    title: 'Worker',
-    body: 'Job contracts, timeouts, cancellation and retry over an in-memory queue.',
+    title: 'Finding workflows & reports',
+    body: 'Review evidence, record remediation, track verification, and export persisted JSON or Markdown reports.',
   },
   {
-    title: 'Shared contracts',
-    body: 'One vocabulary for responses, errors, jobs, auth and config across all three.',
+    title: 'Project assistant',
+    body: 'Ask bounded, project-scoped questions. No provider means unsupported generation stays unavailable.',
   },
   {
-    title: 'Security',
-    body: 'CORS allowlist, rate limiting, CSRF origin guard, secret hygiene, tested defaults.',
+    title: 'Account security',
+    body: 'Authentication, ownership, plan entitlements, FREE quota and rate limits remain server-enforced.',
   },
 ] as const;
 
@@ -34,10 +34,7 @@ export function HomePage(): React.JSX.Element {
         <p className="eyebrow">Cybersecurity platform</p>
         <h1 id="hero-title">Drobon Aegis AI</h1>
         <p className="lede">
-          Pump 2 is live: the Pump 1 foundation now has real user accounts —
-          registration, login, sessions and protected pages wired end to end.
-          Product capabilities — scanning, findings, reports, AI assistance —
-          arrive in later Pumps.
+          A project-centered security workflow for developers: submit source, run the existing security engines, review findings and reports, and track remediation. Register as a Developer to open your account-scoped security overview. Classification changes navigation only—not access, plan, quota or ownership.
         </p>
         <div className="hero-actions">
           <Link className="button" to="/register">

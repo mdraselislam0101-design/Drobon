@@ -184,8 +184,15 @@ export function ProjectDetailPage(): React.JSX.Element {
               {project.project.description}
             </p>
           )}
+          <nav className="hero-actions" aria-label="Project workflow navigation">
+            <a className="nav-link" href="#project-settings">Settings</a>
+            <a className="nav-link" href="#dast-target">DAST target</a>
+            <a className="nav-link" href="#source-snapshot">Source</a>
+            <a className="nav-link" href="#security-scans">Scans, findings &amp; reports</a>
+            <a className="nav-link" href="#assistant-title">Assistant</a>
+          </nav>
 
-          <h2>Edit project</h2>
+          <h2 id="project-settings">Edit project</h2>
           <EditProjectForm
             key={`${project.project.id}:${project.project.updatedAt}`}
             project={project.project}
@@ -439,7 +446,7 @@ function DastTargetSection({
 
   return (
     <div className="dast-target" data-testid="dast-target-section">
-      <h2>Passive DAST target</h2>
+      <h2 id="dast-target">Passive DAST target</h2>
       <p className="muted">
         Configure one HTTP(S) URL owned or authorized for this project. The server rejects local, private,
         reserved, or unsafe destinations and rechecks DNS at scan time. This is a bounded GET-only passive
@@ -549,7 +556,7 @@ function ScansSection({
 
   return (
     <>
-      <h2>Security scans</h2>
+      <h2 id="security-scans">Security scans</h2>
       {usage !== null && (
         <p className="muted" data-testid="quota-hint">
           {usage.quotaStatus === 'EXEMPT'
@@ -824,7 +831,7 @@ function SourcesSection({
 
   return (
     <>
-      <h2>Source snapshot</h2>
+      <h2 id="source-snapshot">Source snapshot</h2>
       {loadError !== null ? (
         <div className="form-alert" role="alert">
           <p>{loadError}</p>

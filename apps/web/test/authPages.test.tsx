@@ -55,6 +55,20 @@ describe('login page', () => {
     expect(screen.getByText('user@example.test')).toBeInTheDocument();
   });
 
+  test('Developer login lands on the workspace overview', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'DEVELOPER' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'developer@example.test');
+    await user.type(screen.getByLabelText('Password'), 'developer-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Security overview' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
   test('server 401 is shown verbatim without leaking which factor failed', async () => {
     const user = userEvent.setup();
     const client = stubClient({
@@ -157,6 +171,25 @@ describe('register page', () => {
       'newuser@example.test',
       'brand-new-pw-test',
     );
+  });
+
+  test('Developer registration submits only the selected classification and lands on the workspace', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'DEVELOPER' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'developer@example.test');
+    await user.type(screen.getByLabelText('Password'), 'developer-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'DEVELOPER');
+    expect(screen.getByText(/This is a profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Security overview' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('developer@example.test', 'developer-password', 'DEVELOPER');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
   test('duplicate account (409) surfaces the server message', async () => {

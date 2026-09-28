@@ -4,11 +4,12 @@ import type { ApiClient } from './api/client.js';
 import { AuthProvider } from './auth/context.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { Layout } from './components/Layout.js';
-import { ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.js';
+import { DeveloperDashboardRoute, ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { AdminPaymentsPage } from './pages/AdminPaymentsPage.js';
 import { AdminOperationsPage } from './pages/AdminOperationsPage.js';
 import { HomePage } from './pages/HomePage.js';
+import { DeveloperDashboardPage } from './pages/DeveloperDashboardPage.js';
 import { ProjectDetailPage } from './pages/ProjectDetailPage.js';
 import { ProjectsPage } from './pages/ProjectsPage.js';
 import { LoginPage } from './pages/LoginPage.js';
@@ -22,6 +23,7 @@ export const APP_ROUTES = {
   login: '/login',
   register: '/register',
   account: '/account',
+  dashboard: '/dashboard',
   adminOperations: '/admin/operations',
   adminPayments: '/admin/payments',
   projects: '/projects',
@@ -74,10 +76,15 @@ export function AppRoutes({
                   same boundary on every request. */}
               <Route element={<ProtectedRoute minRole="MEMBER" />}>
                 <Route path="account" element={<AccountPage />} />
-                <Route path="admin/operations" element={<AdminOperationsPage />} />
-                <Route path="admin/payments" element={<AdminPaymentsPage />} />
                 <Route path="projects" element={<ProjectsPage />} />
                 <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+                <Route element={<DeveloperDashboardRoute />}>
+                  <Route path="dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+              </Route>
+              <Route element={<ProtectedRoute minRole="ADMIN" />}>
+                <Route path="admin/operations" element={<AdminOperationsPage />} />
+                <Route path="admin/payments" element={<AdminPaymentsPage />} />
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>
