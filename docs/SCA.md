@@ -21,9 +21,11 @@ repository** — not vendored, not embedded, not synthesized into a
 feature:
 
 - With no real vulnerability-intelligence dataset loaded, an SCA scan
-  reports **`NOT_ASSESSED`** with `datasetStatus: NO_DATA_LOADED` and
-  **zero advisories** — even for a snapshot that "looks" vulnerable
-  (old `express`, old `lodash` pins). Nothing is fabricated. Ever.
+  reports **`NOT_ASSESSED`** with `datasetStatus: NO_DATA_LOADED`. Its
+  advisory collection is empty because no provider data was loaded; this
+  is **not** a zero-vulnerabilities verdict, even for a snapshot that
+  "looks" vulnerable (old `express`, old `lodash` pins). Nothing is
+  fabricated. Ever.
 - The scan still SUCCEEDS: the inventory, the direct/transitive
   classification and the SBOM are real work and are fully delivered.
   A missing dataset never fails a scan and never burns analysis.

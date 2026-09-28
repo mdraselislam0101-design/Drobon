@@ -14,8 +14,12 @@ import {
   isDastResult,
   isSafeDastUrl,
   type DastResult,
+  type SecurityReport,
+  REPORT_MAX_BYTES,
+  REPORT_PERSISTED_MAX_COUNT,
   type Finding,
   compareFindings,
+  findingScanner,
   isScaResult,
   type Scan,
   type ScanDetail,
@@ -25,6 +29,7 @@ import {
   type ScanType,
   type ScaResult,
 } from '@drobon/shared';
+import { canonicalJson, verifySecurityReportIntegrity } from '../reports/build.js';
 
 /**
  * Durable scan-job store (Pump 7) — the minimum persistence boundary for
@@ -198,6 +203,16 @@ export interface ScanStore {
     failureCode: ScanFailureCode,
     failureMessage: string,
   ): Promise<ScanRecord | undefined>;
+  /** Retrieve a report snapshot scoped to its project and source scan. */
+  findReportByProjectAndScan(projectId: string, scanId: string): Promise<SecurityReport | undefined>;
+  /** Atomically persist exactly one immutable report per completed scan. */
+  createReport(report: SecurityReport): Promise<
+    | { outcome: 'created'; report: SecurityReport }
+    | { outcome: 'existing'; report: SecurityReport }
+    | { outcome: 'invalid-report' }
+    | { outcome: 'scan-unavailable' }
+    | { outcome: 'capacity-exceeded' }
+  >;
   /**
    * Startup recovery: every RUNNING scan (a crash interrupted it)
    * deterministically → FAILED with `SCAN_INTERRUPTED`. Persisted before
@@ -210,6 +225,8 @@ interface StoreDocument {
   version: 1;
   scans: ScanRecord[];
   idempotency: IdempotencyEntry[];
+  /** Added in Pump 12; missing on Pump 7–11 documents is an empty report set. */
+  reports: SecurityReport[];
 }
 
 /** Bounded per-account idempotency memory (oldest evicted first). */
@@ -304,11 +321,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
       if (typeof finding !== 'object' || finding === null) return true;
       const item = finding as unknown as Record<string, unknown>;
       const isDastFinding = item['scanner'] === 'DAST';
-      if (isDastFinding !== (record['scanType'] === 'DAST')) return true;
-      return isDastFinding && (
-        item['projectId'] !== record['projectId'] ||
-        item['targetUrl'] !== record['dastTargetUrl']
-      );
+      if (findingScanner(finding as Finding) !== record['scanType']) return true;
+      if (item['projectId'] !== undefined && item['projectId'] !== record['projectId']) return true;
+      return isDastFinding && item['targetUrl'] !== record['dastTargetUrl'];
     })) return undefined;
     // The summary must agree with the persisted findings.
     const summary = record['resultSummary'];
@@ -408,7 +423,12 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     built.resultSummary = record['resultSummary'] as ScanResultSummary;
   }
   if (Array.isArray(record['findings'])) {
-    built.findings = record['findings'];
+    // Pump 11 source findings could derive their project only through the
+    // scan link. Hydrate that context from the server-owned scan record on
+    // load; never accept a client/row-supplied cross-project value.
+    built.findings = (record['findings'] as Finding[]).map((finding) =>
+      finding.projectId === undefined ? { ...finding, projectId: record['projectId'] as string } : finding,
+    );
   }
   if (record['sca'] !== undefined && isScaResult(record['sca'])) {
     built.sca = record['sca'];
@@ -461,6 +481,23 @@ function parseStoredIdempotencyEntry(
   return entry;
 }
 
+function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
+  if (
+    scan.status !== 'COMPLETED' || scan.completedAt === undefined || scan.resultSummary === undefined ||
+    report.project.id !== scan.projectId || report.scan.id !== scan.id ||
+    report.scan.projectId !== scan.projectId || report.scan.scanType !== scan.scanType ||
+    report.scan.status !== 'COMPLETED' || report.scan.createdAt !== scan.createdAt ||
+    report.scan.updatedAt !== scan.updatedAt || report.scan.startedAt !== scan.startedAt ||
+    report.scan.completedAt !== scan.completedAt || report.scan.targetUrl !== scan.dastTargetUrl ||
+    canonicalJson(report.scan.resultSummary) !== canonicalJson(scan.resultSummary) ||
+    canonicalJson(report.findings) !== canonicalJson(scan.findings ?? []) ||
+    canonicalJson(report.dast ?? null) !== canonicalJson(scan.dast ?? null)
+  ) return false;
+  return scan.sca === undefined
+    ? report.inventory.status === 'NOT_INCLUDED'
+    : report.inventory.status === 'INCLUDED' && canonicalJson(report.inventory.sca) === canonicalJson(scan.sca);
+}
+
 function loadDocument(path: string): StoreDocument {
   let raw: string;
   try {
@@ -468,7 +505,7 @@ function loadDocument(path: string): StoreDocument {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      return { version: 1, scans: [], idempotency: [] };
+      return { version: 1, scans: [], idempotency: [], reports: [] };
     }
     throw new Error(`Cannot read scan store at ${path}: ${String(code ?? error)}`);
   }
@@ -485,7 +522,10 @@ function loadDocument(path: string): StoreDocument {
     parsed === null ||
     (parsed as Record<string, unknown>)['version'] !== 1 ||
     !Array.isArray((parsed as Record<string, unknown>)['scans']) ||
-    !Array.isArray((parsed as Record<string, unknown>)['idempotency'])
+    !Array.isArray((parsed as Record<string, unknown>)['idempotency']) ||
+    ((parsed as Record<string, unknown>)['reports'] !== undefined &&
+      !Array.isArray((parsed as Record<string, unknown>)['reports'])) ||
+    (((parsed as Record<string, unknown>)['reports'] as unknown[] | undefined)?.length ?? 0) > REPORT_PERSISTED_MAX_COUNT
   ) {
     throw new Error(`Scan store at ${path} has an unexpected shape — refusing to start.`);
   }
@@ -528,14 +568,33 @@ function loadDocument(path: string): StoreDocument {
     seenKeys.add(composite);
     idempotency.push(record);
   });
-  return { version: 1, scans, idempotency };
+  const rawReports = ((parsed as Record<string, unknown>)['reports'] ?? []) as unknown[];
+  const seenReportScans = new Set<string>();
+  const seenReportIds = new Set<string>();
+  const reports: SecurityReport[] = [];
+  rawReports.forEach((entry, index) => {
+    if (!verifySecurityReportIntegrity(entry) ||
+        Buffer.byteLength(canonicalJson(entry), 'utf8') > REPORT_MAX_BYTES ||
+        seenReportScans.has(entry.scan.id) || seenReportIds.has(entry.reportId)) {
+      throw new Error(`Scan store at ${path} has an invalid report at index ${index} — refusing to start.`);
+    }
+    const scan = scans.find((candidate) => candidate.id === entry.scan.id);
+    if (scan === undefined || !reportMatchesScan(entry, scan)) {
+      throw new Error(`Scan store at ${path} has a report detached from its completed scan at index ${index} — refusing to start.`);
+    }
+    seenReportScans.add(entry.scan.id);
+    seenReportIds.add(entry.reportId);
+    reports.push(entry);
+  });
+  return { version: 1, scans, idempotency, reports };
 }
 
 interface StoreInternals {
   scans: ScanRecord[];
   idempotency: IdempotencyEntry[];
+  reports: SecurityReport[];
   /** Persist the full next state atomically (called inside the queue). */
-  persistWith(scans: ScanRecord[], idempotency: IdempotencyEntry[]): void;
+  persistWith(scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[]): void;
 }
 
 function createScanStoreFrom(internals: StoreInternals): ScanStore {
@@ -558,6 +617,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   for (const entry of internals.idempotency) {
     idempotencyByKey.set(`${entry.accountId}:${entry.key}`, entry);
   }
+  const reportsByScan = new Map<string, SecurityReport>();
+  for (const report of internals.reports) reportsByScan.set(report.scan.id, report);
 
   const toPublic = (record: ScanRecord): ScanRecord => ({ ...record });
 
@@ -573,7 +634,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
     const nextScans = [...scansById.values()].map((scan) =>
       scan.id === updated.id ? updated : scan,
     );
-    internals.persistWith(nextScans, [...idempotencyByKey.values()]);
+    internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()]);
     scansById.set(updated.id, updated);
     return toPublic(updated);
   };
@@ -667,7 +728,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             );
           }
         }
-        internals.persistWith(nextScans, nextIdempotency);
+        internals.persistWith(nextScans, nextIdempotency, [...reportsByScan.values()]);
         scansById.set(record.id, record);
         const nextKeys = new Set(
           nextIdempotency.map((item) => `${item.accountId}:${item.key}`),
@@ -742,24 +803,25 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         // Defense in depth: findings are bounded and must belong to
         // this scan, and the summary must agree with them (the engine
         // already guarantees this; the store never trusts blindly).
+        const contextualFindings = findings?.map((finding) =>
+          finding.scanner === 'DAST' || finding.ruleId.startsWith('DG-DAST-')
+            ? finding
+            : { ...finding, projectId: current.projectId },
+        );
         const safeFindings =
-          findings === undefined || findings.length === 0
+          contextualFindings === undefined || contextualFindings.length === 0
             ? undefined
-            : findings.slice(0, MAX_FINDINGS_PER_SCAN);
+            : contextualFindings.slice(0, MAX_FINDINGS_PER_SCAN);
         if (safeFindings !== undefined) {
           if (
-            safeFindings.length !== findings?.length ||
-            !safeFindings.every((finding) => isFinding(finding) && finding.scanId === id)
+            safeFindings.length !== contextualFindings?.length ||
+            !safeFindings.every((finding) =>
+              isFinding(finding) && finding.scanId === id && finding.projectId === current.projectId &&
+              findingScanner(finding) === current.scanType)
           ) {
             return undefined;
           }
-          if (safeFindings.some((finding) => {
-            const item = finding as unknown as Record<string, unknown>;
-            const isDastFinding = item['scanner'] === 'DAST';
-            return isDastFinding !== (current.scanType === 'DAST') || (
-              isDastFinding && (item['projectId'] !== current.projectId || item['targetUrl'] !== current.dastTargetUrl)
-            );
-          })) return undefined;
+          if (safeFindings.some((finding) => finding.scanner === 'DAST' && finding.targetUrl !== current.dastTargetUrl)) return undefined;
           if (resultSummary.findingsTotal !== safeFindings.length) {
             return undefined;
           }
@@ -812,6 +874,36 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         return updated === undefined ? undefined : toPublic(updated);
       }),
 
+    findReportByProjectAndScan: async (projectId, scanId) => {
+      const report = reportsByScan.get(scanId);
+      return report === undefined || report.project.id !== projectId
+        ? undefined
+        : JSON.parse(JSON.stringify(report)) as SecurityReport;
+    },
+
+    createReport: (report) =>
+      runExclusive(() => {
+        if (!verifySecurityReportIntegrity(report) ||
+            Buffer.byteLength(canonicalJson(report), 'utf8') > REPORT_MAX_BYTES) {
+          return { outcome: 'invalid-report' as const };
+        }
+        const scan = scansById.get(report.scan.id);
+        if (scan === undefined || !reportMatchesScan(report, scan)) {
+          return { outcome: 'scan-unavailable' as const };
+        }
+        const existing = reportsByScan.get(scan.id);
+        if (existing !== undefined) {
+          return { outcome: 'existing' as const, report: JSON.parse(JSON.stringify(existing)) as SecurityReport };
+        }
+        if (reportsByScan.size >= REPORT_PERSISTED_MAX_COUNT) {
+          return { outcome: 'capacity-exceeded' as const };
+        }
+        const nextReports = [...reportsByScan.values(), report].sort((a, b) => a.reportId.localeCompare(b.reportId));
+        internals.persistWith([...scansById.values()], [...idempotencyByKey.values()], nextReports);
+        reportsByScan.set(scan.id, report);
+        return { outcome: 'created' as const, report: JSON.parse(JSON.stringify(report)) as SecurityReport };
+      }),
+
     failAllRunning: (failureCode, failureMessage) =>
       runExclusive(() => {
         const running = [...scansById.values()].filter((record) => record.status === 'RUNNING');
@@ -831,7 +923,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           });
         }
         const nextScans = [...scansById.values()].map((record) => updatedById.get(record.id) ?? record);
-        internals.persistWith(nextScans, [...idempotencyByKey.values()]);
+        internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()]);
         for (const updated of updatedById.values()) {
           scansById.set(updated.id, updated);
         }
@@ -843,9 +935,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
 /** Durable scan store: one JSON document, atomic writes. */
 export function createJsonFileScanStore(path: string): ScanStore {
   const document = loadDocument(path);
-  const persistWith = (scans: ScanRecord[], idempotency: IdempotencyEntry[]): void => {
+  const persistWith = (scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[]): void => {
     mkdirSync(dirname(path), { recursive: true });
-    const payload: StoreDocument = { version: 1, scans, idempotency };
+    const payload: StoreDocument = { version: 1, scans, idempotency, reports };
     const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
     writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
     renameSync(tempPath, path);
@@ -853,13 +945,14 @@ export function createJsonFileScanStore(path: string): ScanStore {
   return createScanStoreFrom({
     scans: document.scans,
     idempotency: document.idempotency,
+    reports: document.reports,
     persistWith,
   });
 }
 
 /** In-memory scan store (tests and explicit `:memory:` setups). */
 export function createMemoryScanStore(): ScanStore {
-  return createScanStoreFrom({ scans: [], idempotency: [], persistWith: () => undefined });
+  return createScanStoreFrom({ scans: [], idempotency: [], reports: [], persistWith: () => undefined });
 }
 
 /**

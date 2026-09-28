@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 11: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, and limited passive DAST**.
+Cybersecurity application — **Pump 12: cumulative foundation + authentication + authorization + plans/entitlements + projects + scan lifecycle + SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, and persisted reports**.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -77,12 +77,13 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/SAST.md` — the real SAST engine: rules, snapshot policy, redaction, bounds
 - `docs/SCA.md` — the real SCA engine: manifest parsing, inventory, SBOM, the dataset lock
 - `docs/DAST.md` — limited passive DAST: target authorization, SSRF controls, request bounds and limitations
+- `docs/REPORTS.md` — findings routes, persisted single-scan reports, exports, digests and honesty limits
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 11, cumulative)
+## Scope (Pump 12, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -153,13 +154,12 @@ with a content-derived serial. Analysis only — nothing is ever
 installed or executed (postinstall scripts are inert data, verified by
 marker-file tests). THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS
 data enters the repo; with no dataset the assessment is honestly
-NOT_ASSESSED with ZERO advisories while the inventory and SBOM stay
-real — a vulnerable-looking fixture yields no fabricated findings.
-The VulnerabilityIntelligenceProvider boundary is injectable and
-tested with synthetic fixtures (tests only), so the advisory path is
-real. SCA payloads persist atomically, ride the detail route only,
-survive restarts, and render distinctly from SAST in the web UI.
-See `docs/SCA.md`.
+NOT_ASSESSED with `NO_DATA_LOADED`; the advisory collection stays
+empty without claiming zero vulnerabilities. The
+VulnerabilityIntelligenceProvider boundary is injectable and tested
+with synthetic fixtures (tests only). SCA payloads persist atomically,
+ride the detail route only, survive restarts, and render distinctly
+from SAST in the web UI. See `docs/SCA.md`.
 
 **PLUS Pump 11 (limited passive DAST)**: one explicitly configured,
 project-associated HTTP(S) target, owner-authorized and validated on the
@@ -173,6 +173,21 @@ use a browser, execute JavaScript, authenticate, crawl, fuzz, inject, or
 exploit; tests use synthetic transport responses and controlled local
 fixtures only. See `docs/DAST.md`.
 
+**PLUS Pump 12 (production findings and reports):** scanner-aware,
+project-aware deterministic finding fingerprints; redacted bounded
+evidence; authenticated, ownership-scoped finding pages/details with
+validated server-side severity/scanner filters and bounded pagination;
+and an overview inside each project with persisted finding totals,
+severity and scanner run breakdowns. The report layer creates one
+canonical JSON report per completed scan and persists it in the existing
+scan JSON store; authorized retrieval survives API restart. JSON and
+escaped human-readable Markdown downloads use generated safe filenames,
+real SHA-256 digests (not signatures), source context, scanner coverage,
+SCA inventory/SBOM when actually present, and bounded DAST observations.
+SCA vulnerability intelligence remains `NO_DATA_LOADED` /
+`NOT_ASSESSED`; empty advisories do not mean zero vulnerabilities.
+Reports do not consume quota. See `docs/REPORTS.md`.
+
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
 payments/billing (no gateway, coupons, partner/referral or approval
@@ -180,14 +195,16 @@ UI), plan mutation workflow (`plan:manage` is granted to no one), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-findings, reports, remediation, AI assistance, admin dashboard,
-UserType-specific product features. See the NOT_IMPLEMENTED sections in
+remediation tracking, AI assistance, admin dashboard, UserType-specific
+product features, multi-scan reports, PDF/signature workflows, and a
+database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 11 — cumulative security foundation, authenticated project targets,
-secure scan lifecycle/quota, real SAST/SCA/Secrets engines, and limited
-passive DAST (single target, safe bounds, no browser or execution). See
-`docs/BUILD_VERIFICATION.md` and `docs/DAST.md` for verification evidence
-and scope.
+Pump 12 — cumulative security foundation, authenticated project targets,
+secure scan lifecycle/quota, real SAST/SCA/Secrets engines, limited
+passive DAST, bounded findings, and durable single-scan reports. DAST
+remains single-target and passive; SCA vulnerability intelligence remains
+NOT ASSESSED without a loaded dataset. See `docs/BUILD_VERIFICATION.md`,
+`docs/DAST.md`, and `docs/REPORTS.md` for verification evidence and scope.

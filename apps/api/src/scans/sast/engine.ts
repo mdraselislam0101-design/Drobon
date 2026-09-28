@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   FINDING_EVIDENCE_MAX_LENGTH,
   MAX_FINDINGS_PER_SCAN,
@@ -11,6 +10,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
+import { findingFingerprint } from '../findingIdentity.js';
 
 /**
  * THE REAL SAST ENGINE (Pump 8).
@@ -163,12 +163,6 @@ function evidenceFromLine(rule: SastRule, rawLine: string, column: number): stri
 }
 
 /** Deterministic finding identity — never a random UUID. */
-function fingerprintOf(ruleId: string, file: string, line: number, evidence: string): string {
-  const evidenceDigest = createHash('sha256').update(evidence, 'utf8').digest('hex');
-  return createHash('sha256')
-    .update(`${ruleId}\n${file}\n${line}\n${evidenceDigest}`, 'utf8')
-    .digest('hex');
-}
 
 interface DiscoveryResult {
   kind: 'ok';
@@ -309,11 +303,16 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               continue;
             }
             const evidence = evidenceFromLine(rule, line, match.column);
-            const fingerprint = fingerprintOf(rule.id, file.path, index + 1, evidence);
+            const fingerprint = findingFingerprint({
+              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+              location: file.path, line: index + 1, evidence,
+            });
             findings.push({
               id: `fnd_${fingerprint.slice(0, 24)}`,
               scanId: record.id,
               ruleId: rule.id,
+              scanner: 'SAST',
+              projectId: record.projectId,
               severity: rule.severity,
               title: rule.title,
               description: rule.description,

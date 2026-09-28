@@ -6,6 +6,9 @@ import type {
   CapabilityResponse,
   CurrentUserResponse,
   HealthResponse,
+  FindingsPageResponse,
+  FindingDetailResponse,
+  SecurityReportResponse,
   LogoutResponse,
   ProjectResponse,
   ProjectsResponse,
@@ -17,7 +20,7 @@ import type {
   SubscriptionResponse,
   UsageResponse,
 } from '@drobon/shared';
-import { ApiClientError, type ApiClient } from '../src/api/client.js';
+import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
 
 /** A 401 ApiClientError, as the API returns for anonymous requests. */
@@ -161,6 +164,11 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
         requestId: 'test',
       });
     }),
+    getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [], page: 1, pageSize: 20, total: 0, totalPages: 0 })),
+    getFinding: vi.fn(async (): Promise<FindingDetailResponse> => { throw new Error('not stubbed'); }),
+    createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
+    getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
+    downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
       throw new ApiClientError({
         kind: 'http',

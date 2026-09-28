@@ -841,3 +841,32 @@ DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passiv
 - `apps/api/test/dastHttp.test.ts` uses an actual **loopback-only local HTTP server fixture** to verify the production Node transport's pinned-address lookup, one GET, absence of cookies/authorization, response cap, timeout and abort behavior. It bypasses target policy only for this local test object; production loopback/private rejection stays enabled.
 - `apps/api/test/dastApi.test.ts` exercises authenticated target configuration, scan execution, persisted observations/findings and a durable restart using the test-only resolver and **synthetic transport response**. This is an API integration/persistence E2E, **not** a real network DAST scan.
 - No arbitrary or public host was contacted; there was no public-target probe and no real DNS resolution in DAST fixtures.
+
+## Verification evidence (Pump 12 — findings, reports, SBOM completion)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green (scope boundaries,
+  secret matcher self-test, source secret scan, typecheck, lint, full
+  workspace tests, production builds, source/build secret scan, dependency
+  audit).
+- Test totals: **1,014 passed, 0 failed** across 88 files:
+  - shared: 163 (14 files)
+  - API: 633 (51 files)
+  - worker: 28 (3 files)
+  - web: 190 (20 files)
+- Source/build secret scans: **PASS**, 417 files. Dependency audit:
+  **0 package vulnerabilities**. Production builds: shared, API, worker,
+  and Vite web bundle all PASS. No dataset or database scope was added.
+- Controlled API E2E: `apps/api/test/reportsApi.test.ts` runs real HTTP
+  authentication, project, upload, scan, findings and report routes against
+  temporary durable JSON stores. It exercises SAST, SCA, SECRETS and DAST;
+  deterministic local source and DAST fixtures; findings filtering,
+  pagination, detail and validation; JSON and Markdown exports; redaction
+  and inert Markdown; owner/account/project isolation; archived history;
+  FREE quota exhaustion, PRO exemption and report quota neutrality; and
+  API restart with persisted report/finding retrieval. DAST uses a
+  test-controlled resolver and synthetic transport; no public or arbitrary
+  target was contacted. Sessions intentionally require login again after
+  process restart.
+- `git diff --check`: PASS. This is unit/integration plus controlled local
+  HTTP E2E evidence; it is not a public-target security assessment.

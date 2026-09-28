@@ -474,7 +474,8 @@ export interface SourceFinding extends FindingBase {
   /** 1-based source location. */
   line: number;
   column: number;
-  projectId?: never;
+  /** Project context is explicit on new findings; optional for legacy stored rows. */
+  projectId?: string;
   targetUrl?: never;
   endpoint?: never;
   method?: never;
@@ -562,7 +563,8 @@ export function isFinding(value: unknown): value is Finding {
     typeof record['file'] !== 'string' || !isValidSourcePath(record['file']) ||
     typeof record['line'] !== 'number' || !Number.isInteger(record['line']) || record['line'] < 1 ||
     typeof record['column'] !== 'number' || !Number.isInteger(record['column']) || record['column'] < 1 ||
-    record['projectId'] !== undefined || record['targetUrl'] !== undefined || record['endpoint'] !== undefined ||
+    (record['projectId'] !== undefined && (typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']))) ||
+    record['targetUrl'] !== undefined || record['endpoint'] !== undefined ||
     record['method'] !== undefined || record['responseStatus'] !== undefined || record['responseTimeMs'] !== undefined ||
     record['contentType'] !== undefined || record['observedAt'] !== undefined || record['observedHeaders'] !== undefined
   ) return false;
@@ -575,6 +577,13 @@ export function isFinding(value: unknown): value is Finding {
  * (CRITICAL first), then file path ASC, then line ASC, then ruleId ASC
  * — identical on every request for identical data.
  */
+export function findingScanner(finding: Finding): ScanType | undefined {
+  if (finding.scanner !== undefined) return finding.scanner;
+  if (finding.ruleId.startsWith('DG-SAST-')) return 'SAST';
+  if (finding.ruleId.startsWith('DG-SEC-')) return 'SECRETS';
+  return undefined;
+}
+
 export function compareFindings(a: Finding, b: Finding): number {
   const rank = (severity: FindingSeverity): number => FINDING_SEVERITIES.indexOf(severity);
   const rankDiff = rank(a.severity) - rank(b.severity);
@@ -585,7 +594,8 @@ export function compareFindings(a: Finding, b: Finding): number {
   const lineA = a.scanner === 'DAST' ? 0 : a.line;
   const lineB = b.scanner === 'DAST' ? 0 : b.line;
   if (lineA !== lineB) return lineA - lineB;
-  return a.ruleId < b.ruleId ? -1 : a.ruleId > b.ruleId ? 1 : 0;
+  if (a.ruleId !== b.ruleId) return a.ruleId < b.ruleId ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 /**

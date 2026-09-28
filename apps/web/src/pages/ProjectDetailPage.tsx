@@ -4,7 +4,10 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_NAME_MAX_LENGTH,
   SCAN_TYPES,
-  type Finding,
+  findingScanner,
+  type FindingDetailResponse,
+  type FindingsPageResponse,
+  type SecurityReportResponse,
   type ScanDetailResponse,
   type ScanType,
   type Scan,
@@ -470,6 +473,28 @@ function ScansSection({
           )}
         </form>
       )}
+      {scans !== null && scans.length > 0 && (
+        <section className="security-overview" data-testid="project-security-overview">
+          <h3>Project security overview</h3>
+          {(() => {
+            const completed = scans.filter((scan) => scan.status === 'COMPLETED');
+            const findingsTotal = completed.reduce((sum, scan) => sum + (scan.resultSummary?.findingsTotal ?? 0), 0);
+            const severityTotals = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+            return completed.length === 0 ? (
+              <p className="muted">No completed scans yet.</p>
+            ) : (
+              <>
+                <p data-testid="project-findings-total">{findingsTotal} persisted finding{findingsTotal === 1 ? '' : 's'} across {completed.length} completed scan{completed.length === 1 ? '' : 's'}.</p>
+                <p className="muted">These are scan findings, not a cross-scan deduplicated issue count. Dependency vulnerability status is reported separately and may be NOT ASSESSED.</p>
+                <dl className="facts">
+                  {SCAN_TYPES.map((type) => <div className="fact" key={type}><dt>{type} runs</dt><dd>{completed.filter((scan) => scan.scanType === type).length}</dd></div>)}
+                  {severityTotals.map((severity) => <div className="fact" key={severity}><dt>{severity}</dt><dd>{completed.reduce((sum, scan) => sum + (scan.resultSummary?.findingsBySeverity?.[severity] ?? 0), 0)}</dd></div>)}
+                </dl>
+              </>
+            );
+          })()}
+        </section>
+      )}
       {scansError !== null ? (
         <div>
           <div className="form-alert" role="alert">
@@ -546,13 +571,13 @@ function ScansSection({
                         }`}
                 </p>
               )}
-              {(scan.status === 'COMPLETED' &&
-                (scan.scanType === 'SAST' || scan.scanType === 'SECRETS' || scan.scanType === 'DAST')) && (
-                <FindingsView projectId={projectId} scanId={scan.id} />
+              {scan.status === 'COMPLETED' && (
+                <FindingsView projectId={projectId} scanId={scan.id} scanType={scan.scanType} />
               )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
                 <ScaView projectId={projectId} scanId={scan.id} />
               )}
+              {scan.status === 'COMPLETED' && <ReportView projectId={projectId} scanId={scan.id} />}
             </li>
           ))}
         </ul>
@@ -730,180 +755,274 @@ function SourcesSection({
 }
 
 /**
- * One completed scan's findings (Pump 8 SAST + Pump 10 SECRETS) — the
- * only findings read surface. Lazy: the list stays cheap until the
- * user asks.
- * - server-ordered (most severe first), rendered as text;
- * - the severity filter is display-only (client-side over the SAME
- *   bounded response) — it never triggers another request;
- * - evidence is ALREADY redacted server-side; rendering it as text
- *   (never HTML) keeps it non-executing on both ends;
- * - SECRETS findings additionally carry a rule-defined DETECTION
- *   confidence (how certain the RULE is of the match — never a
- *   liveness claim), shown as a badge next to the severity.
+ * One completed scan's server-filtered findings. Pages are bounded by the
+ * API; detail retrieval is separately project/scan scoped and evidence is
+ * rendered only as escaped text.
  */
 function FindingsView({
   projectId,
   scanId,
+  scanType,
 }: {
   projectId: string;
   scanId: string;
+  scanType: ScanType;
 }): React.JSX.Element {
   const client = useApiClient();
-  const [detail, setDetail] = useState<ScanDetailResponse | null>(null);
+  const [pageData, setPageData] = useState<FindingsPageResponse | null>(null);
+  const [scanDetail, setScanDetail] = useState<ScanDetailResponse | null>(null);
+  const [selected, setSelected] = useState<FindingDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [opened, setOpened] = useState(false);
   const [severity, setSeverity] = useState<'ALL' | FindingSeverity>('ALL');
+  const [scanner, setScanner] = useState<'ALL' | ScanType>('ALL');
 
-  const load = async (): Promise<void> => {
+  const loadPage = async (
+    nextPage: number,
+    nextSeverity: 'ALL' | FindingSeverity = severity,
+    nextScanner: 'ALL' | ScanType = scanner,
+  ): Promise<void> => {
+    setOpened(true);
     setError(null);
     setLoading(true);
     try {
-      const data = await client.getScan(projectId, scanId);
-      setDetail(data);
-    } catch (error: unknown) {
-      setError(
-        error instanceof ApiClientError
-          ? error.message
-          : 'Could not load the findings.',
-      );
+      const filters: { severity?: FindingSeverity; scanner?: ScanType; page: number; pageSize: number } = {
+        page: nextPage,
+        pageSize: 20,
+      };
+      if (nextSeverity !== 'ALL') filters.severity = nextSeverity;
+      if (nextScanner !== 'ALL') filters.scanner = nextScanner;
+      const [data, observations] = await Promise.all([
+        client.getFindings(projectId, scanId, filters),
+        scanType === 'DAST' ? client.getScan(projectId, scanId) : Promise.resolve(null),
+      ]);
+      setPageData(data);
+      setScanDetail(observations);
+      setSelected(null);
+      setDetailError(null);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'Could not load this findings page.');
     } finally {
       setLoading(false);
     }
   };
 
-  const findings: Finding[] = detail?.scan.findings ?? [];
-  const visible =
-    severity === 'ALL' ? findings : findings.filter((f) => f.severity === severity);
+  const openFinding = async (findingId: string): Promise<void> => {
+    setDetailError(null);
+    try {
+      setSelected(await client.getFinding(projectId, scanId, findingId));
+    } catch (caught: unknown) {
+      setDetailError(caught instanceof ApiClientError ? caught.message : 'Could not load this finding.');
+    }
+  };
+
+  const findings = pageData?.findings ?? [];
+  const selectedFinding = selected?.finding;
 
   return (
     <div className="findings">
-      {detail === null && error === null && !loading && (
-        <button
-          type="button"
-          className="button button-ghost"
-          onClick={() => void load()}
-          data-testid="view-findings"
-        >
+      {!opened && (
+        <button type="button" className="button button-ghost" onClick={() => void loadPage(1)} data-testid="view-findings">
           View findings
         </button>
       )}
-      {loading && <LoadingState label="Loading the findings…" />}
-      {error !== null && (
-        <div>
-          <div className="form-alert" role="alert">
-            <p data-testid="findings-error">{error}</p>
-          </div>
-          <button
-            type="button"
-            className="button button-ghost"
-            onClick={() => void load()}
-            data-testid="findings-retry"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-      {detail !== null && (
+      {opened && (
         <>
-          {detail.scan.dast !== undefined && (
+          <div className="hero-actions">
+            <div className="field">
+              <label htmlFor={`findings-severity-${scanId}`}>Severity</label>
+              <select
+                id={`findings-severity-${scanId}`}
+                value={severity}
+                onChange={(event) => {
+                  const next = event.target.value as 'ALL' | FindingSeverity;
+                  setSeverity(next);
+                  void loadPage(1, next, scanner);
+                }}
+                data-testid="findings-filter"
+              >
+                <option value="ALL">All severities</option>
+                <option value="CRITICAL">CRITICAL</option>
+                <option value="HIGH">HIGH</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="LOW">LOW</option>
+                <option value="INFO">INFO</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor={`findings-scanner-${scanId}`}>Scanner / source</label>
+              <select
+                id={`findings-scanner-${scanId}`}
+                value={scanner}
+                onChange={(event) => {
+                  const next = event.target.value as 'ALL' | ScanType;
+                  setScanner(next);
+                  void loadPage(1, severity, next);
+                }}
+                data-testid="findings-scanner-filter"
+              >
+                <option value="ALL">All scanners</option>
+                {SCAN_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+            </div>
+          </div>
+          {loading && <LoadingState label="Loading findings…" />}
+          {error !== null && (
+            <div>
+              <div className="form-alert" role="alert"><p data-testid="findings-error">{error}</p></div>
+              <button type="button" className="button button-ghost" onClick={() => void loadPage(pageData?.page ?? 1)} data-testid="findings-retry">Retry findings</button>
+            </div>
+          )}
+          {scanDetail?.scan.dast !== undefined && (
             <section className="dast-observations" data-testid="dast-observations">
               <h4>Observed responses</h4>
-              <p className="muted">
-                Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.
-              </p>
-              <p data-testid="dast-target-url">Target: <code>{detail.scan.dast.targetUrl}</code></p>
-              {detail.scan.dast.partial && (
-                <p className="muted" data-testid="dast-partial-note">
-                  Partial result: {detail.scan.dast.partialReason ?? 'some response checks were not completed'}
-                </p>
-              )}
+              <p className="muted">Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.</p>
+              <p data-testid="dast-target-url">Target: <code>{scanDetail.scan.dast.targetUrl}</code></p>
+              {scanDetail.scan.dast.partial && <p className="muted" data-testid="dast-partial-note">Partial result: {scanDetail.scan.dast.partialReason ?? 'some response checks were not completed'}</p>}
               <ul className="scan-list">
-                {detail.scan.dast.observations.map((observation, index) => (
+                {scanDetail.scan.dast.observations.map((observation, index) => (
                   <li key={`${observation.endpoint}-${index}`} data-testid="dast-observation">
-                    <strong>{observation.method} · HTTP {observation.status}</strong>{' '}
-                    <code>{observation.endpoint}</code>
-                    <p className="muted">
-                      {observation.responseTimeMs} ms · {observation.bodyBytes} bytes inspected
-                      {observation.bodyTruncated ? ' · body truncated' : ''}
-                      {observation.contentType !== undefined ? ` · ${observation.contentType}` : ''}
-                    </p>
-                    {observation.headers.length > 0 && (
-                      <ul>{observation.headers.map((header, headerIndex) => <li key={`${header}-${headerIndex}`}>{header}</li>)}</ul>
-                    )}
+                    <strong>{observation.method} · HTTP {observation.status}</strong>{' '}<code>{observation.endpoint}</code>
+                    <p className="muted">{observation.responseTimeMs} ms · {observation.bodyBytes} bytes inspected{observation.bodyTruncated ? ' · body truncated' : ''}{observation.contentType !== undefined ? ` · ${observation.contentType}` : ''}</p>
+                    {observation.headers.length > 0 && <ul>{observation.headers.map((header, headerIndex) => <li key={`${header}-${headerIndex}`}>{header}</li>)}</ul>}
                   </li>
                 ))}
               </ul>
             </section>
           )}
-          <div className="field">
-            <label htmlFor={`findings-filter-${scanId}`}>Severity</label>
-            <select
-              id={`findings-filter-${scanId}`}
-              value={severity}
-              onChange={(event) =>
-                setSeverity(event.target.value as 'ALL' | FindingSeverity)
-              }
-              data-testid="findings-filter"
-            >
-              <option value="ALL">All severities</option>
-              <option value="CRITICAL">CRITICAL</option>
-              <option value="HIGH">HIGH</option>
-              <option value="MEDIUM">MEDIUM</option>
-              <option value="LOW">LOW</option>
-              <option value="INFO">INFO</option>
-            </select>
-          </div>
-          {visible.length === 0 ? (
-            <p className="muted" data-testid="findings-empty">
-              {detail.scan.scanType === 'DAST'
-                ? 'None of the supported passive checks produced findings for the observed responses.'
-                : 'No findings at this severity.'}
-            </p>
-          ) : (
-            <ul className="findings-list" data-testid="findings-list">
-              {visible.map((finding) => (
-                <li key={finding.id} className="finding-item" data-testid="finding-item">
-                  <div className="scan-item-head">
-                    <span
-                      className={
-                        finding.severity === 'CRITICAL' || finding.severity === 'HIGH'
-                          ? 'pill pill-danger'
-                          : finding.severity === 'MEDIUM'
-                            ? 'pill'
-                            : 'pill pill-ok'
-                      }
-                      data-testid="finding-severity"
-                    >
-                      {finding.severity}
-                    </span>
-                    <strong data-testid="finding-rule">{finding.ruleId}</strong>
-                    {finding.confidence !== undefined && (
-                      <span className="pill" data-testid="finding-confidence">
-                        {finding.confidence} confidence
-                      </span>
-                    )}
-                  </div>
-                  <p data-testid="finding-title">{finding.title}</p>
-                  <p className="muted" data-testid="finding-location">
-                    {finding.scanner === 'DAST'
-                      ? `${finding.method} ${finding.endpoint} · HTTP ${finding.responseStatus}`
-                      : `${finding.file}:${finding.line}`}
-                    {finding.cwe !== undefined ? ` · ${finding.cwe}` : ''}
-                  </p>
-                  <pre>
-                    <code data-testid="finding-evidence">{finding.evidence}</code>
-                  </pre>
-                  <p className="muted" data-testid="finding-remediation">
-                    {finding.remediation}
-                  </p>
-                </li>
-              ))}
-            </ul>
+          {!loading && error === null && pageData !== null && (
+            <>
+              <p className="muted" data-testid="findings-page-summary">{pageData.total} matching finding{pageData.total === 1 ? '' : 's'} · page {pageData.page} of {pageData.totalPages}</p>
+              {findings.length === 0 ? (
+                <p className="muted" data-testid="findings-empty">
+                  {scanType === 'SCA'
+                    ? 'This SCA result has no common Finding records. Review dependency analysis for the inventory, SBOM and provider advisory state; NOT ASSESSED is not a zero-vulnerability verdict.'
+                    : `No findings match these filters. This is limited to the ${scanType} scan and does not represent scanners that did not run.`}
+                </p>
+              ) : (
+                <ul className="findings-list" data-testid="findings-list">
+                  {findings.map((finding) => (
+                    <li key={finding.id} className="finding-item" data-testid="finding-item">
+                      <div className="scan-item-head">
+                        <span className={finding.severity === 'CRITICAL' || finding.severity === 'HIGH' ? 'pill pill-danger' : finding.severity === 'MEDIUM' ? 'pill' : 'pill pill-ok'} data-testid="finding-severity">{finding.severity}</span>
+                        <strong data-testid="finding-rule">{finding.ruleId}</strong>
+                        <span className="pill" data-testid="finding-scanner">{findingScanner(finding) ?? 'Unknown scanner'}</span>
+                        {finding.confidence !== undefined && <span className="pill" data-testid="finding-confidence">{finding.confidence} detection confidence</span>}
+                      </div>
+                      <p data-testid="finding-title">{finding.title}</p>
+                      <p className="muted" data-testid="finding-location">{finding.scanner === 'DAST' ? `${finding.method} ${finding.endpoint} · HTTP ${finding.responseStatus}` : `${finding.file}:${finding.line}:${finding.column}`}{finding.cwe !== undefined ? ` · ${finding.cwe}` : ''}</p>
+                      <button type="button" className="button button-ghost" onClick={() => void openFinding(finding.id)} data-testid="finding-detail-button">Finding details</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="hero-actions" aria-label="Findings pagination">
+                <button type="button" className="button button-ghost" disabled={pageData.page <= 1 || loading} onClick={() => void loadPage(pageData.page - 1)} data-testid="findings-previous">Previous</button>
+                <button type="button" className="button button-ghost" disabled={pageData.page >= pageData.totalPages || loading} onClick={() => void loadPage(pageData.page + 1)} data-testid="findings-next">Next</button>
+              </div>
+            </>
+          )}
+          {detailError !== null && <div className="form-alert" role="alert"><p data-testid="finding-detail-error">{detailError}</p></div>}
+          {selected !== null && selectedFinding !== undefined && (
+            <section className="finding-detail" aria-label="Finding detail" data-testid="finding-detail">
+              <h4>{selectedFinding.title}</h4>
+              <dl className="facts">
+                <div className="fact"><dt>Severity</dt><dd>{selectedFinding.severity}</dd></div>
+                <div className="fact"><dt>Scanner</dt><dd>{findingScanner(selectedFinding) ?? 'Unknown scanner'}</dd></div>
+                <div className="fact"><dt>Finding ID</dt><dd><code>{selectedFinding.id}</code></dd></div>
+                <div className="fact"><dt>Fingerprint</dt><dd><code data-testid="finding-fingerprint">{selectedFinding.fingerprint}</code></dd></div>
+                <div className="fact"><dt>Project</dt><dd>{selected.project.name} · <code>{selected.project.id}</code></dd></div>
+                <div className="fact"><dt>Scan</dt><dd>{selected.scan.scanType} · <code>{selected.scan.id}</code></dd></div>
+                <div className="fact"><dt>Observed</dt><dd>{selectedFinding.scanner === 'DAST' ? selectedFinding.observedAt : selected.scan.completedAt ?? selected.scan.createdAt}</dd></div>
+                {selectedFinding.cwe !== undefined && <div className="fact"><dt>CWE</dt><dd>{selectedFinding.cwe}</dd></div>}
+                <div className="fact"><dt>Location</dt><dd>{selectedFinding.scanner === 'DAST' ? `${selectedFinding.method} ${selectedFinding.endpoint}` : `${selectedFinding.file}:${selectedFinding.line}:${selectedFinding.column}`}</dd></div>
+              </dl>
+              <p>{selectedFinding.description}</p>
+              <p><strong>Observed evidence</strong></p><pre><code data-testid="finding-evidence">{selectedFinding.evidence}</code></pre>
+              <p><strong>Remediation</strong></p><p data-testid="finding-remediation">{selectedFinding.remediation}</p>
+            </section>
           )}
         </>
       )}
     </div>
+  );
+}
+
+function ReportView({ projectId, scanId }: { projectId: string; scanId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [report, setReport] = useState<SecurityReportResponse['report'] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generate = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try { setReport((await client.createReport(projectId, scanId)).report); }
+    catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not generate the report.'); }
+    finally { setBusy(false); }
+  };
+  const retrieve = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try { setReport((await client.getReport(projectId, scanId)).report); }
+    catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not retrieve the report.'); }
+    finally { setBusy(false); }
+  };
+  const download = async (format: 'json' | 'markdown'): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const file = await client.downloadReport(projectId, scanId, format);
+      const href = URL.createObjectURL(file.blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = file.filename;
+      anchor.rel = 'noopener';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'Could not download the report.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <section className="report-panel" data-testid="report-panel">
+      <h4>Security assessment report</h4>
+      {report === null ? (
+        <div className="hero-actions">
+          <button type="button" className="button button-secondary" onClick={() => void generate()} disabled={busy} data-testid="generate-report">{busy ? 'Generating…' : 'Generate / retrieve report'}</button>
+          <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="retrieve-report">Retrieve saved report</button>
+        </div>
+      ) : (
+        <>
+          <p data-testid="report-id">Report <code>{report.reportId}</code> · generated {report.generatedAt}</p>
+          <p className="muted">{report.findingSummary.total} persisted findings · content SHA-256 <code data-testid="report-content-digest">{report.contentDigest}</code></p>
+          {report.dependencyIntelligence.status === 'NOT_ASSESSED' ? (
+            <p className="muted" data-testid="report-not-assessed">Dependency vulnerability intelligence: NOT ASSESSED. {report.dependencyIntelligence.reason}</p>
+          ) : (
+            <p className="muted">Dependency vulnerability intelligence: ASSESSED by {report.dependencyIntelligence.providerId}; matched advisories: {report.dependencyIntelligence.advisoriesTotal}.</p>
+          )}
+          <p className="muted" data-testid="report-inventory-summary">
+            {report.inventory.status === 'INCLUDED'
+              ? `Inventory included: ${report.inventory.sca.dependencies.length} persisted of ${report.inventory.sca.summary.dependenciesTotal} observed dependencies; CycloneDX ${report.inventory.sca.sbom.specVersion} subset with ${report.inventory.sca.sbom.components.length} components.`
+              : `Inventory / SBOM: NOT INCLUDED. ${report.inventory.reason}`}
+          </p>
+          <p className="muted">Severity counts: {Object.entries(report.findingSummary.bySeverity).map(([severity, count]) => `${severity} ${count}`).join(' · ')}</p>
+          <ul className="report-coverage" data-testid="report-scanner-coverage">
+            {report.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.status}{entry.reason === undefined ? '' : ` — ${entry.reason}`}</li>)}
+          </ul>
+          {report.dast !== undefined && <p className="muted">Passive DAST observations: {report.dast.observations.length}; bounded response metadata only.</p>}
+          <div className="hero-actions">
+            <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
+            <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>
+            <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="refresh-report">Retrieve saved report</button>
+          </div>
+        </>
+      )}
+      {error !== null && <div className="form-alert" role="alert"><p data-testid="report-error">{error}</p></div>}
+    </section>
   );
 }
 

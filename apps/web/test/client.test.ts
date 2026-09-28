@@ -95,6 +95,48 @@ describe('createApiClient', () => {
     expect(calls[1]?.[1].body).toBeUndefined();
   });
 
+  test('downloads only bounded report media with a server-generated safe filename', async () => {
+    const response = new Response('# Assessment\n', {
+      status: 200,
+      headers: {
+        'content-type': 'text/markdown; charset=utf-8',
+        'content-disposition': 'attachment; filename="drobon-rpt_0123456789abcdef01234567.md"',
+      },
+    });
+    const fetchImpl: FetchImpl = vi.fn(async () => response);
+    const client = createApiClient({ baseUrl: '', fetchImpl, generateId: () => 'download-test' });
+    const download = await client.downloadReport('prj_00000000-0000-4000-8000-0000000000aa', 'scan_00000000-0000-4000-8000-0000000000aa', 'markdown');
+    expect(download.filename).toBe('drobon-rpt_0123456789abcdef01234567.md');
+    expect(download.blob.size).toBe(13);
+    expect(download.blob.type).toBe('text/markdown; charset=utf-8');
+    const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/v1/projects/prj_00000000-0000-4000-8000-0000000000aa/');
+    expect(new Headers(init.headers).get('accept')).toBe('text/markdown');
+    expect(new Headers(init.headers).get('x-request-id')).toBe('download-test');
+  });
+
+  test('rejects unsafe report filenames and streamed bodies that exceed the bound', async () => {
+    const unsafeFetch: FetchImpl = vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="../../evil.json"' },
+    }));
+    const unsafeClient = createApiClient({ baseUrl: '', fetchImpl: unsafeFetch });
+    const unsafe = await unsafeClient.downloadReport('p', 's', 'json').catch((error: unknown) => error);
+    expect(unsafe).toBeInstanceOf(ApiClientError);
+    expect((unsafe as ApiClientError).kind).toBe('invalid-response');
+
+    const hugeFetch: FetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(1024 * 1024 + 1)); controller.close(); },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="drobon-rpt_0123456789abcdef01234567.json"' },
+    }));
+    const hugeClient = createApiClient({ baseUrl: '', fetchImpl: hugeFetch });
+    const oversized = await hugeClient.downloadReport('p', 's', 'json').catch((error: unknown) => error);
+    expect(oversized).toBeInstanceOf(ApiClientError);
+    expect((oversized as ApiClientError).kind).toBe('invalid-response');
+  });
+
   test('maps error envelopes to http errors with server message + request ID', async () => {
     const fetchImpl: FetchImpl = vi.fn(async () =>
       jsonResponse(

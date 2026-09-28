@@ -55,7 +55,10 @@ browser bundle and the servers can all consume it:
   and the documented ordering comparator; Pump 8 adds the `Finding`
   contract (deterministic `fnd_` ids from content fingerprints,
   fixed severities, bounded evidence, redaction upstream) plus the
-  findings-bearing scan-detail response guard.
+  findings-bearing scan-detail response guard. Pump 12 adds explicit
+  project context for newly persisted source findings and the separate
+  bounded page/detail contracts in `findings.ts`; `reports.ts` defines
+  the versioned report, scanner coverage, SCA honesty, and integrity guards.
 - `sources.ts` — source-snapshot contracts (Pump 8): the upload body
   (`{ files: [{ path, content }] }`), the single path policy
   (relative, no traversal/dotfiles, len/segment/depth caps, blocked
@@ -141,13 +144,15 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   `resolveSubscription`, `deriveEntitlements`; reads only the account's
   subscription, never role/userType/client input).
 - `scans/` — the secure scan-job foundation (Pump 7): `store.ts` is
-  the durable orchestration store (one JSON document with scans +
-  bounded idempotency entries; THE atomic `createScanWithQuota`
-  operation linearizes idempotency lookup, quota consumption via the
-  UsageService and the durable append; claim-once `claimNextQueued`,
-  finish-once `completeScan`/`failScan` (Pump 8: findings persist
-  atomically with the COMPLETED transition, COMPLETED-only), boot
-  recovery `failAllRunning`); `engines.ts` is the scanner-engine
+  the durable orchestration store (one JSON document with scans,
+  bounded idempotency entries and at most 100 persisted reports; THE
+  atomic `createScanWithQuota` operation linearizes idempotency lookup,
+  quota consumption via the UsageService and the durable append;
+  claim-once `claimNextQueued`, finish-once `completeScan`/`failScan`
+  (Pump 8: findings persist atomically with COMPLETED, with server-set
+  project context on new source findings; Pump 12: one immutable
+  integrity-checked report per completed scan), boot recovery
+  `failAllRunning`); `engines.ts` is the scanner-engine
   boundary (server-side registry — Pumps 8–11 register the REAL SAST,
   SCA, Secrets and limited passive DAST engines; DAST's SSRF-safe target
   policy, pinned transport and passive rules live under `scans/dast/`);
@@ -198,9 +203,13 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   Pump 7's scan routes: `POST /api/v1/projects/:projectId/scans`
   (atomic quota + creation, optional Idempotency-Key, archived → 409
   PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
-  `GET …/scans/:scanId` (uniform 404 inside the caller's own project).
-  No scan mutation endpoint exists — the processor owns every
-  transition (see docs/SCANS.md).
+  `GET …/scans/:scanId` (uniform 404 inside the caller's own project),
+  plus Pump 12's authenticated findings page/detail and report
+  create/retrieve/download routes scoped through the same own-project
+  resolver. Findings filters and export bodies are bounded; reports are
+  persisted with the scan store and do not consume quota. No scan
+  mutation endpoint exists — the processor owns every transition (see
+  docs/SCANS.md and `docs/REPORTS.md`).
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original
@@ -347,7 +356,8 @@ subscription + entitlement foundation itself is DONE in Pump 4 — see
 email verification, password reset, trusted-proxy support, distributed
 rate limiting, durable/persistent sessions and out-of-process queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
-ingestion/storage, browser-based/full DAST, reports/remediation and
-active testing (the existing bounded scan engines and Pump 5 quota
-integration are DONE — see docs/SCANS.md), AI assistance,
+ingestion/storage, browser-based/full DAST, multi-scan reporting,
+remediation tracking and active testing (the existing bounded scan
+engines and Pump 5 quota integration are DONE — see docs/SCANS.md and
+`docs/REPORTS.md`), AI assistance,
 admin dashboard, multi-instance deployment, metrics/tracing.

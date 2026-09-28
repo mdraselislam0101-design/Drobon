@@ -6,6 +6,9 @@ import {
   isProjectResponse,
   isProjectsResponse,
   isScanDetailResponse,
+  isFindingsPageResponse,
+  isFindingDetailResponse,
+  isSecurityReportResponse,
   isScanResponse,
   isScansResponse,
   isSourceSnapshotResponse,
@@ -24,6 +27,10 @@ import {
   type ProjectsResponse,
   type ScanDetailResponse,
   type ScanResponse,
+  type FindingsPageResponse,
+  type FindingDetailResponse,
+  type FindingSeverity,
+  type SecurityReportResponse,
   type ScansResponse,
   type ScanType,
   type SourceFileInput,
@@ -83,6 +90,12 @@ export interface ApiClientOptions {
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export interface ReportDownload {
+  blob: Blob;
+  filename: string;
+  contentType: string;
 }
 
 function defaultGenerateId(): string {
@@ -195,6 +208,21 @@ export interface ApiClient {
     scanId: string,
     signal?: AbortSignal,
   ): Promise<ScanDetailResponse>;
+  /** Server-filtered, bounded finding page for one owned completed scan. */
+  getFindings(
+    projectId: string,
+    scanId: string,
+    filters?: { severity?: FindingSeverity; scanner?: ScanType; page?: number; pageSize?: number },
+    signal?: AbortSignal,
+  ): Promise<FindingsPageResponse>;
+  /** Authorized detail for one finding nested under its project and scan. */
+  getFinding(projectId: string, scanId: string, findingId: string, signal?: AbortSignal): Promise<FindingDetailResponse>;
+  /** Create or return the persisted deterministic report for a completed scan. */
+  createReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
+  /** Retrieve an existing persisted report without regenerating it. */
+  getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
+  /** Authenticated, bounded JSON or Markdown export. */
+  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload>;
   /**
    * The project's source-snapshot metadata (Pump 8) — the SAST scan
    * target. Content never travels back; 404 means no snapshot yet.
@@ -338,6 +366,79 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       });
     }
     return data;
+  };
+
+  const requestReportDownload = async (
+    path: string,
+    format: 'json' | 'markdown',
+    signal?: AbortSignal,
+  ): Promise<ReportDownload> => {
+    const requestId = generateId();
+    const controller = new AbortController();
+    let timedOut = false;
+    const onExternalAbort = (): void => controller.abort();
+    if (signal !== undefined) {
+      if (signal.aborted) throw new ApiClientError({ kind: 'aborted', message: 'The request was cancelled.', requestId });
+      signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try {
+      const response = await fetchImpl(`${baseUrl}${path}`, {
+        credentials: 'include',
+        signal: controller.signal,
+        headers: { accept: format === 'json' ? 'application/json' : 'text/markdown', 'x-request-id': requestId },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => undefined) as unknown;
+        const parsed = parseApiResponse<unknown>(payload);
+        if (parsed !== undefined && !parsed.ok) {
+          throw new ApiClientError({ kind: 'http', message: parsed.error.message, status: response.status, code: parsed.error.code, requestId: parsed.meta.requestId });
+        }
+        throw new ApiClientError({ kind: 'invalid-response', message: 'The server returned an unreadable report response.', status: response.status, requestId });
+      }
+      const contentType = response.headers.get('content-type') ?? '';
+      const contentDisposition = response.headers.get('content-disposition') ?? '';
+      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md))"$/.exec(contentDisposition);
+      const expectedType = format === 'json' ? /^application\/json(?:;\s*charset=utf-8)?$/i : /^text\/markdown(?:;\s*charset=utf-8)?$/i;
+      const expectedSuffix = format === 'json' ? '.json' : '.md';
+      const declaredLength = response.headers.get('content-length');
+      if (!expectedType.test(contentType) || filenameMatch === null || !filenameMatch[1]?.endsWith(expectedSuffix) ||
+          (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 1024 * 1024))) {
+        throw new ApiClientError({ kind: 'invalid-response', message: 'The server returned an unexpected report download.', status: response.status, requestId });
+      }
+      const chunks: ArrayBuffer[] = [];
+      let totalBytes = 0;
+      const reader = response.body?.getReader();
+      if (reader !== undefined) {
+        try {
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            totalBytes += part.value.byteLength;
+            if (totalBytes > 1024 * 1024) {
+              await reader.cancel();
+              throw new ApiClientError({ kind: 'invalid-response', message: 'The report download exceeds the allowed size.', status: response.status, requestId });
+            }
+            const copy = new Uint8Array(part.value.byteLength);
+            copy.set(part.value);
+            chunks.push(copy.buffer);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      if (totalBytes === 0) throw new ApiClientError({ kind: 'invalid-response', message: 'The report download was empty.', status: response.status, requestId });
+      const blob = new Blob(chunks, { type: contentType });
+      return { blob, filename: filenameMatch[1], contentType };
+    } catch (error) {
+      if (error instanceof ApiClientError) throw error;
+      if (timedOut) throw new ApiClientError({ kind: 'timeout', message: 'The request timed out. Please try again.', requestId });
+      if (signal?.aborted === true) throw new ApiClientError({ kind: 'aborted', message: 'The request was cancelled.', requestId });
+      throw new ApiClientError({ kind: 'network', message: 'Could not reach the server. Check your connection and try again.', requestId });
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onExternalAbort);
+    }
   };
 
   return {
@@ -528,6 +629,53 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}`,
         signal === undefined ? {} : { signal },
         isScanDetailResponse,
+      ),
+    getFindings: (
+      projectId: string,
+      scanId: string,
+      filters: { severity?: FindingSeverity; scanner?: ScanType; page?: number; pageSize?: number } = {},
+      signal?: AbortSignal,
+    ): Promise<FindingsPageResponse> => {
+      const query = new URLSearchParams();
+      if (filters.severity !== undefined) query.set('severity', filters.severity);
+      if (filters.scanner !== undefined) query.set('scanner', filters.scanner);
+      if (filters.page !== undefined) query.set('page', String(filters.page));
+      if (filters.pageSize !== undefined) query.set('pageSize', String(filters.pageSize));
+      const suffix = query.size === 0 ? '' : `?${query.toString()}`;
+      return authRequest<FindingsPageResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/findings${suffix}`,
+        signal === undefined ? {} : { signal },
+        isFindingsPageResponse,
+      );
+    },
+    getFinding: (projectId: string, scanId: string, findingId: string, signal?: AbortSignal): Promise<FindingDetailResponse> =>
+      authRequest<FindingDetailResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/findings/${encodeURIComponent(findingId)}`,
+        signal === undefined ? {} : { signal },
+        isFindingDetailResponse,
+      ),
+    createReport: (projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse> =>
+      authRequest<SecurityReportResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+          ...(signal === undefined ? {} : { signal }),
+        },
+        isSecurityReportResponse,
+      ),
+    getReport: (projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse> =>
+      authRequest<SecurityReportResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report`,
+        signal === undefined ? {} : { signal },
+        isSecurityReportResponse,
+      ),
+    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload> =>
+      requestReportDownload(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
+        format,
+        signal,
       ),
     getSources: (projectId: string, signal?: AbortSignal): Promise<SourceSnapshotResponse> =>
       authRequest<SourceSnapshotResponse>(

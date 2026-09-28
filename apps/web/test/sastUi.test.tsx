@@ -13,7 +13,7 @@
  * - findings: lazy "View findings", server-ordered rendering as TEXT
  *   (React escaping — a rule-1 command-injection payload in evidence is
  *   displayed, never executed), redacted secrets stay redacted, the
- *   severity filter is client-side over the SAME bounded response;
+ *   severity/scanner filters are server-side with bounded pagination;
  * - failure honesty: a detail load error renders verbatim with retry.
  */
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -22,6 +22,9 @@ import {
   ApiClientError,
 } from '../src/api/client.js';
 import {
+  type Finding,
+  type FindingDetailResponse,
+  type FindingsPageResponse,
   type ProjectResponse,
   type ScanDetailResponse,
   type ScanResponse,
@@ -34,7 +37,7 @@ import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
 const PROJECT: ProjectResponse = {
   project: {
-    id: 'prj_test-sast-0001',
+    id: 'prj_00000000-0000-4000-8000-000000000001',
     name: 'Sast Project',
     description: '',
     status: 'ACTIVE',
@@ -45,7 +48,7 @@ const PROJECT: ProjectResponse = {
 
 const SNAPSHOT: SourceSnapshotResponse = {
   snapshot: {
-    projectId: 'prj_test-sast-0001',
+    projectId: 'prj_00000000-0000-4000-8000-000000000001',
     fileCount: 2,
     totalBytes: 120,
     updatedAt: '2026-09-27T11:00:00.000Z',
@@ -69,12 +72,11 @@ const USAGE: UsageResponse = {
   quotaStatus: 'OK',
 };
 
-/** A COMPLETED SAST scan whose findings span severities and carry an XSS/
- * command-injection-shaped evidence string (displayed, never executed). */
+/** A COMPLETED SAST scan whose findings span severities and contain inert XSS-shaped evidence. */
 function completedScan(): { scan: ScanResponse['scan']; detail: ScanDetailResponse } {
   const scan = {
-    id: 'scan_completed_0001',
-    projectId: 'prj_test-sast-0001',
+    id: 'scan_00000000-0000-4000-8000-000000000001',
+    projectId: 'prj_00000000-0000-4000-8000-000000000001',
     scanType: 'SAST' as const,
     status: 'COMPLETED' as const,
     createdAt: '2026-09-27T11:01:00.000Z',
@@ -88,57 +90,29 @@ function completedScan(): { scan: ScanResponse['scan']; detail: ScanDetailRespon
       filesSkipped: 0,
     },
   };
-  const detail: ScanDetailResponse = {
-    scan: {
-      ...scan,
-      findings: [
-        {
-          id: 'fnd_aaaa',
-          scanId: scan.id,
-          ruleId: 'DG-SAST-001',
-          severity: 'HIGH',
-          title: 'Shell command built from untrusted input',
-          description: 'exec with interpolated input allows command injection.',
-          cwe: 'CWE-78',
-          file: 'cmd.ts',
-          line: 2,
-          column: 3,
-          evidence: "exec(`rm -rf ${dir}`)",
-          remediation: 'Avoid exec with interpolated input; use a safe API.',
-          fingerprint: 'fp1',
-        },
-        {
-          id: 'fnd_bbbb',
-          scanId: scan.id,
-          ruleId: 'DG-SAST-005',
-          severity: 'HIGH',
-          title: 'Hardcoded credential',
-          description: 'Credential literal in source.',
-          file: 'config.ts',
-          line: 4,
-          column: 1,
-          evidence: "const apiKey = '<redacted>';",
-          remediation: 'Move secrets to a secret manager.',
-          fingerprint: 'fp2',
-        },
-        {
-          id: 'fnd_cccc',
-          scanId: scan.id,
-          ruleId: 'DG-SAST-003',
-          severity: 'MEDIUM',
-          title: 'DangerouslySetInnerHTML with dynamic value',
-          description: 'Raw HTML sink.',
-          file: 'html.ts',
-          line: 6,
-          column: 11,
-          evidence: 'dangerouslySetInnerHTML={{ __html: html }}',
-          remediation: 'Render text or sanitize.',
-          fingerprint: 'fp3',
-        },
-      ],
+  const findings: Finding[] = [
+    {
+      id: `fnd_${'a'.repeat(24)}`, scanId: scan.id, scanner: 'SAST', projectId: scan.projectId,
+      ruleId: 'DG-SAST-001', severity: 'HIGH', title: 'Shell command built from untrusted input',
+      description: 'exec with interpolated input allows command injection.', cwe: 'CWE-78',
+      file: 'cmd.ts', line: 2, column: 3,
+      evidence: 'exec(`rm -rf ${dir}`) <img src=x onerror=alert(1)>',
+      remediation: 'Avoid exec with interpolated input; use a safe API.', fingerprint: '1'.repeat(64),
     },
-  };
-  return { scan, detail };
+    {
+      id: `fnd_${'b'.repeat(24)}`, scanId: scan.id, scanner: 'SAST', projectId: scan.projectId,
+      ruleId: 'DG-SAST-005', severity: 'HIGH', title: 'Hardcoded credential',
+      description: 'Credential literal in source.', file: 'config.ts', line: 4, column: 1,
+      evidence: "const apiKey = '<redacted>';", remediation: 'Move secrets to a secret manager.', fingerprint: '2'.repeat(64),
+    },
+    {
+      id: `fnd_${'c'.repeat(24)}`, scanId: scan.id, scanner: 'SAST', projectId: scan.projectId,
+      ruleId: 'DG-SAST-003', severity: 'MEDIUM', title: 'DangerouslySetInnerHTML with dynamic value',
+      description: 'Raw HTML sink.', file: 'html.ts', line: 6, column: 11,
+      evidence: 'dangerouslySetInnerHTML={{ __html: html }}', remediation: 'Render text or sanitize.', fingerprint: '3'.repeat(64),
+    },
+  ];
+  return { scan, detail: { scan: { ...scan, findings } } };
 }
 
 /** Every SAST-UI journey starts signed in (the default fixture is not). */
@@ -153,7 +127,7 @@ function signedInClient(overrides: Record<string, unknown> = {}): ApiClient {
 
 async function renderSastPage(overrides: Record<string, unknown> = {}): Promise<ApiClient> {
   const client = signedInClient(overrides);
-  await renderAt('/projects/prj_test-sast-0001', client);
+  await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
   return client;
 }
 
@@ -173,7 +147,7 @@ describe('SAST UI: source snapshot section', () => {
         });
       }),
     });
-    await renderAt('/projects/prj_test-sast-0001', client);
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
     expect(await screen.find('snapshot-empty')).toBeTruthy();
     expect(document.querySelector('[data-testid="source-upload-error"]')).toBeNull();
   });
@@ -209,7 +183,7 @@ describe('SAST UI: source snapshot section', () => {
       string,
       Array<{ path: string; content: string }>,
     ];
-    expect(projectId).toBe('prj_test-sast-0001');
+    expect(projectId).toBe('prj_00000000-0000-4000-8000-000000000001');
     expect(files).toEqual([
       { path: 'index.ts', content: 'const x = 1;\n' },
       { path: 'lib.ts', content: 'export const y = 2;\n' },
@@ -247,7 +221,7 @@ describe('SAST UI: source snapshot section', () => {
         project: { ...PROJECT.project, status: 'ARCHIVED' },
       })),
     });
-    await renderAt('/projects/prj_test-sast-0001', client);
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
     expect(await screen.find('archived-source-note')).toBeTruthy();
     expect(document.querySelector('[data-testid="source-file-input"]')).toBeNull();
   });
@@ -258,24 +232,45 @@ describe('SAST UI: real findings on completed scans', () => {
     vi.clearAllMocks();
   });
 
-  function clientWithCompletedScans(): ApiClient {
+  function clientWithCompletedScans(overrides: Record<string, unknown> = {}): ApiClient {
     const { scan, detail } = completedScan();
+    const findings = detail.scan.findings;
+    const getFindings = vi.fn(async (_projectId: string, _scanId: string, filters: { severity?: Finding['severity']; scanner?: 'SAST' | 'SECRETS' | 'SCA' | 'DAST'; page?: number; pageSize?: number } = {}): Promise<FindingsPageResponse> => {
+      const filtered = findings.filter((finding) =>
+        (filters.severity === undefined || finding.severity === filters.severity) &&
+        (filters.scanner === undefined || finding.scanner === filters.scanner));
+      const pageSize = filters.pageSize ?? 20;
+      const page = filters.page ?? 1;
+      return {
+        findings: filtered.slice((page - 1) * pageSize, page * pageSize),
+        page, pageSize, total: filtered.length, totalPages: Math.ceil(filtered.length / pageSize),
+        ...(filters.severity === undefined ? {} : { severity: filters.severity }),
+        ...(filters.scanner === undefined ? {} : { scanner: filters.scanner }),
+      };
+    });
+    const getFinding = vi.fn(async (_projectId: string, _scanId: string, findingId: string): Promise<FindingDetailResponse> => {
+      const finding = findings.find((candidate) => candidate.id === findingId);
+      if (finding === undefined) throw new Error('missing fixture finding');
+      return { project: PROJECT.project, scan, finding };
+    });
     return signedInClient({
       getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [scan] })),
       getUsage: vi.fn(async (): Promise<UsageResponse> => USAGE),
-      getScan: vi.fn(async (): Promise<ScanDetailResponse> => detail),
+      getFindings,
+      getFinding,
+      ...overrides,
     });
   }
 
   test('findings are lazy: nothing loads until "View findings", then renders in server order as text', async () => {
     const client = clientWithCompletedScans();
-    await renderAt('/projects/prj_test-sast-0001', client);
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
 
     // The list shows the completed scan and its summary…
     expect(await screen.find('scan-result')).toBeTruthy();
-    // …but no findings yet, and no detail request fired.
+    // …but no findings page request fires until the lazy view is opened.
     expect(document.querySelector('[data-testid="findings-list"]')).toBeNull();
-    expect((client.getScan as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(0);
+    expect((client.getFindings as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(0);
 
     const button = document.querySelector('[data-testid="view-findings"]') as HTMLElement;
     button.click();
@@ -292,24 +287,25 @@ describe('SAST UI: real findings on completed scans', () => {
     expect(first.querySelector('[data-testid="finding-location"]')?.textContent).toContain(
       'CWE-78',
     );
-    // Evidence is present as literal text (React escaping — never HTML).
-    expect(first.querySelector('[data-testid="finding-evidence"]')?.textContent).toBe(
-      'exec(`rm -rf ${dir}`)',
-    );
-    expect(first.querySelector('[data-testid="finding-remediation"]')?.textContent).toContain(
-      'safe API',
-    );
-    // Redacted secrets stay redacted.
+    expect((client.getFindings as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(1);
+    // Detail is fetched separately and untrusted evidence remains literal text.
+    (first.querySelector('[data-testid="finding-detail-button"]') as HTMLElement).click();
+    const detail = await screen.find('finding-detail');
+    expect(detail.querySelector('[data-testid="finding-evidence"]')?.textContent).toContain('exec(`rm -rf ${dir}`)');
+    expect(detail.querySelector('[data-testid="finding-evidence"]')?.textContent).toContain('<img src=x onerror=alert(1)>');
+    expect(detail.querySelector('img')).toBeNull();
+    expect(detail.querySelector('[onerror]')).toBeNull();
+    expect(detail.querySelector('[data-testid="finding-remediation"]')?.textContent).toContain('safe API');
+    // Redacted source material stays redacted in separate detail retrieval.
     const second = items[1] as HTMLElement;
-    expect(second.querySelector('[data-testid="finding-evidence"]')?.textContent).toContain(
-      '<redacted>',
-    );
+    (second.querySelector('[data-testid="finding-detail-button"]') as HTMLElement).click();
+    expect((await screen.find('finding-evidence')).textContent).toContain('<redacted>');
     expect(document.body.innerHTML).not.toContain('sk_live_abcdef123456');
   });
 
-  test('the severity filter is client-side over the same response (no extra request)', async () => {
+  test('the severity filter is validated and applied by a second bounded server request', async () => {
     const client = clientWithCompletedScans();
-    await renderAt('/projects/prj_test-sast-0001', client);
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
 
     (document.querySelector('[data-testid="view-findings"]') as HTMLElement).click();
     expect(await screen.findAll('finding-item')).toHaveLength(3);
@@ -327,8 +323,10 @@ describe('SAST UI: real findings on completed scans', () => {
         (item) => item.querySelector('[data-testid="finding-severity"]')?.textContent === 'HIGH',
       ),
     ).toBe(true);
-    // Same single detail request — filtering never re-fetches.
-    expect((client.getScan as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(1);
+    // Filters are sent to the server with a bounded page size.
+    const calls = (client.getFindings as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.[2]).toEqual({ page: 1, pageSize: 20, severity: 'HIGH' });
 
     // Filtering to a severity with no findings is honest about it.
     select.value = 'CRITICAL';
@@ -336,41 +334,30 @@ describe('SAST UI: real findings on completed scans', () => {
     expect(await screen.find('findings-empty')).toBeTruthy();
   });
 
-  test('a detail-load failure renders verbatim with a retry that can recover', async () => {
+  test('a findings-page failure renders verbatim with a retry that can recover', async () => {
     const { detail } = completedScan();
-    const getScan = vi
-      .fn<() => Promise<ScanDetailResponse>>()
+    const getFindings = vi
+      .fn<ApiClient['getFindings']>()
       .mockRejectedValueOnce(
-        new ApiClientError({
-          kind: 'http',
-          message: 'The scan is not available.',
-          status: 403,
-          requestId: 'test-403',
-        }),
+        new ApiClientError({ kind: 'http', message: 'The scan is not available.', status: 403, requestId: 'test-403' }),
       )
-      .mockResolvedValueOnce(detail);
-    const client = signedInClient({
-      getScans: vi.fn(async (): Promise<ScansResponse> => ({
-        scans: [completedScan().scan],
-      })),
-      getUsage: vi.fn(async (): Promise<UsageResponse> => USAGE),
-      getScan,
-    });
-    await renderAt('/projects/prj_test-sast-0001', client);
+      .mockResolvedValueOnce({ findings: detail.scan.findings, page: 1, pageSize: 20, total: 3, totalPages: 1 });
+    const client = clientWithCompletedScans({ getFindings });
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
 
     (document.querySelector('[data-testid="view-findings"]') as HTMLElement).click();
     const error = await screen.find('findings-error');
     expect(error.textContent).toBe('The scan is not available.');
 
-    // Retry recovers into the findings list.
-    const retryButton = (await screen.find('findings-retry')) as HTMLElement;
+    const retryButton = await screen.find('findings-retry');
     retryButton.click();
     expect(await screen.findAll('finding-item')).toHaveLength(3);
+    expect(getFindings).toHaveBeenCalledTimes(2);
   });
 
   test('the scan form states source-analysis and limited passive DAST boundaries', async () => {
     const client = clientWithCompletedScans();
-    await renderAt('/projects/prj_test-sast-0001', client);
+    await renderAt('/projects/prj_00000000-0000-4000-8000-000000000001', client);
     expect(await screen.find('scan-form')).toBeTruthy();
     const formText = (document.querySelector('[data-testid="scan-form"]') as HTMLElement)
       .textContent;

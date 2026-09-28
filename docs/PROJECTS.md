@@ -119,8 +119,8 @@ usage (Pump 5) stores — no database, no ORM, no queue infrastructure:
 - **Project CRUD never consumes a scan.** Creating, listing, viewing,
   editing, archiving and unarchiving projects do not touch the Pump 5
   usage service at all (tested: the usage view stays `used: 0` after a
-  full CRUD cycle). Only a future real scan execution will call
-  `UsageService.consumeScan()`.
+  full CRUD cycle). Real scan creation uses `UsageService.consumeScan()`
+  through the existing server-authoritative scan lifecycle.
 - **No invented plan limits.** Projects work identically for FREE and
   PRO. `UserType` does not determine project entitlements; ADMIN is not
   automatically PRO; creating projects grants nothing. Pump 4
@@ -156,31 +156,33 @@ shell, no second client:
 
 Scan jobs now exist: `POST/GET /api/v1/projects/:projectId/scans` +
 `GET …/scans/:scanId`. Creating a scan consumes the account's scan
-allowance EXACTLY once, atomically with the durable job append (the
+allowance exactly once, atomically with the durable job append (the
 Pump 5 UsageService stays the single quota authority); ACTIVE projects
 only (archived → 409 PROJECT_ARCHIVED, history stays readable); the
-client may supply only the scan type (+ an idempotency key). No engine
-exists yet, so scans fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED —
-never a fabricated result. See `docs/SCANS.md`.
+client may supply only the scan type (+ an idempotency key). Existing
+SAST, SCA/SBOM, Secrets and bounded passive DAST engines use this same
+lifecycle. See `docs/SCANS.md`.
 
-## Future scan relationship (documented, not implemented)
+## Existing findings and report relationship
 
 ```
-Authenticated account (ownership source — never client-supplied)
-  └── Project (Pump 6 — the container)
+Authenticated account (server-derived ownership)
+  └── Project
         ├── source snapshot (SAST/SCA/SECRETS)
-        ├── optional owner-configured DAST target (Pump 11)
-        └── Scan / Job (existing UsageService quota + scan lifecycle)
-              └── engine findings / dependency inventory / bounded observations
-                    └── future Reports / remediation / audit evidence
+        ├── optional owner-configured DAST target
+        └── Scan / Job (existing quota + lifecycle)
+              ├── findings (SAST/Secrets/DAST) and bounded DAST observations
+              ├── SCA inventory, CycloneDX-subset SBOM, honest intel state
+              └── one persisted report per completed scan (JSON / Markdown)
 ```
 
-Every future child object must derive ownership from the account →
-project chain and re-verify it server-side on every request — a client
-claiming a `projectId` (or `ownerId`) is never authority. There are no
-placeholder scan records and no relational schemas for future systems
-today; the boundary is simply clean: `projectId` is a stable, opaque,
-server-validated reference.
+Every child route resolves the caller's own project on the server before
+reading findings or reports; a client-supplied `projectId`, `ownerId`,
+role, UserType or plan is never authority. Findings and reports link
+back to the stored project/scan context. Reports do not consume scan
+quota. There are no placeholder scan records or relational schemas;
+JSON stores remain the current durable persistence implementation. See
+`docs/REPORTS.md`.
 
 ## DAST target configuration (Pump 11)
 
@@ -194,8 +196,8 @@ not browser DAST; see `docs/DAST.md`.
 
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-Reports, remediation history, browser/full DAST and active testing,
-per-plan project limits, project sharing/collaboration, organization
+Multi-scan reports, PDF/signatures, remediation history, browser/full
+DAST and active testing, per-plan project limits, project sharing/collaboration, organization
 accounts, project deletion (hard delete is deliberately absent —
 ARCHIVED is the lifecycle end-state until an explicit, authorized
 deletion design exists), admin/operator project visibility,

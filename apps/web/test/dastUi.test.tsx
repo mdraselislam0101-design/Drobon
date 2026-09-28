@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
-import type { Project, ProjectResponse, Scan, ScanDetailResponse, ScansResponse } from '@drobon/shared';
+import type { FindingDetailResponse, FindingsPageResponse, Project, ProjectResponse, Scan, ScanDetailResponse, ScansResponse } from '@drobon/shared';
 import type { ApiClient } from '../src/api/client.js';
 import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
@@ -109,18 +109,27 @@ describe('passive DAST project UI', () => {
         },
       },
     };
+    const finding = detail.scan.findings?.[0];
+    if (finding === undefined) throw new Error('missing DAST fixture finding');
     const getProject = vi.fn(async () => ({ project: project({ dastTargetUrl: TARGET }) }));
     const getScans = vi.fn(async () => scans);
+    const getFindings = vi.fn(async (): Promise<FindingsPageResponse> => ({
+      findings: [finding], page: 1, pageSize: 20, total: 1, totalPages: 1,
+    }));
+    const getFinding = vi.fn(async (): Promise<FindingDetailResponse> => ({ project: project({ dastTargetUrl: TARGET }), scan: detail.scan, finding }));
     const getScan = vi.fn(async () => detail);
-    const client = signedInClient({ getProject, getScans, getScan });
+    const client = signedInClient({ getProject, getScans, getScan, getFindings, getFinding });
     await renderAt(`/projects/${PROJECT_ID}`, client);
 
     expect(await screen.findByTestId('scan-result')).toHaveTextContent('Requests: 1');
     await userEvent.click(await screen.findByTestId('view-findings'));
     expect(await screen.findByTestId('dast-observations')).toBeInTheDocument();
     expect(screen.getByTestId('dast-observation')).toHaveTextContent('GET · HTTP 200');
-    expect(screen.getByTestId('finding-evidence')).toHaveTextContent('HTTP 200 response had no X-Frame-Options header.');
+    await userEvent.click(screen.getByTestId('finding-detail-button'));
+    expect(await screen.findByTestId('finding-evidence')).toHaveTextContent('HTTP 200 response had no X-Frame-Options header.');
     expect(screen.getByText(/No browser, JavaScript, authentication, or crawling was used/)).toBeInTheDocument();
+    expect(getFindings).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID, { page: 1, pageSize: 20 });
     expect(getScan).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID);
+    expect(getFinding).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID, finding.id);
   });
 });

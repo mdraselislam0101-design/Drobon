@@ -40,7 +40,7 @@ The project UI makes target configuration explicit, disables the DAST option unt
 
 ## Not implemented
 
-Browser/DOM analysis, JavaScript execution, authenticated crawling, link discovery, unrestricted spidering, form submission, injection, fuzzing, active exploit checks, port scanning, TLS-certificate grading, vulnerability-database matching, CVSS scoring, report export, scheduling, and out-of-process DAST workers are **NOT_IMPLEMENTED**. SCA vulnerability data remains a separate workstream; this pump adds no security dataset or import.
+Browser/DOM analysis, JavaScript execution, authenticated crawling, link discovery, unrestricted spidering, form submission, injection, fuzzing, active exploit checks, port scanning, TLS-certificate grading, vulnerability-database matching, CVSS scoring, scheduling, and out-of-process DAST workers are **NOT_IMPLEMENTED**. Pump 12 reports can include the existing bounded DAST result and findings; they do not add DAST coverage. SCA vulnerability data remains unavailable without a loaded provider dataset; this pump adds no security dataset or import.
 
 ## Verification boundary
 

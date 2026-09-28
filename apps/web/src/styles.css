@@ -618,3 +618,38 @@ code {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.security-overview,
+.report-panel,
+.finding-detail,
+.dast-observations {
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: rgba(110, 118, 129, 0.05);
+}
+
+.finding-detail pre,
+.dast-observations code,
+.report-panel code {
+  overflow-wrap: anywhere;
+}
+
+.finding-detail pre {
+  white-space: pre-wrap;
+  padding: 0.7rem;
+  border-radius: 6px;
+  background: rgba(110, 118, 129, 0.15);
+}
+
+.report-coverage {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  color: var(--muted, #656d76);
+}
+
+.report-panel .hero-actions,
+.findings .hero-actions {
+  flex-wrap: wrap;
+}

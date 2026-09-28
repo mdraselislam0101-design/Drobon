@@ -126,8 +126,11 @@ snapshot (owner-checked) ─→ discovery (path policy, caps, binary skip)
 - Findings persist **only on COMPLETED** scans (the store rejects
   findings on any other state — a stored cross-scan finding is
   corruption and refuses to load).
-- The scan detail route (`GET .../scans/:scanId`) is the ONLY findings
-  read surface; the list route stays lean (summaries only).
+- The scan detail route carries the bounded full result; Pump 12 adds
+  project/scan-scoped, server-filtered findings pages and per-finding
+  detail routes without making the scan list unbounded. List responses
+  remain lean (summaries only). New source findings persist explicit
+  project context, with legacy rows still linked through their scan ID.
 
 ## Quota, idempotency, lifecycle
 
@@ -144,16 +147,18 @@ its monthly allowance on a scan that could only fail
 
 The project detail page gained a **Source snapshot** section (upload →
 metadata, honest empty state, archived projects cannot replace) and
-per-completed-SAST-scan **View findings** (lazy; server-ordered;
-severity filter is client-side over the same bounded response).
-Evidence renders as literal text (React escaping) — a command-
-injection payload in evidence is displayed, never executed, and
-redacted secrets stay redacted in the UI.
+per-completed-scan **View findings** (lazy; server-side severity/scanner
+filters and bounded pagination), safe per-finding detail, a project
+security overview, and persisted report controls. Evidence renders as
+literal text (React escaping) — an injection payload is displayed, never
+executed, and redacted secrets stay redacted in the UI. SCA advisory
+records remain distinct from the common Finding contract.
 
 ## What this is NOT
 
 - Not a dataset product: no CVE/NVD/GHSA/OSV/KEV/EPSS data — the
   dataset lock holds (rules are hand-written heuristics, not feeds).
 - Not a sandbox escape risk: analysis-only, bounded, no execution.
-- Not a secrets *scanner*: DG-SAST-005 finds hardcoded credential
-  *patterns*; a dedicated SECRETS engine is a future pump.
+- SAST's DG-SAST-005 remains a lexical hardcoded-credential heuristic;
+  the separate SECRETS engine is implemented with its own rules and
+  mandatory redaction (see `docs/SECRETS.md`).

@@ -19,7 +19,7 @@ contract is unchanged:
   1.5-subset SBOM and an honest assessment state — analysis only,
   manifests are never installed or executed. Without a loaded
   vulnerability-intelligence dataset the assessment is honestly
-  `NOT_ASSESSED` with zero advisories (the dataset lock holds); the
+  `NOT_ASSESSED` with an empty advisory collection when no provider data is loaded (not a zero-vulnerability verdict); the
   inventory and SBOM are still real. The SCA payload rides the same
   detail route as SAST findings (`scan.sca`, detail-only).
 - `SECRETS` scans complete with genuine, deterministic findings
@@ -216,15 +216,18 @@ The project detail page carries a **Source snapshot** section and a
   shown verbatim, archived projects cannot replace the snapshot.
 - **Scans:** server-ordered scan list with honest status pills, a
   scan-type selector + request button (ACTIVE projects only), the
-  quota/entitlement hint from the server's usage view, honest
-  `FAILED/SCAN_ENGINE_NOT_IMPLEMENTED` rendering for engine-less types
-  (never a fake completion), and — for COMPLETED SAST scans — a lazy
-  **View findings** view: server-ordered findings with severity,
-  rule, location, redacted evidence and remediation, all rendered as
-  text (React escaping — an injection payload in evidence is
-  displayed, never executed), plus a client-side severity filter that
-  never triggers a second request. Fail-closed loading errors with
-  retry. No scan state in localStorage/sessionStorage.
+  quota/entitlement hint from the server's usage view, and honest
+  failure rendering (never a fake completion). Completed scans expose
+  bounded, server-filtered findings pages and project/scan-scoped detail
+  with severity, scanner, location/target, redacted evidence and
+  remediation; values render as text. SCA inventory/advisory state stays
+  in its distinct view. The project overview summarizes persisted
+  finding totals, severity counts and scanner run counts while warning
+  that cross-scan counts are not deduplicated. Each completed scan can
+  create/retrieve its one persisted report and download JSON or escaped
+  Markdown. See `docs/REPORTS.md` for bounds and honesty constraints.
+  Fail-closed loading errors with retry. No scan state in
+  localStorage/sessionStorage.
 
 ## Error contract
 
@@ -238,11 +241,12 @@ above, not HTTP codes.
 
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-SAST/SCA/SECRETS/DAST engines themselves (parsing, taint analysis,
-dependency resolution, secret detection, active DAST), vulnerability
-datasets and matching, findings/records per finding, reports, SBOM,
-remediation history, scan cancellation (deliberately absent — a
-half-implemented cancel would be worse than none), per-scan artifacts
-storage, scan scheduling/recurring scans, out-of-process engine
-workers, project-level usage analytics, admin/operator scan
-visibility.
+Browser/full DAST, active testing, vulnerability datasets and matching,
+project-wide/multi-scan reports, PDF/signatures, remediation history,
+scan cancellation (deliberately absent — a half-implemented cancel
+would be worse than none), scan scheduling/recurring scans,
+out-of-process engine workers, project-level usage analytics,
+admin/operator scan visibility, and database-backed persistence remain
+NOT_IMPLEMENTED. Findings, SBOM/inventory and bounded single-scan JSON /
+Markdown reports are implemented in the existing scan lifecycle and
+store; see `docs/REPORTS.md`.

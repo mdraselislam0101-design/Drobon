@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   MAX_FINDINGS_PER_SCAN,
   type Finding,
@@ -11,6 +10,7 @@ import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
 import { evaluateDastObservation, type DastRuleMatch } from './rules.js';
 import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type ResolvedDastTarget } from './target.js';
+import { findingFingerprint } from '../findingIdentity.js';
 
 export const DAST_MAX_REQUESTS = 3;
 export const DAST_MAX_REDIRECTS = 2;
@@ -133,12 +133,11 @@ function buildFinding(
   observedAt: string,
 ): Finding {
   const contentType = safeContentType(response);
-  const fingerprint = createHash('sha256')
-    .update(
-      `${rule.ruleId}\n${targetUrl}\n${endpoint}\nGET\n${response.status}\n${rule.evidence}`,
-      'utf8',
-    )
-    .digest('hex');
+  const fingerprint = findingFingerprint({
+    scanner: 'DAST', projectId: record.projectId, ruleId: rule.ruleId,
+    location: endpoint, evidence: rule.evidence,
+    context: [targetUrl, 'GET', String(response.status)],
+  });
   return {
     id: `fnd_${fingerprint.slice(0, 24)}`,
     scanId: record.id,
