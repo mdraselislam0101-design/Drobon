@@ -95,7 +95,7 @@ export function Layout({
           <span>
             {appName} · v{appVersion}
           </span>
-          <span className="footer-note">Foundation build — Pump 2</span>
+          <span className="footer-note">Restricted operations foundation · Pump 16</span>
         </div>
       </footer>
     </div>
