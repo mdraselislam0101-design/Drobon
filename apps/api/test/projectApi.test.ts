@@ -795,18 +795,71 @@ describe('tampering and claims never change ownership', () => {
         );
         expect(res.status, JSON.stringify(headers)).toBe(403);
       }
-      // Query-parameter ownership is equally inert.
+      // Query-parameter ownership is equally inert — and since Pump 4
+      // fail-closed: project routes define no query parameters, so ANY
+      // query string is rejected uniformly (never silently ignored).
       const query = await fetch(
         `${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}?ownerId=usr_owner&userId=usr_owner`,
         { headers: { cookie: attackerCookie } },
       );
-      expect(query.status).toBe(403);
+      expect(query.status).toBe(422);
       // And creation with a claimed ownerId still 422s (never honored).
       const inject = await createProject(server, attackerCookie, {
         name: 'stolen',
         ownerId: 'usr_owner',
       });
       expect(inject.res.status).toBe(422);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe('strict query rejection on every project route (Pump 4)', () => {
+  test('any query string is a fail-closed 422 with no side effect', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const cookie = await login(server, 'owner@example.test');
+      const { body } = await createProject(server, cookie, { name: 'query-target' });
+      const projectId = projectOf(body).id;
+      const base = `${server.baseUrl}/api/v1/projects`;
+      const encId = encodeURIComponent(projectId);
+      const cases: Array<{ method: string; url: string; body?: unknown }> = [
+        { method: 'POST', url: `${base}?ownerId=usr_x`, body: { name: 'never created' } },
+        { method: 'GET', url: `${base}?status=ARCHIVED` },
+        { method: 'GET', url: `${base}/${encId}?include=all` },
+        { method: 'PATCH', url: `${base}/${encId}?ownerId=usr_x`, body: { name: 'never applied' } },
+        { method: 'POST', url: `${base}/${encId}/archive?force=true` },
+        { method: 'POST', url: `${base}/${encId}/unarchive?force=true` },
+        { method: 'PUT', url: `${base}/${encId}/dast-target?scope=all`, body: { targetUrl: 'https://example.invalid' } },
+        { method: 'DELETE', url: `${base}/${encId}/dast-target?confirm=yes` },
+      ];
+      for (const entry of cases) {
+        const res = await fetch(entry.url, {
+          method: entry.method,
+          headers: {
+            cookie,
+            ...(entry.body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(entry.body === undefined ? {} : { body: JSON.stringify(entry.body) }),
+        });
+        expect(res.status, `${entry.method} ${entry.url}`).toBe(422);
+        const json = (await readJson(res)) as { error: { code: string; details?: unknown } };
+        expect(json.error.code).toBe('VALIDATION_ERROR');
+      }
+      // No side effects happened: project unchanged, still ACTIVE, one project total.
+      const list = await listProjects(server, cookie);
+      expect(list.res.status).toBe(200);
+      expect((list.body as { data: { projects: unknown[] } }).data.projects).toHaveLength(1);
+      const after = await getProject(server, cookie, projectId);
+      expect(projectOf(after.body).name).toBe('query-target');
+      expect(projectOf(after.body).status).toBe('ACTIVE');
+      // Clean requests on the same routes keep working.
+      const patched = await patchProject(server, cookie, projectId, { name: 'query-target-2' });
+      expect(patched.res.status).toBe(200);
+      expect(projectOf(patched.body).name).toBe('query-target-2');
     } finally {
       await server.stop();
     }

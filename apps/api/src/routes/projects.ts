@@ -163,6 +163,12 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        // Query hardening (Pump 4): project routes define no query
+        // parameters at all — any query string is fail-closed (422,
+        // uniform for owned/foreign/unknown projects; no oracle added,
+        // and tampering never silently ignored). The exact same posture
+        // applied to scan/source routes in Pump 3.
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = createSchema.parse(raw);
         if (!parsed.ok) {
@@ -201,11 +207,12 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         // Server-side scoping: only the caller's own projects, never
         // frontend filtering. Ordering is the documented shared contract
         // (updatedAt DESC, then id ASC) and is computed in the store.
@@ -220,11 +227,12 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const record = await ownProjectOr403(ctx.params['projectId'], actor.id);
         sendProject(res, ctx, record);
       },
@@ -238,6 +246,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const record = await ownProjectOr403(ctx.params['projectId'], actor.id);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = updateSchema.parse(raw);
@@ -291,6 +300,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
+        v.rejectUnexpectedQuery(req);
         const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
         if (project.status === 'ARCHIVED') {
           throw projectArchived();
@@ -320,9 +330,10 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       method: 'DELETE',
       path: '/api/v1/projects/:projectId/dast-target',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
+        v.rejectUnexpectedQuery(req);
         const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
         if (project.status === 'ARCHIVED') {
           throw projectArchived();
@@ -337,11 +348,12 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/projects/:projectId/archive',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const record = await ownProjectOr403(ctx.params['projectId'], actor.id);
         // Explicit lifecycle operation — the ONLY way status changes.
         // Idempotent: archiving an archived project is a 200 no-op.
@@ -357,11 +369,12 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/projects/:projectId/unarchive',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const record = await ownProjectOr403(ctx.params['projectId'], actor.id);
         const updated = await projects.setStatus(record.id, 'ACTIVE');
         if (updated === undefined) {
