@@ -23,11 +23,11 @@ jobs:
       contents: read
     steps:
       - name: Checkout source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version-file: .nvmrc
       - name: Install exact lockfile without lifecycle scripts
@@ -45,11 +45,11 @@ jobs:
       contents: read
     steps:
       - name: Checkout verified source revision
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version-file: .nvmrc
       - name: Install exact lockfile without lifecycle scripts
@@ -59,7 +59,7 @@ jobs:
         env:
           DROBON_VERIFY_RESULT: ${{ needs.verify.result }}
       - name: Upload build and verification bundle (artifact only)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: drobon-release-evidence-${{ github.sha }}
           path: artifacts/release-evidence
