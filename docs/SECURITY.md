@@ -291,11 +291,17 @@ test in `apps/api/test/validate.test.ts`.
 
 | Control | Status | Evidence |
 | ------- | ------ | -------- |
-| Committed-secret scan (literals, key blocks, `.env.example` naming) with fake-fixture rule + self-test | VERIFIED | `scripts/check-no-secrets.mjs`, `verify` pipeline |
-| Scope gates: no DB/ORM/dataset/queue-broker/shell dependencies, filenames or imports | VERIFIED | `scripts/check-boundaries.mjs`, static tests |
-| Dependency audit (fails on high/critical) | VERIFIED | `npm run audit` in `verify` |
-| Pinned installs (`package-lock.json`), engine pinning (`.nvmrc`, `engines`, `engine-strict`) | IMPLEMENTED | Repo files |
-| `.env` gitignored; `.env.example` documents every variable and defines no secrets | VERIFIED | `.gitignore`, secret scan |
+| Secret-content scan plus self-test; committed credential/environment/key-file inventory rejects `.env` variants, private-key/container formats and known credential filenames (only `.env.example` is allowed) | VERIFIED | `scripts/check-no-secrets.mjs`, `scripts/check-repo-integrity.mjs`, `npm run verify` |
+| Scope gates reject DB/ORM/dataset/queue-broker/shell dependencies, imports and source filenames; repository inventory also rejects tracked vulnerability catalog/data filenames | VERIFIED | `scripts/check-boundaries.mjs`, `scripts/check-repo-integrity.mjs`, static tests |
+| Dependency audit (high-and-above threshold; unavailable registry is a failure, not a pass) | VERIFIED | `npm run audit` in `verify` |
+| npm lock/workspace dependency declarations are compared; lockfile registry credentials are rejected | VERIFIED | `scripts/check-repo-integrity.mjs`; `npm ci` also enforces lock consistency |
+| Pinned installs (`package-lock.json`), Node/npm engine pinning (`.nvmrc`, `engines`, `engine-strict`) | IMPLEMENTED | Repo files; CI installs with `npm ci --ignore-scripts` |
+| `.env` gitignored; `.env.example` documents configuration without real secrets | VERIFIED | `.gitignore`, secret scan and repository inventory |
+| GitHub Actions runs on Arena/main pushes and ordinary PRs, read-only `contents`, full-SHA-pinned actions, no secrets/OIDC/write permissions, no `pull_request_target`, and no deployment | IMPLEMENTED | `.github/workflows/ci.yml`, `scripts/check-repo-integrity.mjs` |
+| Main/branch push artifact evidence is emitted only after verify succeeds; includes exact source SHA/version, lock digest, two matching clean builds and SHA-256 file checksums | IMPLEMENTED | `scripts/release-evidence.mjs`, workflow artifact (14-day retention) |
+| Artifact signing, signed attestations/provenance, GitHub Release/tag creation, deployment and branch-protection settings | NOT_IMPLEMENTED | No signatures, promotion, deployment, or repository-setting mutation is performed |
+
+The repository check uses Git's tracked + non-ignored untracked inventory, so a staged/committed credential file is rejected even if the content matcher would otherwise skip a local environment file. The lockfile has targeted credential-URL/token checks because the general source secret scan intentionally avoids high-entropy package integrity hashes. CI runs the exact `npm run verify` gates after lockfile installation with lifecycle scripts disabled; `npm audit` is a dependency-advisory check only and does not import a vulnerability catalog into SCA or runtime. See `docs/CI_RELEASE.md` for triggers, evidence contents and limits. Repository branch-protection/required-check settings remain an owner-managed GitHub setting and are not claimed as enforced by workflow YAML.
 
 ## Production hosting notes (for later)
 

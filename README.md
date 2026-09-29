@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 22: cumulative security foundation, four UserType workspaces, and structured project-bound assessments**. The common Developer, Student, Security Professional and Pentester presentations reuse existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, restricted read-only platform operations, and structured bounded assessments linked to existing scans/findings/reports.
+Cybersecurity application — **Pump 22: cumulative security foundation, four UserType workspaces, and structured project-bound assessments**. Separate from the UserType workstream Pumps 17–22, **Main App Pump 17** provides least-privilege CI, fail-closed repository/security gates, and unsigned, checksum-verified build evidence; it does not deploy or load vulnerability catalogs. The common Developer, Student, Security Professional and Pentester presentations reuse existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, restricted read-only platform operations, and structured bounded assessments linked to existing scans/findings/reports.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -26,7 +26,7 @@ Drobon/
 │   └── worker/       # Background worker (in-memory execution)
 ├── packages/
 │   └── shared/       # Contracts: API envelopes, errors, jobs, auth, config
-├── scripts/          # dev runner, secret scan, scope gates, verifier
+├── scripts/          # dev runner, secret/repository scans, verifier, release evidence
 └── docs/             # Architecture, development, testing, security, auth, builds
 ```
 
@@ -59,7 +59,9 @@ by the API). Copy `.env.example` to `.env` to override ports, CORS or limits.
 | `npm run audit`          | `npm audit` (fails on high/critical)                                      |
 | `npm run check:secrets`  | Scan for committed secrets / key blocks                                   |
 | `npm run check:boundaries` | Enforce scope gates (no DB, dataset, shell)                             |
-| `npm run verify`         | Full regression pipeline (everything above, in order)                     |
+| `npm run check:repo-integrity` | Check workspace/lock consistency, credential/data files and CI policy |
+| `npm run verify`         | Full fail-closed regression, security, test and build pipeline             |
+| CI release-evidence job  | On verified non-PR runs, rebuild twice and upload unsigned checksums      |
 
 Per-workspace commands work too, e.g. `npm run test --workspace @drobon/api`.
 Note: API/Worker/Web consume the **built** `@drobon/shared` package, so the
@@ -89,6 +91,7 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
+- `docs/CI_RELEASE.md` — CI gates, secret/dataset boundaries, branch flow, release evidence and limitations
 
 ## Scope (Pump 22, cumulative)
 

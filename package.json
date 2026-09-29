@@ -25,6 +25,9 @@
     "audit": "npm audit --audit-level=high",
     "check:secrets": "node scripts/check-no-secrets.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:repo-integrity": "node scripts/check-repo-integrity.mjs",
+    "check:release-evidence": "node scripts/release-evidence.mjs --self-test",
+    "release:evidence": "node scripts/release-evidence.mjs",
     "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {

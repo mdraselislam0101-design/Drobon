@@ -21,22 +21,29 @@ npm run preview       # build + vite preview of the web bundle (:4173)
 
 ## The `verify` pipeline
 
-`npm run verify` runs the full regression in dependency order and prints a
-per-step summary. Every step must PASS:
+`npm run verify` is the authoritative full regression pipeline in dependency
+order and prints a per-step summary. Every one of its eleven gates must PASS:
 
-1. `check:boundaries` — scope gates (no DB/dataset/shell).
-2. Secret-matcher `--self-test` — proves the scanner catches/ignores the
-   right shapes.
-3. `check:secrets` on sources.
-4. `typecheck` — strict `tsc --noEmit` per workspace.
-5. `lint` — ESLint over the repo.
-6. `test` — shared → api → worker → web (includes the production
-   build+preview test).
-7. `build` — all production builds.
-8. `check:secrets` again — now including `dist/` output.
-9. `audit` — `npm audit --audit-level=high`.
+1. `check:boundaries` — no database/dataset/shell imports or dependencies.
+2. `check-repo-integrity` — npm lock/workspace consistency, credential and
+   dataset file inventory, registry-token checks, generated-output exclusion,
+   and least-privilege/pinned-action CI policy.
+3. Release-evidence self-test — digest determinism and artifact mismatch
+   detection.
+4. Secret-matcher `--self-test`.
+5. `check:secrets` on sources/configuration.
+6. `typecheck` — strict TypeScript checks per workspace.
+7. `lint` — ESLint over the repo.
+8. `test` — complete shared → API → worker → Web regression suite (includes
+   the existing production-preview test).
+9. `build` — shared, API, worker, and Web production builds.
+10. `check:secrets` again — including generated build output.
+11. `audit` — `npm audit --audit-level=high`; registry/network failures fail
+    closed instead of being downgraded to warnings.
 
-Exit code is `0` on PASS, `1` on any FAIL.
+Exit code is `0` only when all required gates pass, otherwise `1`. GitHub
+Actions runs this exact command after `npm ci --ignore-scripts`; details and
+release-evidence limits are in `docs/CI_RELEASE.md`.
 
 ## Verification evidence (Pump 1)
 
@@ -1041,3 +1048,17 @@ check results are recorded below; this is not a separate E2E run.
 - Route/proxy smoke verified; browser E2E runner unavailable. The local HTTP journey, Vite SPA fallback and React component tests do not constitute browser E2E. The live preview process is available for inspection while this session remains active.
 - Product boundaries remain: assessment scope is metadata, not project/target/DAST permission; a target declaration is only `USER_DECLARED`/`UNVERIFIED`, never independently verified; existing passive DAST policy and FREE/PRO entitlement/quota are unchanged. No real/bundled vulnerability dataset, PostgreSQL, arbitrary target scan, active exploitation, or provider-backed Git/CI/course/grade integration was added.
 - This is test/route evidence, not a security certification or production readiness assessment. Commit and remote SHA verification are reported separately after repository synchronization.
+
+## Verification evidence (MAIN APP Pump 17 — CI/CD and engineering security)
+
+This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry above and UserType Pumps 18–22. It adds release/verification automation without replacing product or scanner functionality.
+
+- Date: 2026-09-29.
+- Clean locked install: `npm ci --ignore-scripts --no-audit --no-fund` **PASS** (341 packages installed). The separate full `npm audit --audit-level=high` gate remains authoritative.
+- `npm run verify`: **PASS**, all 11 required gates: scope boundaries; repository/lock/workspace/credential/dataset/CI integrity; release-evidence self-test; secret-matcher self-test; source secret scan; strict typechecks; ESLint; complete workspace tests; shared/API/worker/Web production builds; post-build secret scan; npm audit. No gate is warn-and-pass.
+- Tests: **1,131 passed, 0 failed across 106 files** — shared 175 (18 files), API 691 (60 files), worker 28 (3 files), Web 237 (25 files). The API suite includes the four controlled UserType account journeys and regressions for auth/ownership, plan/quota/device limits, all scan engines, findings/remediation, reports, assistant, payments, admin/operations and assessments. These are local synthetic-fixture tests; they do not contact a public target or use production credentials.
+- Both secret scans passed over 513 files (sources and current build outputs). All four production builds passed. `npm audit --audit-level=high`: **0 vulnerabilities**. The repository-integrity and release-evidence policy self-tests passed; the CI YAML parsed locally and the static checks confirmed full-SHA action pins, read-only permissions, no privileged PR trigger/secrets/deployment, and verification-before-artifact ordering.
+- Release evidence is generated only by the post-verification GitHub Actions job: it binds the manifest to the exact workflow SHA and version, hashes the lockfile and every payload file, compares two clean builds, and uploads an unsigned, 14-day artifact. No signing, certificate, signed attestation/provenance, tag/release creation, or deployment is claimed. The remote workflow result/artifact is reported separately after the push.
+- Product security boundaries are unchanged: no vulnerability catalog/data is imported, downloaded, bundled or required. SCA remains `NO_DATA_LOADED` / `NOT_ASSESSED`; UserType is classification only; existing auth, ownership, entitlement, quota, rate-limit, payment, admin, SSRF/DAST and legal-authorization constraints remain in force.
+- Browser E2E is **not claimed**: the Web suite covers component/route behavior and its production-preview test, but no real browser automation runner is configured. Local HTTP/API integration E2E and manual preview/API smoke are reported separately.
+- GitHub branch protection/required checks remain owner-managed settings; workflow YAML does not assert that those external settings are active. Production deployment remains deferred.

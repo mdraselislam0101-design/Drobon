@@ -72,6 +72,17 @@ the environment, don't patch the validator.
   (`./config.js`) even though the file is `.ts`. The Web uses bundler
   resolution (extensionless).
 
+## CI and release evidence
+
+GitHub Actions runs on Arena/main pushes and ordinary PRs to `main` using
+Node 22 from `.nvmrc`, `npm ci --ignore-scripts`, and the authoritative
+`npm run verify`. The workflow is read-only, uses full-SHA-pinned actions,
+receives no application or deployment secrets, and does not deploy. After a
+successful non-PR run it rebuilds twice and uploads source/build SHA-256
+release evidence for 14 days. See `docs/CI_RELEASE.md` for exact gates,
+limitations, and the manual version/release flow. Local development setup can
+continue to use `npm ci` as above.
+
 ## Conventions
 
 - TypeScript strict everywhere; no `any` (use `unknown` + narrowing);
