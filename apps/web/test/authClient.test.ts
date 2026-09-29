@@ -48,6 +48,18 @@ describe('auth API client', () => {
     });
   });
 
+  test('postRegister sends an optional UserType without adding role or plan controls', async () => {
+    const developer = { ...TEST_USER, userType: 'DEVELOPER' as const };
+    const fetchImpl: FetchImpl = vi.fn(async () => jsonResponse(envelope({ user: developer })));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    const result = await client.postRegister('dev@example.test', 'pw-test-1', 'DEVELOPER');
+    expect(result.user.userType).toBe('DEVELOPER');
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ email: 'dev@example.test', password: 'pw-test-1', userType: 'DEVELOPER' });
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('role');
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('plan');
+  });
+
   test('postLogin and postLogout hit the right endpoints', async () => {
     const fetchImpl: FetchImpl = vi.fn(async (url: unknown) => {
       if (String(url).includes('/login')) {

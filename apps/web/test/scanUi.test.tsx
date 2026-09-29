@@ -13,8 +13,8 @@ import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
  *   quota/entitlement from the usage view, never local state;
  * - scan requests send ONLY the scan type + an idempotency key — no
  *   status, no ownership, no fabricated fields;
- * - NO scanner engine exists yet: FAILED/SCAN_ENGINE_NOT_IMPLEMENTED is
- *   shown honestly, never a fake "completed" state, never findings;
+ * - completed passive DAST shows server-observed response evidence only;
+ *   failed scans remain honest and never become fake findings;
  * - archived projects show no scan form (the server enforces the rule;
  *   historical scans stay listed);
  * - all scan text renders as TEXT (XSS payloads never become markup);
@@ -71,8 +71,8 @@ describe('Security scans section', () => {
         startedAt: '2026-09-28T10:02:00.000Z',
         completedAt: '2026-09-28T10:02:01.000Z',
         updatedAt: '2026-09-28T10:02:01.000Z',
-        failureCode: 'SCAN_ENGINE_NOT_IMPLEMENTED',
-        failureMessage: 'The DAST scanner engine is not implemented yet.',
+        failureCode: 'DAST_TARGET_BLOCKED',
+        failureMessage: 'The configured target was blocked before any request was made.',
       }),
       scan({
         id: 'scan_00000000-0000-4000-8000-000000000002',
@@ -95,9 +95,9 @@ describe('Security scans section', () => {
     // The honest not-implemented failure, verbatim (the form's static
     // note also mentions the code — the failure line is the assertion).
     expect(
-      screen.getByText(/The DAST scanner engine is not implemented yet\./),
+      screen.getByText(/The configured target was blocked before any request was made\./),
     ).toBeInTheDocument();
-    expect(screen.getAllByText(/SCAN_ENGINE_NOT_IMPLEMENTED/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/DAST_TARGET_BLOCKED/).length).toBeGreaterThanOrEqual(1);
     // No fabricated findings anywhere.
     expect(screen.queryByTestId('scan-result')).toBeNull();
     expect(screen.queryByText(/Findings:/)).toBeNull();

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { isAuthUser, type AuthUser } from '@drobon/shared';
+import { isAuthUser, type AuthUser, type UserType } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 
@@ -29,7 +29,7 @@ export interface AuthContextValue {
   /** Authenticate and adopt the returned user. Rejects with ApiClientError. */
   login: (email: string, password: string) => Promise<AuthUser>;
   /** Create an account (auto-login) and adopt the returned user. */
-  register: (email: string, password: string) => Promise<AuthUser>;
+  register: (email: string, password: string, userType?: UserType) => Promise<AuthUser>;
   /** Revoke the session server-side, then clear local state. */
   logout: () => Promise<void>;
 }
@@ -105,8 +105,10 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   );
 
   const register = useCallback(
-    async (email: string, password: string): Promise<AuthUser> => {
-      const { user } = await client.postRegister(email, password);
+    async (email: string, password: string, userType?: UserType): Promise<AuthUser> => {
+      const { user } = userType === undefined
+        ? await client.postRegister(email, password)
+        : await client.postRegister(email, password, userType);
       if (mounted.current) {
         setState({ status: 'ready', user });
       }

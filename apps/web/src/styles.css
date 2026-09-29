@@ -310,6 +310,52 @@ a:focus-visible {
   gap: 1rem;
 }
 
+.developer-dashboard {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.dashboard-section {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.section-heading-row h2,
+.dashboard-section p {
+  margin: 0;
+}
+
+.workspace-workflow-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.workspace-workflow-nav a {
+  display: inline-block;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  color: var(--accent);
+}
+
+.dashboard-section .pill {
+  margin-left: 0.4rem;
+}
+
 .card,
 .panel,
 .state-card {
@@ -618,3 +664,222 @@ code {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.security-overview,
+.report-panel,
+.finding-detail,
+.dast-observations {
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: rgba(110, 118, 129, 0.05);
+}
+
+.finding-detail pre,
+.dast-observations code,
+.report-panel code {
+  overflow-wrap: anywhere;
+}
+
+.finding-detail pre {
+  white-space: pre-wrap;
+  padding: 0.7rem;
+  border-radius: 6px;
+  background: rgba(110, 118, 129, 0.15);
+}
+
+.report-coverage {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  color: var(--muted, #656d76);
+}
+
+.report-panel .hero-actions,
+.findings .hero-actions {
+  flex-wrap: wrap;
+}
+
+.workflow-guidance,
+.finding-workflow,
+.report-workflows,
+.sca-guidance {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: rgba(110, 118, 129, 0.06);
+}
+
+.workflow-guidance li,
+.workflow-history li {
+  margin: 0.35rem 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-guidance code,
+.workflow-notes,
+.workflow-history {
+  overflow-wrap: anywhere;
+}
+
+.workflow-form {
+  display: grid;
+  gap: 0.55rem;
+  max-width: 44rem;
+  margin: 1rem 0;
+}
+
+.workflow-form textarea {
+  width: 100%;
+  resize: vertical;
+  color: inherit;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 0.65rem;
+  font: inherit;
+}
+
+.workflow-notes {
+  padding-left: 1.25rem;
+}
+
+.workflow-notes li {
+  margin: 0.65rem 0;
+}
+
+.workflow-notes p {
+  white-space: pre-wrap;
+}
+
+/* Pump 14: bounded, read-only assistant surface. */
+.assistant-panel {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+}
+
+.assistant-panel > p,
+.assistant-answer > p {
+  max-width: 76ch;
+}
+
+.assistant-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.assistant-form textarea,
+.assistant-form select {
+  width: 100%;
+  color: inherit;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 0.65rem;
+  font: inherit;
+}
+
+.assistant-form textarea {
+  resize: vertical;
+}
+
+.assistant-selectors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+}
+
+.assistant-answer {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border-radius: 8px;
+  background: rgba(110, 118, 129, 0.06);
+  overflow-wrap: anywhere;
+}
+
+.assistant-answer li {
+  margin: 0.35rem 0;
+}
+
+.assistant-page-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Pump 15 — payment request and reviewer panels. */
+.payment-panel {
+  margin-block: 1.5rem;
+  padding: 1.25rem;
+  border: 1px solid var(--border, #26384d);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface, #101b2a) 92%, #0ea5e9 8%);
+}
+.payment-request-form {
+  display: grid;
+  gap: 0.65rem;
+  max-width: 34rem;
+  margin-block: 1rem;
+}
+.payment-request-form input,
+.payment-request-form select,
+.payment-actions textarea {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border, #3a4b60);
+  border-radius: 0.55rem;
+  color: inherit;
+  background: var(--surface, #101b2a);
+  font: inherit;
+}
+.payment-history {
+  display: grid;
+  gap: 0.75rem;
+  padding-left: 1.25rem;
+}
+.payment-history li {
+  padding: 0.8rem;
+  border: 1px solid var(--border, #26384d);
+  border-radius: 0.65rem;
+}
+.table-wrap { overflow-x: auto; }
+.payment-table {
+  width: 100%;
+  min-width: 68rem;
+  border-collapse: collapse;
+  text-align: left;
+}
+.payment-table th,
+.payment-table td {
+  padding: 0.75rem;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border, #26384d);
+}
+.payment-actions { display: grid; gap: 0.5rem; min-width: 15rem; }
+.payment-actions textarea { min-height: 4rem; resize: vertical; }
+.payment-actions ul { padding-left: 1rem; font-size: 0.85rem; }
+
+/* Pump 16 — restricted read-only operations visibility. */
+.admin-operations { display: grid; gap: 1rem; }
+.admin-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-block: 0.5rem; }
+.admin-tabs a { text-decoration: none; }
+.admin-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 0.75rem; }
+.admin-metric { display: grid; gap: 0.3rem; min-height: 6.5rem; padding: 1rem; border: 1px solid var(--border, #26384d); border-radius: 0.75rem; background: color-mix(in srgb, var(--surface, #101b2a) 92%, #0ea5e9 8%); }
+.admin-metric strong { font-size: 1.5rem; overflow-wrap: anywhere; }
+.admin-metric small { color: var(--muted, #9aaabd); }
+.admin-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 0.6rem; }
+.admin-status-grid > div { padding: 0.75rem; border: 1px solid var(--border, #26384d); border-radius: 0.6rem; }
+.admin-status-grid dt { font-weight: 650; }
+.admin-status-grid dd { margin: 0.3rem 0 0; overflow-wrap: anywhere; }
+.admin-search, .admin-pagination { display: flex; align-items: end; flex-wrap: wrap; gap: 0.65rem; margin-block: 0.75rem; }
+.admin-search input { min-height: 2.75rem; padding: 0.6rem 0.75rem; border: 1px solid var(--border, #3a4b60); border-radius: 0.55rem; color: inherit; background: var(--surface, #101b2a); font: inherit; }
+.admin-pagination { align-items: center; justify-content: flex-end; }
+.admin-pagination span { margin-right: auto; }

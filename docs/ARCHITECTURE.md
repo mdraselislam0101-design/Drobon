@@ -1,10 +1,12 @@
 # Architecture
 
-Pump 1 foundation, extended by Pump 2 (authentication), Pump 3
-(authorization), Pump 4 (plans/subscriptions/entitlements), Pump 5
-(usage quota + device anti-abuse foundation), Pump 6 (projects
-foundation) and Pump 7 (secure scan-job foundation): an
-npm-workspaces monorepo with three runtime components
+Pump 1 foundation, extended by Pumps 2–15 (authentication, authorization,
+plans/entitlements, quotas, projects, scans, reports, assistant, and manual
+payments), Pump 16 (restricted platform operations), Pump 17 (Developer
+workspace completion), Pump 18 (Student presentation over the shared
+overview), Pump 19 (Security Professional presentation and bounded
+assistant summaries over shared records), Pump 20 (Pentester target presentation over the same owner-scoped DAST/workflow systems), and Pump 22 (structured project assessment records linked to existing scans and reports):
+an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
@@ -27,6 +29,8 @@ browser bundle and the servers can all consume it:
   `CurrentUserResponse`, `LogoutResponse`, the shared email/password
   policy (`isValidEmail`, `passwordPolicyIssue`) and payload guards
   (`isAuthUser` — also rejects credential material and forged roles).
+  Registration may include one validated optional UserType; no role/plan
+  authority is accepted.
 - `authz.ts` — authorization contracts (Pump 3): `AccountRole`
   (MEMBER/ADMIN/ACCOUNT_OWNER + ranks), `UserType` (classification only),
   the central `PERMISSIONS` table + `hasPermission`/`roleAtLeast`,
@@ -39,6 +43,7 @@ browser bundle and the servers can all consume it:
   decision table `SUBSCRIPTION_ENTITLEMENTS` (`feature:pro` exists in
   exactly one cell: PRO + ACTIVE; `plan:manage` in none). Role and
   UserType are deliberately not inputs to any of it.
+- `payments.ts` — Pump 15 payment request/state/audit contracts, strict runtime guards, bounded self-only history projections and reviewer-only record projections. The contract explicitly reports online gateway `UNAVAILABLE` and coupons `NOT_IMPLEMENTED`.
 - `usage.ts` — usage/quota contracts (Pump 5): `FREE_MONTHLY_SCAN_QUOTA` /
   `FREE_DEVICE_MONTHLY_SCAN_QUOTA` (3/3), the strict UTC period pattern
   (`YYYY-MM`), `UsagePeriodInfo` (end-exclusive month window),
@@ -55,7 +60,12 @@ browser bundle and the servers can all consume it:
   and the documented ordering comparator; Pump 8 adds the `Finding`
   contract (deterministic `fnd_` ids from content fingerprints,
   fixed severities, bounded evidence, redaction upstream) plus the
-  findings-bearing scan-detail response guard.
+  findings-bearing scan-detail response guard. Pump 12 adds explicit
+  project context for newly persisted source findings and the separate
+  bounded page/detail contracts in `findings.ts`; Pump 13 extends those
+  contracts with bounded workflow, note, history, and rule-guidance shapes.
+  `reports.ts` defines the versioned report, scanner coverage, SCA honesty,
+  optional point-in-time workflow snapshots, and integrity guards.
 - `sources.ts` — source-snapshot contracts (Pump 8): the upload body
   (`{ files: [{ path, content }] }`), the single path policy
   (relative, no traversal/dotfiles, len/segment/depth caps, blocked
@@ -78,6 +88,10 @@ browser bundle and the servers can all consume it:
   name/description lengths, the public `Project` shape (deliberately
   owner-free — the API is self-only), the documented deterministic
   ordering comparator (updatedAt DESC, then id ASC) and payload guards.
+- `workspace.ts` — Pump 17 fixed-cap `WorkspaceSecurityOverview` contracts
+  and strict guards for a self-only, evidence-free summary of owned project,
+  scan, finding-workflow and report metadata, including bounded DAST/SCA
+  summary states. Counts do not represent an overall security verdict.
 - `jobs.ts` — `Job`, `JobResult`, `JobStatus`, `RetryPolicy`, `createJob()`.
 - `config.ts` — `EnvironmentName`, `LogLevel`.
 - `models.ts` — `HealthResponse`, `ReadinessResponse`, `StatusResponse`,
@@ -94,7 +108,7 @@ minimal attack surface):
 
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)
-        → rateLimit(/api/v1/auth) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
+        → rateLimit(/api/v1/auth) → rateLimit(payment mutations) → originGuard(CSRF) → session(cookie→ctx.user+ctx.authz+ctx.subscription+ctx.entitlements)
         → device(cookie→ctx.deviceHash; issue/replace drobon_device when authenticated)
         → router: match → authenticate (401) → authorize (403) → handler
 ```
@@ -102,8 +116,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
 - `config.ts` — the ONLY module that reads `process.env`; validates every
   variable (including the Pump 2 `AUTH_*` set) and throws one `ConfigError`
   listing all issues (fail fast). Rejects `AUTH_STORE_PATH=:memory:` and
-  `USAGE_STORE_PATH=:memory:` in production. Derives `cookieSecure` and
-  `usageConsumeRoutes` (dev/test probe gating) from the environment.
+  `USAGE_STORE_PATH=:memory:` and `PAYMENT_STORE_PATH=:memory:` in production. Payment price, manual instructions/methods, reviewer ID allowlist and mutation limits are validated here. Derives `cookieSecure` and `usageConsumeRoutes` (dev/test probe gating) from the environment.
 - `logger.ts` — structured JSON-lines logger with level filtering and
   deep secret redaction (sensitive keys, bearer-like values, credentialed
   URLs, cycles). Error stacks are logged in dev/test only.
@@ -141,17 +154,22 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   `resolveSubscription`, `deriveEntitlements`; reads only the account's
   subscription, never role/userType/client input).
 - `scans/` — the secure scan-job foundation (Pump 7): `store.ts` is
-  the durable orchestration store (one JSON document with scans +
-  bounded idempotency entries; THE atomic `createScanWithQuota`
-  operation linearizes idempotency lookup, quota consumption via the
-  UsageService and the durable append; claim-once `claimNextQueued`,
-  finish-once `completeScan`/`failScan` (Pump 8: findings persist
-  atomically with the COMPLETED transition, COMPLETED-only), boot
-  recovery `failAllRunning`); `engines.ts` is the scanner-engine
-  boundary (server-side registry — Pump 8 registers the REAL SAST
-  engine, Pump 9 the REAL SCA engine and Pump 10 the REAL secrets
-  engine; DAST stays
-  unregistered and fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED);
+  the durable orchestration store (one JSON document with scans,
+  bounded idempotency entries, at most 100 persisted reports, and bounded
+  Pump 13 finding workflows; THE atomic `createScanWithQuota` operation
+  linearizes idempotency lookup, quota consumption via the UsageService
+  and the durable append; claim-once `claimNextQueued`, finish-once
+  `completeScan`/`failScan` (Pump 8: findings persist atomically with
+  COMPLETED, with server-set project context on new source findings;
+  Pump 12: integrity-checked per-scan reports; Pump 13: workflow
+  observation updates atomically with completed scans and report snapshots
+  refresh when their content changes), boot recovery
+  `failAllRunning`); its bounded `workspaceSummary` supports both the account
+  overview and a server-filtered per-project finding/workflow summary for
+  deterministic Professional assistant answers. `engines.ts` is the scanner-engine
+  boundary (server-side registry — Pumps 8–11 register the REAL SAST,
+  SCA, Secrets and limited passive DAST engines; DAST's SSRF-safe target
+  policy, pinned transport and passive rules live under `scans/dast/`);
   `sast/` is the SAST engine (pure-data `rules.ts` + bounded
   `engine.ts` — analysis only, never executes source, see
   docs/SAST.md); `sca/` is the SCA engine — `parsers.ts` (defensive
@@ -162,15 +180,17 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   bounded-engine contract, see docs/SCA.md); `sources.ts` is the
   project-scoped
   source-snapshot store (path policy at rest, fail-fast load);
-  `processor.ts` is the durable worker
-  loop (claim → engine → finish, 30s engine bound, startup recovery +
-  periodic sweep). See docs/SCANS.md and docs/SAST.md.
+  `dast/` implements Pump 11's one-target passive HTTP engine (strict URL/IP policy, DNS pinning, bounded transport, redirect validation, evidence-safe rules; see `docs/DAST.md`); `processor.ts` is the durable worker loop (claim → engine → finish, 30s engine bound, startup recovery + periodic sweep). See docs/SCANS.md.
 - `projects/` — the Projects foundation store (Pump 6):
   `store.ts` is the minimum persistence boundary (one JSON document,
   serialized mutation queue, atomic temp+rename writes, fail-fast load
   validation — the same architecture as the account and usage stores)
   exposing create/listByOwner/findById/update/setStatus. The stored
-  record carries `ownerId`; responses never do.
+  record carries `ownerId`; ordinary responses never do. Its bounded
+  `workspaceSummary` powers the current authenticated account's shared
+  overview, including Pentester target-configuration indicators derived from
+  owner-held project records.
+- `assessments/` — Pump 22's bounded, owner/project-scoped assessment store. It uses the same atomic restart-safe JSON pattern, validates loaded records, serializes lifecycle mutations and linked scan creation, and stores bounded scope/objective metadata plus append-only lifecycle/declaration history. Assessment scope is never project/target/scan authority (see `docs/SECURITY_PROFESSIONAL.md`).
 - `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
   base64url device token issuance + hashed lookup, hardened cookie
   serialization), `store.ts` (the single persistence boundary — durable
@@ -194,16 +214,43 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   mutation methods), plus Pump 5's `GET /api/v1/usage` (self-only usage
   view; always registered) and the dev/test-gated consumption probe
   `POST /api/v1/usage/consume` (404 in production — see docs/USAGE.md),
-  plus Pump 6's project routes: `POST/GET /api/v1/projects`,
+  plus Pump 17's authenticated `GET /api/v1/me/security-overview` (strictly
+  session-scoped and fixed-cap, independent of UserType authority), plus
+  Pump 6's project routes: `POST/GET /api/v1/projects`,
   `GET/PATCH /api/v1/projects/:projectId` and the explicit lifecycle
   operations `POST …/archive` / `…/unarchive` — all self-only, uniform
   403 for unknown/foreign/malformed ids (see docs/PROJECTS.md) — and
   Pump 7's scan routes: `POST /api/v1/projects/:projectId/scans`
   (atomic quota + creation, optional Idempotency-Key, archived → 409
   PROJECT_ARCHIVED), `GET …/scans` (ordered list) and
-  `GET …/scans/:scanId` (uniform 404 inside the caller's own project).
-  No scan mutation endpoint exists — the processor owns every
-  transition (see docs/SCANS.md).
+  `GET …/scans/:scanId` (uniform 404 inside the caller's own project),
+  plus Pump 12's authenticated findings page/detail and report routes,
+  Pump 13's authenticated lifecycle/note/history routes, Pump 14's
+  authenticated assistant status/project-ask routes, all project-scoped
+  through the same own-project resolver. Pump 15 adds self-only manual
+  payment routes and separate platform-reviewer-only admin routes; these use
+  the authenticated account context, not project ownership. Finding filters,
+  workflow records, history and export bodies are bounded; archived projects are read-only for
+  workflow mutation. Reports share the scan store and do not consume quota.
+  No scan-job lifecycle mutation endpoint exists — the processor owns scan
+  transitions. The Pump 14 assistant is deterministic/read-only with no
+  active provider, provider calls, chat persistence, tools or quota usage;
+  its bounded provenance context reuses the same project/scan/finding/report
+  stores (see `docs/ASSISTANT.md`). Pump 22 adds owner/project-scoped assessment routes for lifecycle, exact-host scope, timestamped unverified user declarations and summaries of linked existing scans/reports; scan creation can optionally bind an assessment without bypassing ownership, quota or DAST policy. The JSON store is bounded and restart-safe but remains a single-process foundation. Pump 19 adds assistant assessment/DAST summaries
+  from latest completed engine records and unresolved/verification/attention
+  aggregates from the same project-filtered workflow summary; no engine or
+  store is duplicated. Pump 20 also derives Pentester target-configured
+  indicators from caller-owned project records; they are not authorization
+  proof. Payment records/audit events are held in
+  one atomic JSON document; approval uses a recoverable saga over the existing
+  payment and account JSON stores (see `docs/PAYMENTS.md`). Pump 16 adds
+  `/api/v1/admin/dashboard`, bounded `/accounts`, `/scans`, `/findings`, and
+  `/audit` read routes plus the operations UI. These require both a live
+  `ADMIN` role and an ID in `PLATFORM_ADMIN_IDS`; payment review retains its
+  separate `PAYMENT_REVIEWER_IDS` gate. No account status/role/UserType/
+  subscription control or broad export is exposed (see `docs/ADMIN.md`). See
+  docs/SCANS.md, `docs/FINDINGS.md`, `docs/REPORTS.md`, `docs/PAYMENTS.md`,
+  and `docs/ADMIN.md`.
   Unknown path → 404, wrong method → 405 + `Allow`.
 - `app.ts` — composition: per-request context, `next()`-chaining dispatcher (Pump 6: the router match now supports `:param` path
   segments via `matchRoutePath` — exact-match routes keep their original
@@ -218,8 +265,8 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   store refuses to start), SIGTERM/SIGINT graceful shutdown.
 
 Security defaults: binds loopback (`HOST=127.0.0.1`), empty CORS allowlist,
-100 req/min/IP globally + 30 req/min/IP on credential endpoints, 1 MiB
-bodies. Proxy headers are never trusted (`X-Forwarded-For` is ignored — see
+100 req/min/IP globally + 30 req/min/IP on credential endpoints + the
+configured payment-mutation limit (default 10/min/IP), 1 MiB bodies. Proxy headers are never trusted (`X-Forwarded-For` is ignored — see
 NOT_IMPLEMENTED).
 
 ### `@drobon/web` — web app (`apps/web`, React 18 + Vite 6 + React Router 7)
@@ -231,6 +278,7 @@ NOT_IMPLEMENTED).
 - `api/client.ts` — the single HTTP boundary: typed methods (including the
   Pump 2 auth methods `postRegister`/`postLogin`/`postLogout`/`getMe`),
   per-request correlation IDs, timeout + caller-signal cancellation,
+  optional UserType registration classification, bounded workspace overview,
   `credentials: 'include'` for the session cookie, envelope validation via
   shared `parseApiResponse()`, auth payload guards, user-safe typed errors
   (`ApiClientError`, now carrying 422 `details`).
@@ -244,13 +292,18 @@ NOT_IMPLEMENTED).
   *expired*, authenticated-but-insufficient → `ForbiddenState` — never a
   login redirect), `PublicOnlyRoute` (authed visitors bounce off /login
   and /register), and `readSafePath()` (open-redirect defense for
-  post-login navigation). `components/ForbiddenState.tsx` is the generic
-  403 view (alert, no role hints).
+  post-login navigation); Developer, Student, Security Professional and
+  Pentester workspace guards only control UX routing and confer no API
+  permission. `components/ForbiddenState.tsx`
+  is the generic 403 view (alert, no role hints).
 - `routes.tsx` / `App.tsx` — `BrowserRouter` in prod, `MemoryRouter` in
   tests; routes: `/` (Home), `/status` (live API data), `/login`,
   `/register`, `/account` (protected, `minRole="MEMBER"`), `/projects`
   and `/projects/:projectId` (protected, `minRole="MEMBER"` — Pump 6),
-  `*` (404).
+  `/dashboard`, `/student/dashboard`, `/security-professional/dashboard`,
+  and `/pentester/dashboard` (classification-only UX routing over the same
+  self-only overview and owner-scoped project APIs), and `/admin/*`
+  (role-gated UX plus the API's independent allowlist checks), `*` (404).
 - `components/` — `Layout` (auth-aware header/nav/main/footer, skip link),
   `LoadingState` (`role=status`), `ErrorState` (`role=alert` + request ID +
   retry), `ErrorBoundary`, `AuthFormError` (form-level alert + strict
@@ -343,14 +396,19 @@ NOT_IMPLEMENTED).
 ## NOT_IMPLEMENTED (future Pumps)
 
 Role management console / first-admin bootstrap and role-change audit
-trail (authorization primitives themselves are DONE in Pump 3), payment /
-billing integration and any subscription mutation workflow (the
-subscription + entitlement foundation itself is DONE in Pump 4 — see
-`docs/SUBSCRIPTIONS.md`), account
+trail (authorization primitives themselves are DONE in Pump 3), online
+payment gateway/webhook processing, automatic payment verification, coupons,
+partner/referral/commission features, and database transactions across stores
+(the manual payment request/review/PRO activation foundation is implemented
+in Pump 15 — see `docs/PAYMENTS.md`; authoritative subscription and
+entitlement semantics remain Pump 4 — see `docs/SUBSCRIPTIONS.md`), account
 email verification, password reset, trusted-proxy support, distributed
-rate limiting, durable/persistent sessions and queues, the database phase
+rate limiting, durable/persistent sessions and out-of-process queues, the database phase
 (migrations + repositories replacing the JSON account store), dataset
-ingestion/storage, scanning/findings/reports/remediation (the scan
-engine will consume the Pump 5 usage service as its quota boundary —
-see docs/USAGE.md; the quota foundation itself is DONE), AI assistance,
-admin dashboard, multi-instance deployment, metrics/tracing.
+ingestion/storage, browser-based/full DAST, multi-scan reporting,
+remediation tracking and active testing (the existing bounded scan
+engines and Pump 5 quota integration are DONE — see docs/SCANS.md and
+`docs/REPORTS.md`), external generative-provider integration and durable
+assistant history (the deterministic assistant foundation is implemented
+in Pump 14 — see `docs/ASSISTANT.md`), multi-instance deployment,
+metrics/tracing.

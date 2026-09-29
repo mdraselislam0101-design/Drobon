@@ -9,7 +9,7 @@ Everything on this page is covered by executable tests
 
 | Concept | Values | Purpose | Grants access? |
 | ------- | ------ | ------- | -------------- |
-| `AccountRole` | `MEMBER` < `ADMIN` < `ACCOUNT_OWNER` | Authorization: what the account may do | Yes — the ONLY thing that may |
+| `AccountRole` | `MEMBER` < `ADMIN` < `ACCOUNT_OWNER` | Role-gated platform capabilities | Yes, for capabilities explicitly declared in `PERMISSIONS` |
 | `UserType` | `DEVELOPER`, `STUDENT`, `SECURITY_PROFESSIONAL`, `PENTESTER` | Classification/visibility: how the user describes themselves | **Never** |
 
 `UserType` cannot bypass authentication, roles, permissions, plan limits
@@ -62,7 +62,10 @@ route match
   future resources copy — self-read via `users:read:self`, cross-read
   only via the explicit `users:read:others` (ADMIN+). `GET /api/v1/users
   ?id=…` is the proof surface: unknown/malformed/oversized/unauthorized
-  ids all answer the identical 403 (no IDOR, no existence oracle).
+  ids all answer the identical 403 (no IDOR, no existence oracle). Project
+  assessments follow the existing authenticated own-project boundary and
+  then scope assessment IDs to that same owner/project; UserType, scope
+  strings and target declarations do not grant resource or DAST authority.
 
 ## Capability probes (observability, not product)
 
@@ -82,7 +85,10 @@ production functionality (tested).
   redirect — and `/account` wires `minRole="MEMBER"` in the real tree.
 - Permission-aware visibility (`hasPermission` from the shared table)
   decides what UI renders (e.g. the privileged lookup section is
-  ADMIN+-only).
+  ADMIN+-only). The optional registration UserType selector is descriptive;
+  Developers get a dashboard link and default post-login route for UX only.
+  Admin pages use a MEMBER/ADMIN role guard in the Web tree, while the API
+  independently checks the live role and configured operator allowlist.
 - **Hiding UI is not authorization**: capability verdicts and lookups ask
   the API and render its 200/403 answer; the API suite proves direct API
   bypass fails regardless of what the UI does.
@@ -101,8 +107,18 @@ production functionality (tested).
 Role management UI/first-admin bootstrap (roles are assigned by operators
 directly on the store today), roles-as-claims in tokens, ABAC/ReBAC
 policies, per-resource ACLs, audit trail of role changes, UserType-based
-product features, admin/partner permissions beyond
-the table above.
+authorization or entitlements, and admin/partner permissions beyond the
+table above are not implemented. The Developer (Pump 17), Student (Pump 18),
+Security Professional (Pump 19) and Pentester (Pump 20) dashboards use
+UserType only for workspace routing/navigation; Pump 22 assessment controls
+are shown for those classifications, but assessment API authorization still
+depends on authentication and project ownership, never UserType. The shared
+overview API remains authenticated and self-scoped. Pentester target
+indicators reflect server-stored settings on the caller's owned projects,
+not independent proof of third-party authorization. A target-specific
+`USER_DECLARED` statement is timestamped owner metadata and stays unverified;
+ordinary resource access and DAST scan creation continue to use the existing
+role, project ownership, plan, quota, rate-limit and target-safety checks.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

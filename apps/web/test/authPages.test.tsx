@@ -55,6 +55,62 @@ describe('login page', () => {
     expect(screen.getByText('user@example.test')).toBeInTheDocument();
   });
 
+  test('Developer login lands on the workspace overview', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'DEVELOPER' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'developer@example.test');
+    await user.type(screen.getByLabelText('Password'), 'developer-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Security overview' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Student login lands on the Student dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'STUDENT' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'student@example.test');
+    await user.type(screen.getByLabelText('Password'), 'student-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Student security dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Security Professional login lands on the professional dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'SECURITY_PROFESSIONAL' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'professional@example.test');
+    await user.type(screen.getByLabelText('Password'), 'professional-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Pentester login lands on the Pentester assessment dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postLogin: vi.fn(async (email: string) => ({ user: { ...TEST_USER, email, userType: 'PENTESTER' as const } })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/login', client);
+    await user.type(screen.getByLabelText('Email'), 'pentester@example.test');
+    await user.type(screen.getByLabelText('Password'), 'pentester-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
   test('server 401 is shown verbatim without leaking which factor failed', async () => {
     const user = userEvent.setup();
     const client = stubClient({
@@ -157,6 +213,81 @@ describe('register page', () => {
       'newuser@example.test',
       'brand-new-pw-test',
     );
+  });
+
+  test('Developer registration submits only the selected classification and lands on the workspace', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'DEVELOPER' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'developer@example.test');
+    await user.type(screen.getByLabelText('Password'), 'developer-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'DEVELOPER');
+    expect(screen.getByText(/This is a profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Security overview' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('developer@example.test', 'developer-password', 'DEVELOPER');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Student registration submits the selected classification and lands on the Student dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'STUDENT' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'student@example.test');
+    await user.type(screen.getByLabelText('Password'), 'student-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'STUDENT');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Student security dashboard' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('student@example.test', 'student-password', 'STUDENT');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Security Professional registration selects the classification and opens its overview', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'SECURITY_PROFESSIONAL' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'professional@example.test');
+    await user.type(screen.getByLabelText('Password'), 'professional-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'SECURITY_PROFESSIONAL');
+    expect(screen.getByText(/profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('professional@example.test', 'professional-password', 'SECURITY_PROFESSIONAL');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('Pentester registration records the classification only and opens the assessment dashboard', async () => {
+    const user = userEvent.setup();
+    const client = stubClient({
+      postRegister: vi.fn(async (email: string, _password: string, userType: 'PENTESTER' | undefined) => ({
+        user: { ...TEST_USER, email, userType: userType ?? null },
+      })),
+      getMe: vi.fn(async () => { throw unauthorizedError(); }),
+    });
+    await renderAt('/register', client);
+    await user.type(screen.getByLabelText('Email'), 'pentester@example.test');
+    await user.type(screen.getByLabelText('Password'), 'pentester-password');
+    await user.selectOptions(screen.getByLabelText('What best describes your work?'), 'PENTESTER');
+    expect(screen.getByText(/profile classification only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.postRegister).toHaveBeenCalledWith('pentester@example.test', 'pentester-password', 'PENTESTER');
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
   });
 
   test('duplicate account (409) surfaces the server message', async () => {

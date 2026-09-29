@@ -5,9 +5,13 @@ import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_ID_PATTERN,
   PROJECT_NAME_MAX_LENGTH,
+  WORKSPACE_PROJECTS_MAX,
   isProjectStatus,
+  isSafeDastUrl,
   type Project,
   type ProjectStatus,
+  type WorkspaceProjectCard,
+  type WorkspaceProjectsSummary,
 } from '@drobon/shared';
 
 /**
@@ -43,6 +47,7 @@ export interface ProjectRecord {
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+  dastTargetUrl?: string;
 }
 
 export interface CreateProjectInput {
@@ -64,6 +69,10 @@ export interface ProjectStore {
    * `updatedAt` DESC, then `id` ASC (the shared documented contract).
    */
   listByOwner(ownerId: string): Promise<ProjectRecord[]>;
+  /** Bounded, account-scoped project counts/cards for the authenticated workspace overview. */
+  workspaceSummary(ownerId: string): Promise<WorkspaceProjectsSummary>;
+  /** Aggregate-only platform overview; exposes no owner-scoped project rows. */
+  adminCounts(): Promise<{ total: number; active: number; archived: number }>;
   findById(id: string): Promise<ProjectRecord | undefined>;
   /**
    * Apply a partial update (name/description only) inside the mutation
@@ -78,6 +87,8 @@ export interface ProjectStore {
    * only bumped when the status actually changes).
    */
   setStatus(id: string, status: ProjectStatus): Promise<ProjectRecord | undefined>;
+  /** Set or clear the project-associated passive DAST target. */
+  setDastTargetUrl(id: string, targetUrl: string | undefined): Promise<ProjectRecord | undefined>;
 }
 
 interface StoreDocument {
@@ -124,6 +135,7 @@ function parseStoredProject(value: unknown): ProjectRecord | undefined {
     (record['description'] !== '' &&
       !isSafeProjectText(record['description'], PROJECT_DESCRIPTION_MAX_LENGTH, true)) ||
     !isProjectStatus(record['status']) ||
+    (record['dastTargetUrl'] !== undefined && !isSafeDastUrl(record['dastTargetUrl'])) ||
     typeof record['createdAt'] !== 'string' ||
     Number.isNaN(Date.parse(record['createdAt'])) ||
     typeof record['updatedAt'] !== 'string' ||
@@ -137,6 +149,7 @@ function parseStoredProject(value: unknown): ProjectRecord | undefined {
     name: record['name'],
     description: record['description'],
     status: record['status'],
+    ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
     createdAt: record['createdAt'],
     updatedAt: record['updatedAt'],
   };
@@ -214,14 +227,16 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
   return {
     create: (input) =>
       runExclusive(() => {
+        // A new project starts with one consistent server-assigned timestamp.
+        const timestamp = new Date().toISOString();
         const record: ProjectRecord = {
           id: `prj_${randomUUID()}`,
           ownerId: input.ownerId,
           name: input.name,
           description: input.description,
           status: 'ACTIVE',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: timestamp,
+          updatedAt: timestamp,
         };
         // Guard against the astronomically unlikely id collision.
         if (byId.has(record.id)) {
@@ -244,6 +259,34 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
           )
           .map(toPublic),
       ),
+    workspaceSummary: (ownerId) => {
+      let total = 0;
+      let active = 0;
+      let archived = 0;
+      let dastTargetsConfigured = 0;
+      const recent: WorkspaceProjectCard[] = [];
+      for (const record of byId.values()) {
+        if (record.ownerId !== ownerId) continue;
+        total += 1;
+        if (record.status === 'ACTIVE') active += 1;
+        else archived += 1;
+        const dastTargetConfigured = record.dastTargetUrl !== undefined;
+        if (dastTargetConfigured) dastTargetsConfigured += 1;
+        recent.push({ id: record.id, name: record.name, status: record.status, updatedAt: record.updatedAt, dastTargetConfigured });
+        recent.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+        if (recent.length > WORKSPACE_PROJECTS_MAX) recent.pop();
+      }
+      return Promise.resolve({ total, active, archived, dastTargetsConfigured, recent });
+    },
+    adminCounts: () => {
+      let active = 0;
+      let archived = 0;
+      for (const record of byId.values()) {
+        if (record.status === 'ACTIVE') active += 1;
+        else archived += 1;
+      }
+      return Promise.resolve({ total: byId.size, active, archived });
+    },
     findById: (id) => {
       const record = byId.get(id);
       return Promise.resolve(record === undefined ? undefined : toPublic(record));
@@ -284,6 +327,22 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
         byId.set(id, updated);
         return toPublic(updated);
       }),
+    setDastTargetUrl: (id, targetUrl) =>
+      runExclusive(() => {
+        const current = byId.get(id);
+        if (current === undefined) return undefined;
+        if (targetUrl !== undefined && !isSafeDastUrl(targetUrl)) {
+          throw new Error('Project DAST target must be a canonical safe URL.');
+        }
+        if (current.dastTargetUrl === targetUrl) return toPublic(current);
+        const updated: ProjectRecord = { ...current, updatedAt: new Date().toISOString() };
+        if (targetUrl === undefined) delete updated.dastTargetUrl;
+        else updated.dastTargetUrl = targetUrl;
+        const next = [...byId.values()].map((record) => (record.id === id ? updated : record));
+        internals.persistWith(next);
+        byId.set(id, updated);
+        return toPublic(updated);
+      }),
   };
 }
 
@@ -314,5 +373,6 @@ export function toProjectResponse(record: ProjectRecord): Project {
     status: record.status,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...(record.dastTargetUrl === undefined ? {} : { dastTargetUrl: record.dastTargetUrl }),
   };
 }

@@ -29,6 +29,18 @@ credential rate limit → CSRF origin guard → session resolution → routing).
 `GET /api/v1/me` sits behind the router's `requireAuth` boundary — the
 single choke point every future protected route reuses.
 
+Registration optionally submits one server-validated `UserType` from the
+closed shared vocabulary. Every self-registration remains
+`MEMBER` + `FREE` + `ACTIVE`; role, plan, entitlement and account-state
+fields remain server-controlled. Developer, Student, Security Professional and Pentester
+classifications route to workspace presentations; the route guard is UX-only.
+UserType never bypasses authentication, ownership, permissions, authorization,
+quota, rate limits or DAST safety. In particular, Pentester classification is
+not proof of authority over a target: target configuration is project-owner
+scoped and the server applies its existing destination policy. See
+`AUTHORIZATION.md`, `DEVELOPER.md`, `STUDENT.md`, `SECURITY_PROFESSIONAL.md`
+and `DAST.md`.
+
 ## Credentials and sessions
 
 - **Passwords**: scrypt (`node:crypto`, memory-hard, OWASP-accepted),

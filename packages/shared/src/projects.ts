@@ -1,12 +1,13 @@
 import { isRecord } from './guards.js';
+import { isSafeDastUrl } from './dast.js';
 
 /**
  * Project contracts (Pump 6).
  *
- * A Project is the primary user-owned container that future security
- * scans, jobs, findings, reports, SBOMs and remediation history attach
- * to. Pump 6 establishes ONLY the secure ownership boundary and CRUD
- * lifecycle — no scan engine, no findings, no per-plan limits.
+ * A Project is the primary user-owned container for snapshots, scan
+ * jobs, findings, SBOMs, and the optional owner-configured DAST target.
+ * The Pumps 6+ ownership boundary remains server-authoritative; there are
+ * no per-plan project limits.
  *
  * Ownership rules (mirrored by the API and tested there):
  * - every project belongs to exactly one account, decided by the
@@ -19,7 +20,7 @@ import { isRecord } from './guards.js';
  *   caller is by construction the owner of everything it can see.
  *
  * Usage boundary (Pump 5 integration): project CRUD never consumes a
- * scan. Only a future real scan execution will call the usage service.
+ * scan. Scan creation uses the existing atomic UsageService boundary.
  */
 
 /** Project lifecycle states. Exactly two — creation always starts ACTIVE. */
@@ -60,6 +61,8 @@ export interface Project {
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;
+  /** Optional canonical HTTP(S) DAST target configured by the project owner. */
+  dastTargetUrl?: string;
 }
 
 /** `GET /api/v1/projects` — the caller's own projects, ordered. */
@@ -99,7 +102,8 @@ export function isProject(value: unknown): value is Project {
     typeof value['createdAt'] === 'string' &&
     !Number.isNaN(Date.parse(value['createdAt'])) &&
     typeof value['updatedAt'] === 'string' &&
-    !Number.isNaN(Date.parse(value['updatedAt']))
+    !Number.isNaN(Date.parse(value['updatedAt'])) &&
+    (value['dastTargetUrl'] === undefined || isSafeDastUrl(value['dastTargetUrl']))
   );
 }
 

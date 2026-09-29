@@ -14,6 +14,7 @@ import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import type { ProjectRecord, ProjectStore } from '../projects/store.js';
 import { toProjectResponse } from '../projects/store.js';
+import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '../scans/dast/target.js';
 import { sendSuccess } from '../respond.js';
 
 /**
@@ -50,6 +51,8 @@ import { sendSuccess } from '../respond.js';
 export interface ProjectRouteDeps {
   config: ApiConfig;
   projects: ProjectStore;
+  /** Injectable address resolver for controlled safety tests. */
+  dastTargetPolicy?: DastTargetPolicy;
 }
 
 /**
@@ -90,6 +93,11 @@ function normalizeProjectText(
 
 export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
   const { config, projects } = deps;
+  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
+
+  const dastTargetSchema = v.object({
+    targetUrl: v.string({ maxLength: 2048 }),
+  });
 
   const createSchema = v.object({
     name: v.string({
@@ -273,6 +281,49 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
           throw internal('Project disappeared during update.');
         }
         ctx.logger.info('Project updated', { requestId: ctx.id, userId: actor.id, projectId: updated.id });
+        sendProject(res, ctx, updated);
+      },
+    },
+    {
+      method: 'PUT',
+      path: '/api/v1/projects/:projectId/dast-target',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
+        const parsed = dastTargetSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        let targetUrl: string;
+        try {
+          // Syntax, public DNS answers, and all address families are
+          // validated before project state changes; scan execution
+          // repeats resolution and pins the vetted address.
+          targetUrl = (await dastTargetPolicy.prepare(parsed.value.targetUrl)).url;
+        } catch (error) {
+          const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
+            ? 'The target could not be resolved safely.'
+            : 'Use an HTTP(S) target on a public host; local, private and reserved addresses are blocked.';
+          throw validationError([{ path: 'targetUrl', message }]);
+        }
+        const updated = await projects.setDastTargetUrl(project.id, targetUrl);
+        if (updated === undefined) throw internal('Project disappeared during DAST target update.');
+        ctx.logger.info('Project DAST target updated', { requestId: ctx.id, userId: actor.id, projectId: project.id });
+        sendProject(res, ctx, updated);
+      },
+    },
+    {
+      method: 'DELETE',
+      path: '/api/v1/projects/:projectId/dast-target',
+      requireAuth: true,
+      handler: async (_req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        const updated = await projects.setDastTargetUrl(project.id, undefined);
+        if (updated === undefined) throw internal('Project disappeared during DAST target removal.');
+        ctx.logger.info('Project DAST target removed', { requestId: ctx.id, userId: actor.id, projectId: project.id });
         sendProject(res, ctx, updated);
       },
     },

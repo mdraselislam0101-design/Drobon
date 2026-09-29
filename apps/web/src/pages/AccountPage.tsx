@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { AuthzCapability, Permission, SubscriptionResponse, UsageResponse } from '@drobon/shared';
 import { hasPermission } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
@@ -7,6 +7,7 @@ import { useApiClient } from '../api/context.js';
 import { useAuth } from '../auth/context.js';
 import { ErrorState } from '../components/ErrorState.js';
 import { LoadingState } from '../components/LoadingState.js';
+import { PaymentPanel } from '../components/PaymentPanel.js';
 
 /**
  * The protected account page. It re-verifies the session on mount (rather
@@ -241,6 +242,8 @@ export function AccountPage(): React.JSX.Element {
         not from this page.
       </p>
       <PlanPanel planState={planState} onRetry={() => void loadPlan()} />
+      <PaymentPanel />
+      <p className="muted"><Link to="/admin/payments">Platform payment review (authorized reviewers only)</Link></p>
 
       <h2>Monthly scan usage</h2>
       <p className="muted">

@@ -58,8 +58,20 @@ import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from '
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
 import { createSourceRoutes } from './routes/sources.js';
+import { createReportsRoutes } from './routes/reports.js';
+import { createAssistantRoutes } from './routes/assistant.js';
+import { createPaymentRoutes } from './routes/payments.js';
+import { createAdminRoutes } from './routes/admin.js';
+import { createWorkspaceRoutes } from './routes/workspace.js';
+import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
+import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
+import { createDastTargetPolicy, type DastTargetPolicy } from './scans/dast/target.js';
+import type { DastTransport } from './scans/dast/http.js';
+import { createDastEngine } from './scans/dast/engine.js';
+import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from './assessments/store.js';
+import { createAssessmentRoutes } from './routes/assessments.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -104,6 +116,8 @@ export interface AppDeps {
    * setups). Tests inject their own instance to control persistence.
    */
   scanStore?: ScanStore;
+  /** Structured owner/project-bound Security Professional assessment records. */
+  assessmentStore?: AssessmentStore;
   /**
    * Source-snapshot store (Pump 8) — the SAST scan target. Defaults to
    * the durable JSON store at `config.sourceStorePath` (`:memory:` for
@@ -119,6 +133,10 @@ export interface AppDeps {
    * (including `[]`) to control the registry exactly — tests do.
    */
   scanEngines?: readonly ScanEngine[];
+  /** Production-default policy; injectable with deterministic DNS fixtures in tests. */
+  dastTargetPolicy?: DastTargetPolicy;
+  /** Test-only network seam; production uses the bounded pinned Node HTTP transport. */
+  dastTransport?: DastTransport;
   /**
    * Scan processor interval (Pump 7; default 5s, injectable for tests).
    */
@@ -129,6 +147,10 @@ export interface AppDeps {
    * work, run the sweep). Tests disable it for deterministic control.
    */
   scanProcessorAutoStart?: boolean;
+  /** Durable payment + audit JSON store; tests may inject a local fixture. */
+  paymentStore?: PaymentStore;
+  /** Payment-service clock (epoch ms), injectable for deterministic tests. */
+  paymentNow?: () => number;
 }
 
 export interface App {
@@ -141,6 +163,8 @@ export interface App {
    * explicitly.
    */
   scanProcessor: ScanProcessor;
+  /** Startup recovery for interrupted cross-store payment approval sagas. */
+  ready: Promise<void>;
 }
 
 /** Direct peer address only — proxy headers (`X-Forwarded-For`) are never trusted. */
@@ -202,6 +226,11 @@ export function createApp(deps: AppDeps): App {
     (config.scanStorePath === ':memory:'
       ? createMemoryScanStore()
       : createJsonFileScanStore(config.scanStorePath));
+  const assessmentStore: AssessmentStore =
+    deps.assessmentStore ??
+    (config.assessmentStorePath === ':memory:'
+      ? createMemoryAssessmentStore()
+      : createJsonFileAssessmentStore(config.assessmentStorePath));
   // Source-snapshot store (Pump 8): durable by default (fail-fast on a
   // corrupt document — the process refuses to start). Tests inject
   // their own store; `:memory:` is the ephemeral dev opt-in.
@@ -210,22 +239,38 @@ export function createApp(deps: AppDeps): App {
     (config.sourceStorePath === ':memory:'
       ? createMemorySourceStore()
       : createJsonFileSourceStore(config.sourceStorePath));
-  // The engine registry (server-side composition ONLY). Pump 8: the
-  // REAL SAST engine (static analysis of the project's source
-  // snapshot — see scans/sast/). Pump 9: SCA joins as a REAL engine
-  // (manifests → inventory → SBOM → honest assessment; the
-  // intelligence provider comes from config — 'none', the only value
-  // today, enforced by the dataset lock → Null provider → honest
-  // NOT_ASSESSED). PUMP 10: SECRETS joins as a REAL engine
-  // (hardcoded-secret detection with mandatory evidence redaction —
-  // see scans/secrets/). DAST remains unregistered (honest
-  // NOT_IMPLEMENTED).
+  // Payment requests and their audit events share one atomic JSON document.
+  // The configured store is durable outside explicitly ephemeral development.
+  const paymentStore: PaymentStore =
+    deps.paymentStore ??
+    (config.paymentStorePath === ':memory:'
+      ? createMemoryPaymentStore()
+      : createJsonFilePaymentStore(config.paymentStorePath));
+  const payments: PaymentService = createPaymentService({
+    config,
+    store: paymentStore,
+    users,
+    ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
+  });
+  const ready = payments.recoverInterruptedApprovals();
+  // One policy instance is shared by configuration preflight, scan
+  // preflight and engine execution. The engine re-resolves and pins
+  // every request independently, so saved configuration is never
+  // treated as authorization to reach a stale/private address.
+  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
+  // The engine registry (server-side composition ONLY). Pump 8: REAL
+  // SAST; Pump 9: REAL SCA; Pump 10: REAL Secrets; Pump 11: bounded,
+  // passive, single-target DAST. No browser or exploit capabilities.
   const intelligenceProvider = createNullIntelligenceProvider();
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore }),
       createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
       createSecretsEngine({ sources: sourceStore }),
+      createDastEngine({
+        targetPolicy: dastTargetPolicy,
+        ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
+      }),
     ],
   );
   const scanProcessor: ScanProcessor = createScanProcessor({
@@ -248,18 +293,26 @@ export function createApp(deps: AppDeps): App {
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
+    ...createPaymentRoutes({ config, users, payments }),
+    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
     ...createUsageRoutes({ config, users, usage }),
-    ...createProjectRoutes({ config, projects: projectStore }),
+    ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
+    ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
+    ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({
       config,
       users,
       projects: projectStore,
+      assessments: assessmentStore,
       scans: scanStore,
       sources: sourceStore,
       usage,
       processor: scanProcessor,
+      dastTargetPolicy,
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
+    ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock }),
+    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore }),
     ...(deps.extraRoutes ?? []),
   ];
 
@@ -289,16 +342,40 @@ export function createApp(deps: AppDeps): App {
         },
   );
 
-  // Pipeline order (docs/ARCHITECTURE.md): request ID → security headers →
-  // CORS → global rate limit → credential-endpoint rate limit → CSRF origin
-  // guard → session resolution → device resolution (usage anti-abuse) →
-  // routing (with requireAuth boundary).
+  const paymentRateLimiter = createRateLimiter(
+    deps.rateLimitNow === undefined
+      ? { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs }
+      : { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs, now: deps.rateLimitNow },
+  );
+  const paymentMutationRateLimit: Middleware = async (req, res, ctx, next) => {
+    const paymentMutation = ctx.method === 'POST' &&
+      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') || ctx.pathname.startsWith('/api/v1/admin/payments/'));
+    if (paymentMutation) await paymentRateLimiter.middleware(req, res, ctx, next);
+    else await next();
+  };
+
+  const adminRateLimiter = createRateLimiter(
+    deps.rateLimitNow === undefined
+      ? { maxRequests: config.adminRateLimitMaxRequests, windowMs: config.adminRateLimitWindowMs }
+      : { maxRequests: config.adminRateLimitMaxRequests, windowMs: config.adminRateLimitWindowMs, now: deps.rateLimitNow },
+  );
+  const adminEndpointRateLimit: Middleware = async (req, res, ctx, next) => {
+    if (ctx.pathname === '/api/v1/admin' || ctx.pathname.startsWith('/api/v1/admin/')) {
+      await adminRateLimiter.middleware(req, res, ctx, next);
+    } else await next();
+  };
+
+  // Pipeline order: request ID → security headers → CORS → global rate limit
+  // → credential + payment mutation + admin-read limits → CSRF origin guard → session →
+  // device resolution → routing (with the existing authentication boundary).
   const middlewares: Middleware[] = [
     requestIdMiddleware(),
     securityHeadersMiddleware(),
     corsMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     rateLimiter.middleware,
     authRateLimiter.middleware,
+    paymentMutationRateLimit,
+    adminEndpointRateLimit,
     originGuardMiddleware({ allowedOrigins: config.corsAllowedOrigins }),
     sessionMiddleware({ sessions, users, cookieSecure: config.cookieSecure }),
     deviceMiddleware({ cookieSecure: config.cookieSecure }),
@@ -461,9 +538,12 @@ export function createApp(deps: AppDeps): App {
     handle,
     routes,
     scanProcessor,
+    ready,
     resetRateLimit: (): void => {
       rateLimiter.reset();
       authRateLimiter.reset();
+      paymentRateLimiter.reset();
+      adminRateLimiter.reset();
     },
   };
 }

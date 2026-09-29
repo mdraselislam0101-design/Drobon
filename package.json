@@ -2,7 +2,7 @@
   "name": "drobon-aegis-ai",
   "version": "0.1.0",
   "private": true,
-  "description": "Drobon Aegis AI — cybersecurity application foundation + authentication + authorization + subscriptions (Pump 4).",
+  "description": "Drobon Aegis AI — cumulative security product foundation with shared user-type workspaces (Pump 20).",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "engines": {
@@ -25,6 +25,9 @@
     "audit": "npm audit --audit-level=high",
     "check:secrets": "node scripts/check-no-secrets.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:repo-integrity": "node scripts/check-repo-integrity.mjs",
+    "check:release-evidence": "node scripts/release-evidence.mjs --self-test",
+    "release:evidence": "node scripts/release-evidence.mjs",
     "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {

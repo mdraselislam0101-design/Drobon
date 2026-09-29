@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { parseStoredUser, type UserRepository, type UserRecord } from './repositories.js';
+import { buildAdminAccountCounts, buildAdminAccountPage } from './adminProjection.js';
 
 /**
  * Durable user repository backed by a single JSON document.
@@ -116,5 +117,25 @@ export function createJsonFileUserRepository(path: string): UserRepository {
     },
     findByEmail: (email) => Promise.resolve(byEmail.get(email)),
     findById: (id) => Promise.resolve(byId.get(id)),
+    activatePro: (id, at) => {
+      const run = queue.then(() => {
+        const current = byId.get(id);
+        if (current === undefined) return 'NOT_FOUND' as const;
+        if (current.subscription?.plan === 'PRO' && current.subscription.status === 'ACTIVE') return 'ALREADY_ACTIVE' as const;
+        const updated: UserRecord = {
+          ...current,
+          subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: at, updatedAt: at },
+        };
+        const nextUsers = [...byEmail.values()].map((record) => record.id === id ? updated : record);
+        persist(nextUsers);
+        byId.set(id, updated);
+        byEmail.set(updated.email, updated);
+        return 'ACTIVATED' as const;
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    },
+    adminPage: (filters, page, pageSize) => Promise.resolve(buildAdminAccountPage(byId.values(), filters, page, pageSize)),
+    adminCounts: () => Promise.resolve(buildAdminAccountCounts(byId.values())),
   };
 }

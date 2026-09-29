@@ -8,6 +8,7 @@ import { compareScansDesc, type Scan, type ScanResponse } from '@drobon/shared';
 import type { ScanEngine } from '../src/scans/engines.js';
 import {
   cleanupTempStoreDir,
+  configureFixtureDastTarget,
   makeTempStoreDir,
   readJson,
   sessionCookieFrom,
@@ -141,7 +142,9 @@ async function createProject(
     throw new Error(`Project create failed with status ${res.status}.`);
   }
   const body = (await readJson(res)) as { data: { project: { id: string } } };
-  return body.data.project.id;
+  const projectId = body.data.project.id;
+  await configureFixtureDastTarget(server, cookieHeader(cookies), projectId);
+  return projectId;
 }
 
 interface ScanCallResult {
@@ -841,16 +844,9 @@ describe('scan reads', () => {
       const expected = [...created].sort(compareScansDesc);
       expect(scans.map((scan) => scan.id)).toEqual(expected.map((scan) => scan.id));
       for (const scan of scans) {
-        expect(Object.keys(scan).sort()).toEqual(
-          [
-            'id',
-            'projectId',
-            'scanType',
-            'status',
-            'createdAt',
-            'updatedAt',
-          ].sort(),
-        );
+        const expectedKeys = ['id', 'projectId', 'scanType', 'status', 'createdAt', 'updatedAt'];
+        if (scan.scanType === 'DAST') expectedKeys.push('targetUrl');
+        expect(Object.keys(scan).sort()).toEqual(expectedKeys.sort());
         expect(scan.status).toBe('QUEUED');
         expect(scan.id).toMatch(/^scan_[0-9a-f-]{36}$/);
         expect(scan.projectId).toBe(projectId);
@@ -1010,10 +1006,10 @@ describe('scan reads', () => {
 });
 
 describe('scan processor lifecycle', () => {
-  test('no engine: scans deterministically FAIL with SCAN_ENGINE_NOT_IMPLEMENTED — never a fake result', async () => {
+  test('an explicitly unavailable engine fails deterministically — never a fake result', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
-    const server = await startTestServer({ users });
+    const server = await startTestServer({ users, scanEngines: [] });
     try {
       const owner = await login(server, 'owner@example.test');
       const projectId = await createProject(server, owner);
@@ -1140,6 +1136,7 @@ describe('scan processor lifecycle', () => {
       scanStoreDir: dir,
       sourceStoreDir: dir,
       projectStoreDir: dir,
+      scanEngines: [],
     });
     try {
       // processor.start(): recovery + drain (the production boot path).
@@ -1170,6 +1167,7 @@ describe('scan persistence', () => {
       scanStoreDir: dir,
       projectStoreDir: dir,
       usageStoreDir: dir,
+      scanEngines: [],
     });
     let cookie: Cookies;
     let projectId: string;
@@ -1282,7 +1280,7 @@ describe('scan log hygiene', () => {
       expect(logs).toContain('Scan created');
       expect(logs).toContain('Scan quota denied');
       expect(logs).toContain('Scan request replayed');
-      expect(logs).toContain('Scan failed');
+      expect(logs).toContain('Scan completed');
       expect(logs).toContain(scanOf(created.body).id);
       expect(logs).not.toContain('owner@example.test');
       expect(logs).not.toContain(PW);
@@ -1312,6 +1310,7 @@ describe('scan creation response shape', () => {
         'projectId',
         'scanType',
         'status',
+        'targetUrl',
         'updatedAt',
       ]);
       expect(scan.status).toBe('QUEUED');

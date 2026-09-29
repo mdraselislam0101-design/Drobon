@@ -247,6 +247,17 @@ describe('live server state (operator changes apply immediately)', () => {
       },
       findByEmail: async (email) => byEmail.get(email),
       findById: async (id) => byId.get(id),
+      adminPage: async () => ({ accounts: [], total: 0 }),
+      adminCounts: async () => ({ total: 0, byPlan: { FREE: 0, PRO: 0 }, bySubscriptionStatus: { ACTIVE: 0, INACTIVE: 0, CANCELLED: 0, EXPIRED: 0 }, byRole: { MEMBER: 0, ADMIN: 0, ACCOUNT_OWNER: 0 }, byUserType: { DEVELOPER: 0, STUDENT: 0, SECURITY_PROFESSIONAL: 0, PENTESTER: 0, NONE: 0 } }),
+      activatePro: async (id, at) => {
+        const current = byId.get(id);
+        if (current === undefined) return 'NOT_FOUND';
+        if (current.subscription?.plan === 'PRO' && current.subscription.status === 'ACTIVE') return 'ALREADY_ACTIVE';
+        const next: UserRecord = { ...current, subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: at, updatedAt: at } };
+        byId.set(id, next);
+        byEmail.set(current.email, next);
+        return 'ACTIVATED';
+      },
       setSubscription: (id, sub) => {
         const current = byId.get(id);
         if (current === undefined) {

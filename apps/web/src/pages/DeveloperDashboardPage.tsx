@@ -1,0 +1,311 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import type {
+  SubscriptionResponse,
+  UsageResponse,
+  WorkspaceSecurityOverview,
+} from '@drobon/shared';
+import { ApiClientError } from '../api/client.js';
+import { useApiClient } from '../api/context.js';
+import { useAuth } from '../auth/context.js';
+import { ErrorState } from '../components/ErrorState.js';
+import { LoadingState } from '../components/LoadingState.js';
+
+type DashboardState =
+  | { status: 'loading' }
+  | {
+      status: 'ready';
+      overview: WorkspaceSecurityOverview;
+      usage: UsageResponse;
+      subscription: SubscriptionResponse;
+    }
+  | { status: 'error'; message: string; requestId?: string };
+
+function displayState(value: string): string {
+  return value.replaceAll('_', ' ');
+}
+
+function countEntries<T extends Record<string, number>>(counts: T): Array<[keyof T, number]> {
+  return Object.entries(counts).filter((entry) => entry[1] > 0) as Array<[keyof T, number]>;
+}
+
+export function DeveloperDashboardPage(): React.JSX.Element {
+  const { state: authState } = useAuth();
+  const isStudent = authState.status === 'ready' && authState.user.userType === 'STUDENT';
+  const isProfessional = authState.status === 'ready' && authState.user.userType === 'SECURITY_PROFESSIONAL';
+  const isPentester = authState.status === 'ready' && authState.user.userType === 'PENTESTER';
+  const client = useApiClient();
+  const [dashboard, setDashboard] = useState<DashboardState>({ status: 'loading' });
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const load = useCallback(async (): Promise<void> => {
+    setDashboard({ status: 'loading' });
+    try {
+      // Each value is from its existing server-authoritative endpoint. This
+      // page never calculates a plan, entitlement, quota, or security result.
+      const [overview, usage, subscription] = await Promise.all([
+        client.getSecurityOverview(),
+        client.getUsage(),
+        client.getSubscription(),
+      ]);
+      setDashboard({ status: 'ready', overview: overview.overview, usage, subscription });
+    } catch (error: unknown) {
+      if (error instanceof ApiClientError) {
+        setDashboard({
+          status: 'error',
+          message: error.message,
+          ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+        });
+      } else {
+        setDashboard({ status: 'error', message: 'Could not load the account security overview.' });
+      }
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (authState.status === 'ready') void load();
+  }, [authState.status, load, reloadToken]);
+
+  const activeProject = dashboard.status === 'ready'
+    ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE')
+    : undefined;
+  const configuredTargetProject = dashboard.status === 'ready'
+    ? dashboard.overview.projects.recent.find((project) => project.status === 'ACTIVE' && project.dastTargetConfigured) ??
+      dashboard.overview.projects.recent.find((project) => project.dastTargetConfigured)
+    : undefined;
+  // The overview includes only a bounded recent-project slice. Never send a
+  // target-settings shortcut to an arbitrary active project when no configured
+  // target is present in that slice; the full project list is the honest route.
+  const pentesterTargetLink = configuredTargetProject === undefined
+    ? '/projects'
+    : `/projects/${configuredTargetProject.id}#dast-target`;
+  const pentesterActivityLink = activeProject === undefined ? '/projects' : `/projects/${activeProject.id}#security-scans`;
+  const classificationLabel = isStudent ? 'Student' : isProfessional ? 'Security Professional' : isPentester ? 'Pentester' : 'Developer';
+
+  return (
+    <section className="panel developer-dashboard" aria-labelledby="workspace-dashboard-title">
+      <p className="eyebrow">{classificationLabel} workspace</p>
+      <h1 id="workspace-dashboard-title">{isStudent ? 'Student security dashboard' : isProfessional ? 'Security Professional dashboard' : isPentester ? 'Pentester assessment dashboard' : 'Security overview'}</h1>
+      <p className="muted">
+        {isStudent
+          ? 'Follow your own projects, scan evidence, finding workflows and reports. This is persisted progress—not a grade, complete-coverage claim, or security score.'
+          : isProfessional
+            ? 'Review your own persisted project assessments, recent engine activity, finding lifecycle, verification and reports. Recent lists are bounded; they are not global security scores or complete engine coverage.'
+            : isPentester
+              ? 'Review server-configured project targets, bounded passive DAST observations, findings, retest state and reports. Targets and scans remain project-owned; this is not an unrestricted testing surface.'
+              : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
+      </p>
+      {dashboard.status === 'loading' && <LoadingState label="Loading your security overview…" />}
+      {dashboard.status === 'error' && (
+        <ErrorState
+          title="Could not load your security overview."
+          message={dashboard.message}
+          {...(dashboard.requestId === undefined ? {} : { requestId: dashboard.requestId })}
+          onRetry={() => setReloadToken((token) => token + 1)}
+        />
+      )}
+      {dashboard.status === 'ready' && (
+        <>
+          <div className="grid" aria-label="Account security summary">
+            <article className="card">
+              <h2>Projects</h2>
+              <p><strong>{dashboard.overview.projects.total}</strong> total · {dashboard.overview.projects.active} active · {dashboard.overview.projects.archived} archived</p>
+              <Link to="/projects">Open my projects</Link>
+            </article>
+            <article className="card">
+              <h2>Scans</h2>
+              <p><strong>{dashboard.overview.scans.byStatus.COMPLETED}</strong> completed · {dashboard.overview.scans.total} recorded</p>
+              <p className="muted">{countEntries(dashboard.overview.scans.byStatus).map(([status, count]) => `${displayState(String(status))}: ${count}`).join(' · ') || 'No scans recorded yet.'}</p>
+            </article>
+            {isPentester && (
+              <article className="card">
+                <h2>Configured project targets</h2>
+                <p><strong>{dashboard.overview.projects.dastTargetsConfigured}</strong> project target{dashboard.overview.projects.dastTargetsConfigured === 1 ? '' : 's'} configured on the server</p>
+                <p className="muted">This counts owner-configured project settings; it does not itself verify third-party authorization.</p>
+                <Link to={pentesterTargetLink}>Review target configurations</Link>
+              </article>
+            )}
+            <article className="card">
+              <h2>Plan &amp; usage</h2>
+              <p>Server-reported plan: <strong>{dashboard.subscription.subscription.plan}</strong> ({displayState(dashboard.subscription.subscription.status)})</p>
+              <p>Current period: {dashboard.usage.used} used{dashboard.usage.limit === null ? ' · quota exempt' : ` of ${dashboard.usage.limit} · ${dashboard.usage.remaining} remaining`}</p>
+              <p className="muted">PRO entitlement: {dashboard.subscription.entitlements.includes('feature:pro') ? 'granted by server' : 'not granted'}</p>
+              <Link to="/account">Account details</Link>
+            </article>
+          </div>
+
+          {isProfessional && (
+            <nav className="workspace-workflow-nav" aria-label="Security Professional workflow">
+              <Link to="/projects">Assessments &amp; projects</Link>
+              {activeProject === undefined ? (
+                <Link to="/projects">Create a project to begin an assessment</Link>
+              ) : (
+                <>
+                  <Link to={`/projects/${activeProject.id}#source-snapshot`}>Source snapshot</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>SAST</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>SCA / SBOM</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Secrets</Link>
+                  <Link to={`/projects/${activeProject.id}#dast-target`}>Passive DAST</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Findings &amp; evidence</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Remediation &amp; verification</Link>
+                  <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Project reports</Link>
+                </>
+              )}
+              <a href="#assessment-history-summary">Assessment history</a>
+              <a href="#reports-title">Reports</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
+
+          {isPentester && (
+            <nav className="workspace-workflow-nav" aria-label="Pentester assessment workflow">
+              <Link to="/projects">Assessments &amp; projects</Link>
+              <Link to={pentesterTargetLink}>Target configurations</Link>
+              <Link to={pentesterActivityLink}>Start or review DAST</Link>
+              <Link to={pentesterActivityLink}>Observations</Link>
+              <Link to={pentesterActivityLink}>Findings &amp; evidence</Link>
+              <Link to={pentesterActivityLink}>Remediation</Link>
+              <Link to={pentesterActivityLink}>Retest &amp; verification</Link>
+              <Link to={pentesterActivityLink}>Reports</Link>
+              {activeProject === undefined
+                ? <Link to="/projects">AI Security Assistant</Link>
+                : <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>}
+              <a href="#assessment-history-summary">Assessment history</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
+
+          {isStudent && (
+            <nav className="workspace-workflow-nav" aria-label="Student security workflow">
+              <Link to="/projects">My projects</Link>
+              {activeProject === undefined ? (
+                <Link to="/projects">Create a project to begin scanning</Link>
+              ) : (
+                <>
+                  <Link to={`/projects/${activeProject.id}#source-snapshot`}>Source submission</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Security scan</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Understand findings</Link>
+                  <Link to={`/projects/${activeProject.id}#security-scans`}>Fix problems</Link>
+                  <Link to={`/projects/${activeProject.id}#assistant-title`}>AI Security Assistant</Link>
+                </>
+              )}
+              <a href="#student-progress-summary">My progress</a>
+              <a href="#reports-title">Reports</a>
+              <Link to="/account">Settings</Link>
+            </nav>
+          )}
+
+          <section className="dashboard-section" aria-labelledby="workspace-projects-title">
+            <div className="section-heading-row">
+              <h2 id="workspace-projects-title">{isPentester ? 'Projects & configured targets' : 'My projects'}</h2>
+              <Link to="/projects">All projects</Link>
+            </div>
+            {dashboard.overview.projects.recent.length === 0 ? (
+              <p className="form-alert" role="status">No projects yet. Create a project to submit source and run a security scan.</p>
+            ) : (
+              <ul className="projects-list" aria-label="Recent projects">
+                {dashboard.overview.projects.recent.map((project) => (
+                  <li key={project.id} className="card project-card">
+                    <div className="project-card-head">
+                      <Link to={`/projects/${project.id}`}>{project.name}</Link>
+                      <span className={project.status === 'ACTIVE' ? 'pill pill-ok' : 'pill'}>{project.status === 'ACTIVE' ? 'Active' : 'Archived'}</span>
+                    </div>
+                    <p className="muted project-meta">Updated {project.updatedAt}</p>
+                    {isPentester && <p className="muted">Server target configuration: {project.dastTargetConfigured ? 'configured' : 'not configured'} · {project.status === 'ACTIVE' ? 'scans may be requested subject to server policy and quota' : 'archived projects cannot start scans'}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section id={isProfessional || isPentester ? 'assessment-history-summary' : 'student-progress-summary'} className="dashboard-section" aria-labelledby="security-history-title">
+            <div className="section-heading-row">
+              <h2 id="security-history-title">{isStudent ? 'My progress & security history' : isProfessional ? 'Assessment history & engine status' : isPentester ? 'Assessment history & recent activity' : 'Recent security history'}</h2>
+              <span className="muted">Updated {dashboard.overview.generatedAt}</span>
+            </div>
+            {dashboard.overview.scans.recent.length === 0 ? (
+              <p className="form-alert" role="status">{isPentester ? 'No assessments have been recorded. Configure an owner-managed target in a project, then request a bounded passive DAST scan.' : 'No scans have been recorded. Submit source to a project and start with a SAST scan.'}</p>
+            ) : (
+              <ul className="projects-list" aria-label={isPentester ? 'Recent Pentester assessment activity' : isProfessional ? 'Recent bounded engine activity' : 'Recent scans'}>
+                {dashboard.overview.scans.recent.map((scan) => (
+                  <li key={scan.scanId} className="card">
+                    <div className="project-card-head">
+                      <strong>{scan.scanType} · {displayState(scan.status)}</strong>
+                      <Link to={`/projects/${scan.projectId}`}>Open project</Link>
+                    </div>
+                    <p className="muted">Created {scan.createdAt}{scan.completedAt === null ? '' : ` · completed ${scan.completedAt}`}</p>
+                    <p>
+                      Findings reported: {scan.findingsTotal === null ? 'not available in this record' : scan.findingsTotal}
+                      {scan.partial === true && <span className="pill">Partial coverage</span>}
+                      {scan.status === 'COMPLETED' && <span className="pill">Report {scan.reportAvailable ? 'available' : 'not generated'}</span>}
+                    </p>
+                    {scan.dastObservationsCount !== null && <p className="muted">Passive DAST: {scan.dastObservationsCount} bounded response observation{scan.dastObservationsCount === 1 ? '' : 's'}; this does not imply complete target coverage.</p>}
+                    {scan.scaAssessmentState !== null && <p className="muted">SCA vulnerability intelligence: {scan.scaAssessmentState} · dataset: {scan.scaDatasetStatus}. Inventory is not a vulnerability verdict.</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="dashboard-section" aria-labelledby="finding-workflows-title">
+            <div className="section-heading-row">
+              <h2 id="finding-workflows-title">{isStudent ? 'Understand & fix findings' : isPentester ? 'Findings & retest status' : 'Finding & remediation status'}</h2>
+              <span className="pill">{dashboard.overview.findings.unresolved} unresolved</span>
+            </div>
+            <p className="muted">Counts use the latest persisted observation per project and finding identity. “Not observed” is not a remediation confirmation; lifecycle state and scan evidence remain available in the project.</p>
+            <p>
+              {countEntries(dashboard.overview.findings.unresolvedBySeverity).map(([severity, count]) => `${displayState(String(severity))}: ${count}`).join(' · ') || 'No unresolved finding records are currently present in the overview.'}
+            </p>
+            <p className="muted">
+              Lifecycle: {countEntries(dashboard.overview.findings.byLifecycleState).map(([status, count]) => `${displayState(String(status))}: ${count}`).join(' · ') || 'no workflow records'}
+              {' · '}
+              Verification: {countEntries(dashboard.overview.findings.byVerificationState).map(([status, count]) => `${displayState(String(status))}: ${count}`).join(' · ') || 'no verification records'}
+            </p>
+            {dashboard.overview.findings.recent.length > 0 && (
+              <ul className="projects-list" aria-label="Recent finding workflows">
+                {dashboard.overview.findings.recent.map((finding) => (
+                  <li key={`${finding.projectId}:${finding.findingId}`} className="card">
+                    <div className="project-card-head">
+                      <strong>{finding.severity} · {finding.scanner} · {finding.ruleId}</strong>
+                      <Link to={`/projects/${finding.projectId}`}>Open finding in project</Link>
+                    </div>
+                    <p className="muted">{displayState(finding.lifecycleState)} · {displayState(finding.verificationState)} · observed {finding.observedAt} · workflow updated {finding.workflowUpdatedAt}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="dashboard-section" aria-labelledby="reports-title">
+            <div className="section-heading-row">
+              <h2 id="reports-title">{isStudent ? 'My reports' : isPentester ? 'Assessment reports' : 'Reports'}</h2>
+              <span>{dashboard.overview.reports.availableCount} persisted</span>
+            </div>
+            {dashboard.overview.reports.recent.length === 0 ? (
+              <p className="muted">No persisted reports yet. Reports are created from completed scans in a project.</p>
+            ) : (
+              <ul className="projects-list" aria-label="Recent reports">
+                {dashboard.overview.reports.recent.map((report) => (
+                  <li key={report.reportId} className="card">
+                    <div className="project-card-head">
+                      <strong>Report {report.reportId}</strong>
+                      <Link to={`/projects/${report.projectId}`}>Open report in project</Link>
+                    </div>
+                    <p className="muted">Scan {report.scanId} · generated {report.generatedAt}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <aside className="form-alert" role="note">
+            {isProfessional && <>Recent engine activity is server-backed and bounded; open a project for its full persisted assessment history. </>}
+            {isPentester && <>Target indicators mean only that a project owner saved a canonical target. Configure only targets you have permission to assess; DAST revalidates public DNS and uses bounded passive GET requests. </>}
+            SCA inventory and dependency intelligence are shown per scan. When no vulnerability data provider is configured, results remain explicitly NOT_ASSESSED / NO_DATA_LOADED; this overview does not turn that into a zero-vulnerability claim.
+          </aside>
+        </>
+      )}
+    </section>
+  );
+}

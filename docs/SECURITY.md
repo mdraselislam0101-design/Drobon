@@ -3,12 +3,13 @@
 Pump 1 established, Pump 2 extended (authentication), Pump 3 extended
 (authorization), Pump 4 extended (plans/subscriptions/entitlements),
 Pump 5 extended (usage quota + device anti-abuse), Pump 6 extended
-(projects foundation), Pump 7 extended (secure scan-job foundation):
+(projects foundation), Pump 7 extended (secure scan-job foundation),
+Pumps 8–11 added bounded scan engines including passive DAST:
 security is a first-class, **tested** requirement. A control is listed as
 VERIFIED only if an automated test or an executed check proves it;
 anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
-## Threat model (foundation + auth + authz + subscription + usage + projects + scans stage)
+## Threat model (foundation + auth + authz + subscription + usage + projects + scan engines incl. passive DAST)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
 attacks (stuffing, enumeration, brute force); session hijack/CSRF/XSS
@@ -24,10 +25,11 @@ query, cross-account reads/writes, injecting lifecycle status,
 prototype-pollution payloads, XSS/HTML in project text)**; **scan fraud
 (quota bypass via concurrency/retries/multiple projects/types, forging
 scan status or results, claiming another account's scans, replaying
-idempotency keys, resurrecting or double-executing jobs)**;
-misconfiguration;
-secret leakage into code, logs or the browser bundle; dependency risk;
-abuse/accidental overload of a single instance.
+idempotency keys, resurrecting or double-executing jobs) and DAST
+SSRF/rebinding, unsafe redirects, response-size/time exhaustion, and
+response-evidence leakage**;
+misconfiguration; secret leakage into code, logs or the browser bundle;
+dependency risk; abuse/accidental overload of a single instance.
 
 Out of scope for now: persistent attackers across restarts (sessions are
 process-local), supply-chain compromise beyond `npm audit`,
@@ -197,7 +199,7 @@ test in `apps/api/test/validate.test.ts`.
 | No content exfiltration: sources read API returns metadata only; logs carry counts/ids, never content or secret values | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | Snapshot upload policy: single server-side path policy (no traversal/absolute/dotfiles, len/seg/depth caps), blocked key-material extensions (.env/.pem/.key/...), binary rejection, duplicate/unknown/proto-key rejection → 422/413 with nothing stored | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | SAST pre-flight: no snapshot → 409 BEFORE quota consumption (a FREE account cannot burn allowance on an impossible scan) | VERIFIED | `apps/api/test/sastApi.test.ts` |
-| Findings persist only with the terminal COMPLETED transition (atomic); findings on any other state = corrupt store → refuses to start; the detail route is the only findings read surface | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Findings persist only with the terminal COMPLETED transition (atomic); source findings receive server-owned project context; every detail/page route is project- and scan-scoped, authenticated and owner-authorized | VERIFIED | `apps/api/test/reportsApi.test.ts`, `apps/api/test/sastApi.test.ts` |
 | Snapshot/scan ownership: snapshot is project-scoped, owner-checked at scan time; cross-account answers stay uniform (403/404 — no oracle) | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | Corrupt/poisoned stores (invalid JSON, traversal-shaped stored paths, findings injected into non-terminal records) refuse to start — no silent repair | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | Web: findings render as literal text (injection payloads displayed, never executed), secrets stay redacted client-side, lazy detail loading, archived projects cannot replace snapshots | VERIFIED | `apps/web/test/sastUi.test.tsx` |
@@ -237,6 +239,42 @@ test in `apps/api/test/validate.test.ts`.
 | Closed vocabularies: `DG-SEC-###` rule ids, severity and detection-confidence vocabularies enforced by the shared guards; a forged finding (e.g. `confidence: 'CERTAIN'`) refuses to boot the store | VERIFIED | `packages/shared/test/scans.test.ts`, `apps/api/test/secretsApi.test.ts` |
 | Dataset lock extension: no external secret databases/feeds vendored; synthetic fixtures exist only in tests, with denylist-dodging values chosen so positive paths fire and markers kept out of repo-wide secret scans | VERIFIED | `check:secrets`, `apps/api/test/secretsRules.test.ts` |
 
+### Passive DAST — SSRF and evidence controls (Pump 11)
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Project target is owner-associated and server-validated; scan bodies cannot supply target, project, role, plan, UserType or status; rejected/unconfigured targets fail before consuming quota | VERIFIED | `apps/api/test/dastApi.test.ts`, `apps/api/test/scanApi.test.ts` |
+| URL syntax is closed to HTTP(S), credentials/query/fragment/custom ports and ambiguous traversal; loopback/private/link-local/reserved/metadata and all mixed/non-public DNS answers are rejected; IP literals cannot be overridden by an injected resolver | VERIFIED | `apps/api/test/dastTarget.test.ts`, `apps/api/test/dastApi.test.ts` |
+| DNS lookup has a timeout and is revalidated before each request; the socket uses the approved address directly; redirects are separately resolved, same-host, bounded, and HTTPS cannot downgrade | VERIFIED | `apps/api/test/dastTarget.test.ts`, `apps/api/test/dastEngine.test.ts`, `apps/api/test/dastHttp.test.ts` |
+| Transport sends only GET, no ambient credentials/cookies, pins lookup, caps body bytes and request time, honors abort and scan deadline; controlled loopback fixture validates the real Node transport without weakening production policy | VERIFIED | `apps/api/test/dastHttp.test.ts`, `apps/api/test/dastEngine.test.ts` |
+| Only bounded, allowlisted metadata and actual deterministic observations/findings persist; cookie values and arbitrary response body/header values do not; durable project target/results/findings survive restart | VERIFIED | `apps/api/test/dastRules.test.ts`, `apps/api/test/dastApi.test.ts`, `packages/shared/test/dast.test.ts` |
+| Scope label is honest: limited passive GET checks only; no browser, DOM/JavaScript execution, authentication, crawling, fuzzing, injection, exploit, CVSS or vulnerability dataset | VERIFIED | `apps/web/test/dastUi.test.tsx`, `docs/DAST.md`, `scripts/check-boundaries.mjs` |
+
+### Finding remediation lifecycle — Pump 13
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Mutations use the existing authenticated account and own-project resolver; cross-account/project IDOR, malformed finding IDs, strict body shape, archived-project mutation and unauthenticated requests fail closed | VERIFIED | `apps/api/test/findingLifecycleApi.test.ts` |
+| Server transition matrix is enforced; audit records and notes persist atomically, bounded history is paginated, and completed same-scanner reobservation reopens resolved findings by fingerprint without changing scanner evidence | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Plain-text note validation rejects HTML/control injection and redacts synthetic credential-shaped material before response/store/report; Markdown report escapes multiline notes | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Guidance is closed-rule based for SAST, Secrets and supported passive DAST; secrets are not interpolated; SCA without intelligence remains `NOT ASSESSED` and yields no invented package advice | VERIFIED | `apps/api/test/findingWorkflow.test.ts` |
+| Report snapshots include safe current workflow/verification state; content digest and persisted report update on lifecycle changes; old document migration and restart are deterministic | VERIFIED | `apps/api/test/findingWorkflow.test.ts`, `apps/api/test/findingLifecycleApi.test.ts` |
+| Workflow operations do not consume scan quota; verification still uses normal FREE/PRO scan policy | VERIFIED | `apps/api/test/findingLifecycleApi.test.ts`, `apps/api/test/reportsApi.test.ts` |
+| Existing detail UI renders guidance, workflow state, verification, notes and bounded history as text; saved report UI identifies its point-in-time lifecycle snapshot | VERIFIED | `apps/web/test/findingsReportsUi.test.tsx` |
+
+### AI Security Assistant — Pump 14
+
+| Control | Status | Evidence |
+| ------- | ------ | -------- |
+| Authenticated status and ask routes; project ownership comes only from the existing session resolver; scan/finding/report evidence is resolved inside that project and persisted scan | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Cross-account/project access denied; foreign scan/finding identifiers produce no foreign evidence; body cannot select a provider, role, plan, owner, or permission | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Default provider is `NONE`; unsupported generative questions return unavailable; no model output/network/provider call is used | VERIFIED | `apps/api/test/assistantApi.test.ts`, `apps/api/src/assistant/provider.ts` |
+| Assistant reads are lifecycle/source/report/scan read-only and leave FREE quota unchanged | VERIFIED | `apps/api/test/assistantApi.test.ts` |
+| Synthetic secret/token/cookie/private-key/URL-credential redaction, fail-closed uncertainty, safe response text, provenance IDs and context bounds | VERIFIED | `apps/api/test/assistantRedaction.test.ts`, `apps/api/test/assistantApi.test.ts` |
+| Prompt-injection resistance: closed intent recognition uses only the user question; prompt-like evidence is tested as inert text; no tools/arbitrary network are enabled | VERIFIED | `apps/api/test/assistantService.test.ts`, `apps/api/src/assistant/service.ts`, `provider.ts` |
+| Dependency intelligence remains `NOT ASSESSED` / `NO_DATA_LOADED`; no vulnerability or threat dataset is added | VERIFIED | `apps/api/test/assistantApi.test.ts`, `scripts/check-boundaries.mjs` |
+| Provider generation and durable conversation history remain unimplemented and disclosed in status/UI/docs | VERIFIED | `packages/shared/test/assistant.test.ts`, `apps/web/test/assistantUi.test.tsx`, `docs/ASSISTANT.md` |
+
 ### Web
 
 | Control | Status | Evidence |
@@ -253,11 +291,17 @@ test in `apps/api/test/validate.test.ts`.
 
 | Control | Status | Evidence |
 | ------- | ------ | -------- |
-| Committed-secret scan (literals, key blocks, `.env.example` naming) with fake-fixture rule + self-test | VERIFIED | `scripts/check-no-secrets.mjs`, `verify` pipeline |
-| Scope gates: no DB/ORM/dataset/queue-broker/shell dependencies, filenames or imports | VERIFIED | `scripts/check-boundaries.mjs`, static tests |
-| Dependency audit (fails on high/critical) | VERIFIED | `npm run audit` in `verify` |
-| Pinned installs (`package-lock.json`), engine pinning (`.nvmrc`, `engines`, `engine-strict`) | IMPLEMENTED | Repo files |
-| `.env` gitignored; `.env.example` documents every variable and defines no secrets | VERIFIED | `.gitignore`, secret scan |
+| Secret-content scan plus self-test; committed credential/environment/key-file inventory rejects `.env` variants, private-key/container formats and known credential filenames (only `.env.example` is allowed) | VERIFIED | `scripts/check-no-secrets.mjs`, `scripts/check-repo-integrity.mjs`, `npm run verify` |
+| Scope gates reject DB/ORM/dataset/queue-broker/shell dependencies, imports and source filenames; repository inventory also rejects tracked vulnerability catalog/data filenames | VERIFIED | `scripts/check-boundaries.mjs`, `scripts/check-repo-integrity.mjs`, static tests |
+| Dependency audit (high-and-above threshold; unavailable registry is a failure, not a pass) | VERIFIED | `npm run audit` in `verify` |
+| npm lock/workspace dependency declarations are compared; lockfile registry credentials are rejected | VERIFIED | `scripts/check-repo-integrity.mjs`; `npm ci` also enforces lock consistency |
+| Pinned installs (`package-lock.json`), Node/npm engine pinning (`.nvmrc`, `engines`, `engine-strict`) | IMPLEMENTED | Repo files; CI installs with `npm ci --ignore-scripts` |
+| `.env` gitignored; `.env.example` documents configuration without real secrets | VERIFIED | `.gitignore`, secret scan and repository inventory |
+| GitHub Actions runs on Arena/main pushes and ordinary PRs, read-only `contents`, full-SHA-pinned actions, no secrets/OIDC/write permissions, no `pull_request_target`, and no deployment | IMPLEMENTED | `.github/workflows/ci.yml`, `scripts/check-repo-integrity.mjs` |
+| Main/branch push artifact evidence is emitted only after verify succeeds; includes exact source SHA/version, lock digest, two matching clean builds and SHA-256 file checksums | IMPLEMENTED | `scripts/release-evidence.mjs`, workflow artifact (14-day retention) |
+| Artifact signing, signed attestations/provenance, GitHub Release/tag creation, deployment and branch-protection settings | NOT_IMPLEMENTED | No signatures, promotion, deployment, or repository-setting mutation is performed |
+
+The repository check uses Git's tracked + non-ignored untracked inventory, so a staged/committed credential file is rejected even if the content matcher would otherwise skip a local environment file. The lockfile has targeted credential-URL/token checks because the general source secret scan intentionally avoids high-entropy package integrity hashes. CI runs the exact `npm run verify` gates after lockfile installation with lifecycle scripts disabled; `npm audit` is a dependency-advisory check only and does not import a vulnerability catalog into SCA or runtime. See `docs/CI_RELEASE.md` for triggers, evidence contents and limits. Repository branch-protection/required-check settings remain an owner-managed GitHub setting and are not claimed as enforced by workflow YAML.
 
 ## Production hosting notes (for later)
 
@@ -271,39 +315,61 @@ test in `apps/api/test/validate.test.ts`.
 - Extend `connect-src` if the API ever lives on a different origin than the
   Web app (same-origin is the default).
 
+### Payment workflow — Pump 15
+
+The manual-only upgrade workflow uses server-derived account identity, an exact server-configured BDT quote, an explicit platform reviewer ID allowlist plus a live account `ADMIN` role, owner-scoped reads/cancellation, idempotent transitions, audit events and a recoverable `APPROVING` saga. The account subscription remains the sole PRO entitlement authority. No payment gateway, provider credential, webhook, file proof upload, automatic verification, coupon, or partner feature is present; the API tells clients that online processing is unavailable. See `docs/PAYMENTS.md` and `apps/api/test/paymentApi.test.ts` for state, IDOR, pricing, review-role, restart/recovery, rate-limit and audit tests.
+
+### Platform operations — Pump 16
+
+Dashboard/account/scan/finding/audit reads require both the live session-resolved `ADMIN` role and an exact ID in `PLATFORM_ADMIN_IDS`; `ACCOUNT_OWNER`, UserType, client fields, and ordinary account `ADMIN` alone do not grant platform access. These endpoints have a dedicated rate limit and bounded strict-query pagination. Payment-review mutations still require the separate `PAYMENT_REVIEWER_IDS` plus live `ADMIN` check and self-review denial. Account role/UserType/status/subscription admin mutations, hard deletion, broad exports and dataset operations are absent. Admin finding indexes omit content, source paths and fingerprint-derived identifiers; corrupt local stores fail startup rather than returning invented dashboard zeros. Audit coverage is explicitly payment events only and has no cryptographic immutability guarantee. See `docs/ADMIN.md`, `apps/api/test/adminApi.test.ts`, and `packages/shared/test/admin.test.ts`.
+
+### Developer workspace — Pump 17
+
+The Developer classification is a navigation/display tag only. The `/api/v1/me/security-overview` route is authenticated and derives all scope from the session account; it has no caller-selected account/project filter and emits fixed-cap project, scan, finding-workflow and report summaries. It excludes owner IDs, source content, evidence, fingerprints, report bodies and secret values. The strict shared guard rejects extra fields and oversized projections. The UI uses existing server endpoints for plan, entitlement and quota and never makes an authorization decision from UserType. See `docs/DEVELOPER.md`, `apps/api/test/workspaceApi.test.ts` and the Developer journey in `apps/api/test/reportsApi.test.ts`.
+
+No enabled/disabled account-state model exists, so this workspace neither claims nor changes account state. Counts describe persisted activity, not complete scanner coverage or an overall security verdict. SCA remains `NOT_ASSESSED` / `NO_DATA_LOADED` without provider data; assistant generation stays unavailable with provider state `NONE`. No database or external vulnerability feed/catalog is introduced.
+
+### Pentester workspace — Pump 20
+
+Pentester is a profile classification and dashboard presentation, not an AccountRole, target authorization grant, plan or entitlement. The shared `/api/v1/me/security-overview` remains session-scoped; its target-configured booleans/count come from the caller's owned project records. They indicate only stored project settings, not legal permission. Target writes remain authenticated and owner-only, while DAST scan creation still uses the server-held target and the existing DNS/SSRF/redirect/transport policy, FREE/PRO quota and device controls, entitlements, rate limits, and persisted scan/finding/report workflow. No alternate scanner or client-supplied authorization field is introduced. See `docs/DAST.md`, `docs/AUTHORIZATION.md`, `apps/api/test/workspaceApi.test.ts`, and the controlled Pump 20 journey in `apps/api/test/reportsApi.test.ts`.
+
 ## NOT_IMPLEMENTED (do not assume these exist)
 
 Role management console / first-admin bootstrap (elevation is an operator
-action on the store today), role-change audit trail, payment/billing
-workflows and any subscription mutation path (subscription state changes
-only via the operator store-edit + restart workflow — see
-`docs/SUBSCRIPTIONS.md`), per-feature metering beyond the single scan
+action on the store today), role-change audit trail, online payment gateway
+and signed webhook integrations, automatic payment verification, coupons,
+partner/referral/commission behavior, and multi-process/database transactions
+(the Pump 15 manual request/reviewer approval foundation is implemented — see
+`docs/PAYMENTS.md`; subscription state still derives only from the existing
+account subscription record — see `docs/SUBSCRIPTIONS.md`), per-feature
+metering beyond the single scan
 allowance, usage analytics/history, operator quota adjustments,
 device-management UI (the usage quota + device foundation itself is DONE
 in Pump 5 — see `docs/USAGE.md`), project deletion (hard delete is
 deliberately absent — ARCHIVED is the lifecycle end-state; the projects
 foundation itself is DONE in Pump 6 — see `docs/PROJECTS.md`),
-project sharing/collaboration, admin/operator project visibility,
+project sharing/collaboration,
 scan cancellation (deliberately absent until explicitly designed —
 the scan-job foundation itself is DONE in Pump 7 — see
-`docs/SCANS.md`), the remaining engine DAST and
-findings-aggregation reports (the REAL SAST engine is DONE in Pump 8 —
-see `docs/SAST.md`; source "upload" is a JSON-body snapshot, NOT
-multipart file storage), admin/operator scan
-visibility,
-account email
+`docs/SCANS.md`), browser/full DAST and findings-aggregation reports
+(the limited passive DAST engine is DONE in Pump 11 — see
+`docs/DAST.md`; source "upload" is a JSON-body snapshot, NOT multipart
+file storage), account email
 verification, password reset, MFA, account lockout (deliberate — rate
-limits instead), OAuth/OIDC/JWT, attribute-based/relation-based policies
+limits instead), account enabled/disabled lifecycle state, OAuth/OIDC/JWT, attribute-based/relation-based policies
 beyond the fixed permission table, distributed sessions or rate limiting,
 trusted-proxy (`X-Forwarded-For`) handling, WAF, durable queues, the
-database phase, dataset ingestion, file uploads, outgoing fetch/SSRF
-surface (the API makes no outbound calls), command execution,
-metrics/tracing, security-event alerting.
+database phase, dataset ingestion, file uploads, arbitrary outbound fetch
+outside the bounded DAST transport, command execution, metrics/tracing,
+security-event alerting.
 
-Note on SSRF/path-traversal/command-injection: the app has no feature that
-fetches URLs, resolves file paths from input, or executes commands — the
-static tests + scope gates prove the primitives are absent. These threats
-become relevant only when such features land, and must be re-assessed then.
+SSRF is now in scope for the explicitly authorized DAST path. The target
+policy rejects private/local/reserved destinations, bounds DNS, rechecks
+answers before requests, pins sockets to approved addresses, and validates
+each redirect. Network egress filtering remains a recommended defense in
+depth; this limited feature is not a general-purpose URL fetch service.
+Path traversal and command execution remain blocked/absent in the scanner
+engines and are covered by static tests and scope gates.
 
 ## Tooling notes (maintenance, not vulnerabilities)
 

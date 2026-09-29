@@ -2,10 +2,21 @@ import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
+  AssessmentResponse,
+  AssessmentDetailResponse,
+  AssessmentsResponse,
+  AssistantQuestionRequest,
+  AssistantResponse,
+  AssistantStatusResponse,
   AuthResponse,
   CapabilityResponse,
   CurrentUserResponse,
   HealthResponse,
+  FindingsPageResponse,
+  FindingDetailResponse,
+  FindingHistoryResponse,
+  FindingWorkflowResponse,
+  SecurityReportResponse,
   LogoutResponse,
   ProjectResponse,
   ProjectsResponse,
@@ -16,8 +27,19 @@ import type {
   StatusResponse,
   SubscriptionResponse,
   UsageResponse,
+  PaymentConfigResponse,
+  PaymentHistoryResponse,
+  PaymentDetailResponse,
+  AdminPaymentsResponse,
+  AdminDashboardResponse,
+  AdminAccountsResponse,
+  AdminScansResponse,
+  AdminFindingsResponse,
+  AdminAuditResponse,
+  PaymentAuditResponse,
+  WorkspaceSecurityOverviewResponse,
 } from '@drobon/shared';
-import { ApiClientError, type ApiClient } from '../src/api/client.js';
+import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
 
 /** A 401 ApiClientError, as the API returns for anonymous requests. */
@@ -107,6 +129,26 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       },
       entitlements: ['plan:view'],
     })),
+    getPaymentConfig: vi.fn(async (): Promise<PaymentConfigResponse> => ({
+      currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
+      manualPaymentMethods: ['MANUAL_TRANSFER'],
+      manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
+      onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED',
+    })),
+    getPaymentHistory: vi.fn(async (): Promise<PaymentHistoryResponse> => ({ payments: [], page: 1, pageSize: 20, total: 0 })),
+    createPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    cancelPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getAdminDashboard: vi.fn(async (): Promise<AdminDashboardResponse> => { throw forbiddenError(); }),
+    getAdminAccounts: vi.fn(async (): Promise<AdminAccountsResponse> => ({ accounts: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminScans: vi.fn(async (): Promise<AdminScansResponse> => ({ scans: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminFindings: vi.fn(async (): Promise<AdminFindingsResponse> => ({ findings: [], page: 1, pageSize: 25, total: 0 })),
+    getAdminAudit: vi.fn(async (): Promise<AdminAuditResponse> => ({ events: [], page: 1, pageSize: 50, total: 0, coverage: 'PAYMENT_EVENTS_ONLY' })),
+    getAdminPayments: vi.fn(async (): Promise<AdminPaymentsResponse> => { throw forbiddenError(); }),
+    startPaymentReview: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    approvePayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    rejectPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    getPaymentAudit: vi.fn(async (): Promise<PaymentAuditResponse> => ({ events: [] })),
     // Pump 5 default: a fresh FREE usage view (nothing consumed this
     // UTC month). Suites override it to model exhaustion or PRO.
     getUsage: vi.fn(async (): Promise<UsageResponse> => ({
@@ -121,6 +163,18 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       remaining: 3,
       quotaStatus: 'OK',
     })),
+    getSecurityOverview: vi.fn(async (): Promise<WorkspaceSecurityOverviewResponse> => ({ overview: {
+      generatedAt: '2026-09-01T00:00:00.000Z',
+      projects: { total: 0, active: 0, archived: 0, dastTargetsConfigured: 0, recent: [] },
+      scans: { total: 0, byStatus: { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 }, recent: [] },
+      findings: {
+        currentObserved: 0, unresolved: 0,
+        unresolvedBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
+        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+        byVerificationState: { OBSERVED: 0, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
+      },
+      reports: { availableCount: 0, recent: [] },
+    } })),
     // Pump 6 default: no projects yet (the honest empty world). Suites
     // override these to model owned/foreign/lifecycle states.
     getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),
@@ -133,6 +187,18 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     updateProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),
+    setDastTarget: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    clearDastTarget: vi.fn(async (): Promise<ProjectResponse> => {
+      throw new Error('not stubbed');
+    }),
+    getAssessments: vi.fn(async (): Promise<AssessmentsResponse> => ({ assessments: [] })),
+    getAssessment: vi.fn(async (): Promise<AssessmentDetailResponse> => { throw new Error('not stubbed'); }),
+    createAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    updateAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    setAssessmentStatus: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    recordAssessmentAuthorization: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
     archiveProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),
@@ -155,6 +221,16 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
         requestId: 'test',
       });
     }),
+    getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [], page: 1, pageSize: 20, total: 0, totalPages: 0 })),
+    getFinding: vi.fn(async (): Promise<FindingDetailResponse> => { throw new Error('not stubbed'); }),
+    setFindingLifecycle: vi.fn(async (): Promise<FindingWorkflowResponse> => { throw new Error('not stubbed'); }),
+    addFindingNote: vi.fn(async (): Promise<FindingWorkflowResponse> => { throw new Error('not stubbed'); }),
+    getFindingHistory: vi.fn(async (): Promise<FindingHistoryResponse> => { throw new Error('not stubbed'); }),
+    createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
+    getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
+    downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
+    getAssistantStatus: vi.fn(async (): Promise<AssistantStatusResponse> => ({ providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false })),
+    askAssistant: vi.fn(async (_projectId: string, _input: AssistantQuestionRequest): Promise<AssistantResponse> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {
       throw new ApiClientError({
         kind: 'http',

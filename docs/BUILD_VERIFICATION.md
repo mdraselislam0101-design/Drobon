@@ -21,22 +21,29 @@ npm run preview       # build + vite preview of the web bundle (:4173)
 
 ## The `verify` pipeline
 
-`npm run verify` runs the full regression in dependency order and prints a
-per-step summary. Every step must PASS:
+`npm run verify` is the authoritative full regression pipeline in dependency
+order and prints a per-step summary. Every one of its eleven gates must PASS:
 
-1. `check:boundaries` — scope gates (no DB/dataset/shell).
-2. Secret-matcher `--self-test` — proves the scanner catches/ignores the
-   right shapes.
-3. `check:secrets` on sources.
-4. `typecheck` — strict `tsc --noEmit` per workspace.
-5. `lint` — ESLint over the repo.
-6. `test` — shared → api → worker → web (includes the production
-   build+preview test).
-7. `build` — all production builds.
-8. `check:secrets` again — now including `dist/` output.
-9. `audit` — `npm audit --audit-level=high`.
+1. `check:boundaries` — no database/dataset/shell imports or dependencies.
+2. `check-repo-integrity` — npm lock/workspace consistency, credential and
+   dataset file inventory, registry-token checks, generated-output exclusion,
+   and least-privilege/pinned-action CI policy.
+3. Release-evidence self-test — digest determinism and artifact mismatch
+   detection.
+4. Secret-matcher `--self-test`.
+5. `check:secrets` on sources/configuration.
+6. `typecheck` — strict TypeScript checks per workspace.
+7. `lint` — ESLint over the repo.
+8. `test` — complete shared → API → worker → Web regression suite (includes
+   the existing production-preview test).
+9. `build` — shared, API, worker, and Web production builds.
+10. `check:secrets` again — including generated build output.
+11. `audit` — `npm audit --audit-level=high`; registry/network failures fail
+    closed instead of being downgraded to warnings.
 
-Exit code is `0` on PASS, `1` on any FAIL.
+Exit code is `0` only when all required gates pass, otherwise `1`. GitHub
+Actions runs this exact command after `npm ci --ignore-scripts`; details and
+release-evidence limits are in `docs/CI_RELEASE.md`.
 
 ## Verification evidence (Pump 1)
 
@@ -808,3 +815,250 @@ Investigated on request: the live E2E report showed 404s next to
   stage 11 now asserts the true cross-account detail case (403 +
   FORBIDDEN + oracle-equivalence) alongside the scoped-404 cases
   (E2E: 64 main + 6 restart checks, all green).
+
+## Pump 11 — bounded passive DAST foundation (2026-09-28)
+
+### Scope delivered
+
+- Added project-owner DAST target configuration, API validation, durable project storage, and a project UI that keeps DAST disabled until the server confirms the configured target.
+- Registered the bounded passive DAST engine in the existing scan registry and lifecycle. DAST findings/observations use shared contracts, deterministic identities, redacted evidence, and the detail-only read surface; existing scan quota/idempotency paths remain authoritative.
+- SSRF defenses cover canonical HTTP(S) URLs, local/private/reserved/metadata IP and hostname classes, all-address DNS validation, resolver timeouts, literal-IP checks, DNS revalidation and pinned transport addresses. Redirects are independently resolved, same-host, limited, and cannot downgrade HTTPS.
+- Limits: GET only; at most 3 requests and 2 redirects; 32 KiB body per response; 5-second request timeout; 15-second DAST deadline. No browser, DOM/JavaScript execution, authentication, crawling, fuzzing, injection, exploit execution, or vulnerability-dataset matching.
+- Documentation: `docs/DAST.md`, plus cumulative updates to scan/project/security/testing docs and README. No security datasets or imports were added.
+
+### Verification — all gates passed
+
+`npm run verify` completed **PASS** on 2026-09-28:
+
+| Gate | Result |
+| --- | --- |
+| Scope/boundary checks (no DB/dataset/shell) | PASS |
+| Secret matcher self-test + source/build scans | PASS; 395 files scanned in each secret scan |
+| Typecheck (shared, API, worker, web) | PASS |
+| ESLint | PASS |
+| Full tests | PASS — 997 tests across 82 files (shared 158, API 625, worker 28, web 186) |
+| Production builds | PASS — shared, API, worker, production Vite bundle |
+| Dependency audit | PASS — 0 vulnerabilities |
+| `git diff --check` | PASS |
+
+DAST-specific coverage includes 57 target-policy cases, 9 engine cases, 7 passive-rule cases, 3 transport cases, 5 API lifecycle/persistence cases, 16 shared-contract cases, and 2 web UI cases. Existing SAST/SCA/Secrets and broader authz/quota/scan regressions passed in the full suite.
+
+### Controlled fixture verification (honest classification)
+
+- `apps/api/test/dastHttp.test.ts` uses an actual **loopback-only local HTTP server fixture** to verify the production Node transport's pinned-address lookup, one GET, absence of cookies/authorization, response cap, timeout and abort behavior. It bypasses target policy only for this local test object; production loopback/private rejection stays enabled.
+- `apps/api/test/dastApi.test.ts` exercises authenticated target configuration, scan execution, persisted observations/findings and a durable restart using the test-only resolver and **synthetic transport response**. This is an API integration/persistence E2E, **not** a real network DAST scan.
+- No arbitrary or public host was contacted; there was no public-target probe and no real DNS resolution in DAST fixtures.
+
+## Verification evidence (Pump 12 — findings, reports, SBOM completion)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green (scope boundaries,
+  secret matcher self-test, source secret scan, typecheck, lint, full
+  workspace tests, production builds, source/build secret scan, dependency
+  audit).
+- Test totals: **1,014 passed, 0 failed** across 88 files:
+  - shared: 163 (14 files)
+  - API: 633 (51 files)
+  - worker: 28 (3 files)
+  - web: 190 (20 files)
+- Source/build secret scans: **PASS**, 417 files. Dependency audit:
+  **0 package vulnerabilities**. Production builds: shared, API, worker,
+  and Vite web bundle all PASS. No dataset or database scope was added.
+- Controlled API E2E: `apps/api/test/reportsApi.test.ts` runs real HTTP
+  authentication, project, upload, scan, findings and report routes against
+  temporary durable JSON stores. It exercises SAST, SCA, SECRETS and DAST;
+  deterministic local source and DAST fixtures; findings filtering,
+  pagination, detail and validation; JSON and Markdown exports; redaction
+  and inert Markdown; owner/account/project isolation; archived history;
+  FREE quota exhaustion, PRO exemption and report quota neutrality; and
+  API restart with persisted report/finding retrieval. DAST uses a
+  test-controlled resolver and synthetic transport; no public or arbitrary
+  target was contacted. Sessions intentionally require login again after
+  process restart.
+- `git diff --check`: PASS. This is unit/integration plus controlled local
+  HTTP E2E evidence; it is not a public-target security assessment.
+
+## Verification evidence (Pump 13 — production remediation + lifecycle)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green after the final code
+  changes (scope boundaries, secret matcher self-test, source secret scan,
+  typecheck, lint, full tests, production builds, build secret scan, audit).
+- Test totals: **1,024 passed, 0 failed** across 90 files:
+  - shared: 164 (14 files)
+  - API: 640 (53 files)
+  - worker: 28 (3 files)
+  - web: 192 (20 files)
+- Secret scans: **PASS**, 426 files at both source and build stages.
+  Dependency audit: **0 vulnerabilities**. Shared/API/worker and web
+  production builds all passed. Focused API lifecycle/report and web
+  workflow/report/client tests passed before the full run.
+- Lifecycle/security coverage includes bounded persistent workflows and
+  event history, notes validation/redaction, atomic scan observations,
+  immutable scanner evidence, deterministic fingerprint reobservation and
+  reopening, stale report snapshot rejection/retry, incomplete summary
+  handling, project/account isolation, archived-project authorization,
+  lifecycle transitions, quota neutrality, and report/UI redaction.
+  Existing Pump 1–12 regression suites passed in the same full run.
+- Controlled E2E is local only. `apps/api/test/reportsApi.test.ts` drives
+  authenticated HTTP routes with temporary durable JSON stores through
+  SAST, SCA, Secrets and DAST, report exports, isolation, quota, restart and
+  redaction. DAST uses a test-controlled resolver and synthetic transport;
+  no public or arbitrary host was contacted. No source is modified, no
+  credential is verified/rotated, and no external vulnerability
+  intelligence is claimed. SCA remains `NOT ASSESSED` where intelligence
+  is unavailable. This is not a public-target security assessment.
+
+## Verification evidence (Pump 14 — AI Security Assistant foundation)
+
+- Date: 2026-09-28
+- `npm run verify`: **PASS** — all 9 gates green: scope boundaries,
+  secret matcher self-test, source secret scan, typecheck, lint, full tests,
+  production builds, build secret scan, and dependency audit.
+- Test totals: **1,039 passed, 0 failed** across 95 files:
+  - shared: 167 (15 files)
+  - API: 649 (56 files)
+  - worker: 28 (3 files)
+  - web: 195 (21 files)
+- Source and build secret scans: **PASS**, 450 files scanned at each
+  stage. Dependency audit: **0 vulnerabilities**. Shared, API, worker and
+  production Web builds all passed. `git diff --check`: **PASS**.
+- Focused assistant coverage includes strict shared request/response/status
+  contracts, bounded context and redaction, prompt-like evidence treated as
+  inert text, authenticated project-scoped status/ask endpoints, cross-account
+  and foreign scan/finding/report ID isolation, deterministic finding and
+  SCA explanations, `NOT ASSESSED` / `NO_DATA_LOADED` honesty, read-only
+  lifecycle behavior, scan-quota neutrality, and text-only Web rendering.
+- Local/synthetic only: API tests use ephemeral loopback servers and
+  synthetic accounts, projects, SAST source, and package inventory. No
+  public target or vulnerability dataset was used. No provider is active;
+  unsupported generation stays unavailable, and chat history is not
+  persisted. This is not a public-target security assessment.
+
+## Verification evidence (Pump 15 — manual payment-review foundation)
+
+Pump 16's current full verification includes the payment regression suites:
+manual quote/request/state behavior, reviewer allowlist plus live `ADMIN`,
+self-review denial, restart recovery, audit pagination and credential-like
+reference masking. See `apps/api/test/paymentApi.test.ts`,
+`apps/web/test/paymentUi.test.tsx`, and `docs/PAYMENTS.md`. No real payment,
+gateway or payment proof was used. The current full-run totals and exact
+check results are recorded below; this is not a separate E2E run.
+
+## Verification evidence (Pump 16 — restricted platform operations)
+
+- Date: 2026-09-29
+- `npm run verify` result: **PASS** — all 9 verification stages passed:
+  scope boundaries, secret matcher self-test, source scan, typecheck, lint,
+  tests, production builds, post-build secret scan, dependency audit.
+- Secret scan: PASS over 482 source files and again after builds (482 files).
+- Typecheck: PASS for shared, API, worker and web workspaces.
+- Lint: PASS.
+- Tests: **1,091 passed, 0 failed** — shared 172, API 683, worker 28,
+  web 208. These are unit, API integration and UI component tests; no
+  browser end-to-end test was run.
+- Manual local `curl` smoke using a synthetic disposable preview account:
+  Web shell GET **200**, proxied login **200**, authenticated dashboard
+  **200**; response reports `aiProvider: NONE` and
+  `vulnerabilityDataset: NO_DATA_LOADED`. This is a smoke check, not E2E.
+- Production builds: PASS for shared, API, worker and web.
+- `npm audit --audit-level=high`: PASS, zero vulnerabilities reported.
+- Pump 16-specific tests cover platform authorization (allowlist plus live
+  role and role revocation), bounded/malformed pagination and filters,
+  admin rate limiting, unavailable aggregate handling, status honesty,
+  secret/source/evidence/fingerprint redaction, credential-like payment
+  reference masking, payment-audit pagination/partial coverage, and
+  read-only/denied UI states. Synthetic local fixtures only; no real
+  payments, credentials, external targets or vulnerability datasets.
+  See `docs/ADMIN.md`, `apps/api/test/adminApi.test.ts`,
+  `packages/shared/test/admin.test.ts`, and
+  `apps/web/test/adminOperationsUi.test.tsx`.
+
+## Verification evidence (Pump 17 — Developer User Type completion)
+
+- Date: 2026-09-29.
+- `npm run verify`: **PASS**, all 9 gates: scope boundaries, secret matcher self-test, source secret scan, typecheck (shared/API/worker/web), ESLint, all workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,098 passed, 0 failed** — shared 172 (17 files), API 684 (59 files), worker 28 (3 files), Web 214 (24 files). This is the repository's full unit/integration/UI suite; no full browser automation was run.
+- Secret scanning: PASS, 492 files in the source stage and again after builds. Production builds: PASS for shared, API, Worker, and Web (Vite bundle). `npm audit --audit-level=high`: PASS, 0 vulnerabilities.
+- `apps/api/test/reportsApi.test.ts` is the controlled local Developer journey: synthetic Developer FREE registration and a seeded Developer PRO account, real HTTP login/project/source/scan/finding/report/assistant routes, all four existing scanners, lifecycle/note/history, report exports, persisted restart, ownership/IDOR isolation, FREE quota and PRO entitlement checks, and dashboard-summary redaction/status. DAST uses a test-controlled resolver and synthetic transport; no arbitrary/public target was contacted. The assistant provider is `NONE`; unsupported generation remains unavailable.
+- `apps/api/test/workspaceApi.test.ts` verifies 401 behavior, non-Developer and Developer session-scoped summaries, foreign-project exclusion, extra query rejection, UserType/role/plan mass-assignment rejection, and strict shared response validation. The summary uses fixed caps (6 projects, 8 scans, 8 finding identities, 5 reports) and omits source/evidence/fingerprint/owner fields.
+- `apps/web/test/authPages.test.tsx`, `authClient.test.ts`, and `workspaceDashboardUi.test.tsx` verify Developer registration/login routing, optional classification submission, direct-route UX for non-Developers, server-derived FREE and PRO views, Developer navigation, and non-exposure of MEMBER-level Admin/Pentest controls.
+- Existing lifecycle/reverification, scan-recovery, SCA/SBOM, Secrets, passive DAST, report integrity/restart, assistant scope/prompt-injection/redaction, entitlement/quota, and broader security regressions all passed in the same full run. All new journey state is synthetic/local; no production database, vulnerability catalog/feed, real credential, or public target was used. Account enabled/disabled state is not modeled. This is not a production security assessment.
+- Final `git diff --check`: **PASS**.
+- Live preview smoke (2026-09-29): started the Web and API dev servers bound to `0.0.0.0` (`:5173` / `:3001`) with sandbox-only `ALLOWED_HOSTS=*`. `GET /` and `GET /dashboard` returned **200** with the SPA shell; same-origin proxied `GET /api/v1/status` returned **200**; unauthenticated `GET /api/v1/me/security-overview` returned **401 UNAUTHORIZED**. Dev hardening headers (`nosniff`, `DENY`, referrer/permissions/COOP/CORP) were present. The development server intentionally omits CSP for Vite HMR; strict CSP is covered by the production preview test. This was a route/proxy smoke, not authenticated browser E2E.
+
+## Verification evidence (Pump 18 — Student workspace completion)
+
+- Date: 2026-09-29.
+- `npm run verify`: **PASS** — all 9 gates passed: scope boundaries, secret matcher self-test, source secret scan, shared/API/worker/Web typecheck, ESLint, all workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,106 passed, 0 failed** across 103 files — shared 172 (17 files), API 685 (59 files), worker 28 (3 files), Web 221 (24 files). The full run includes the Developer Pump 17 regression and earlier security/lifecycle suites. These are unit, API integration and UI component tests; no full browser automation was run.
+- Secret scans: PASS, 493 files in the source stage and again after production builds (the source-stage scan includes existing ignored build output from the prior run). Shared, API, worker and Web production builds: PASS. `npm audit --audit-level=high`: PASS, zero vulnerabilities.
+- Student API journey: `apps/api/test/reportsApi.test.ts` verifies Student FREE registration and quota exhaustion, shared-device denial across Student accounts, server-seeded Student PRO entitlement, rejection of client role/plan/owner claims, own project/source, SAST/SCA/SBOM/Secrets/bounded passive DAST, finding evidence and guidance, lifecycle/history/reopen/rescan and honest `NOT_OBSERVED_IN_LATEST_SCAN`, JSON/Markdown report digests and restart persistence, project-scoped deterministic assistant/provider-unavailable behavior, cross-account resource isolation and archive lifecycle. The Student journey uses synthetic local fixtures and injected DAST resolver/transport only; no public or arbitrary host was contacted.
+- Student Web coverage verifies registration/login/existing-session routing, dashboard/progress/history and shared workflow links, non-Student direct-route UX, role-backed privileged navigation, and Developer regression. The route/proxy and visual experience still require the separate live-preview smoke below; no browser E2E is claimed.
+- Boundaries remain unchanged: no PostgreSQL/production database or real/bundled vulnerability dataset; SCA without intelligence is `NOT_ASSESSED` / `NO_DATA_LOADED`; provider state is `NONE`; no fake findings, scores, fixes, credential verification or AI output. This is not a production security assessment.
+
+
+## Verification evidence (Pump 19 — Security Professional workspace completion)
+
+- Date: 2026-09-29.
+- `npm run verify`: **PASS** — all 9 gates passed: scope boundaries, secret matcher self-test, source secret scan, typecheck, ESLint, all workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,115 passed, 0 failed** across 103 files — shared 172 (17 files), API 687 (59 files), worker 28 (3 files), Web 228 (24 files). This includes Developer/Student journeys and historical security regressions. No full browser automation was run.
+- Secret scan: PASS, 494 files at the source stage and 494 after production builds. Shared/API/worker/Web production builds: PASS. `npm audit --audit-level=high`: PASS, zero vulnerabilities.
+- Security Professional UI coverage verifies classification selection, registration/login/existing-session routing, dashboard labels and links, server-backed bounded overview display, DAST observation and SCA `NOT_ASSESSED` / `NO_DATA_LOADED` metadata, and role—not UserType—privileged navigation. These are component/route tests.
+- Controlled Professional API journey in `apps/api/test/reportsApi.test.ts`: synthetic Professional FREE registration, 3-scan quota and exhausted denial, same-device cross-account denial, seeded PRO Professional entitlement, client role/plan/entitlement tampering, all four existing scanner engines, finding evidence/guidance, lifecycle/note/history/reopen/retest, honest clean-scan `NOT_OBSERVED_IN_LATEST_SCAN`, reports and restart persistence, account/project isolation, and deterministic Professional assistant questions. API journey uses temporary JSON stores and injected DAST fixtures; no public/arbitrary target was contacted.
+- Assistant coverage verifies assessment summaries, unresolved workflow and project-wide verification summaries (including a previously observed finding after a clean retest), DAST observation descriptions, attention items, SBOM/intelligence state, finding evidence/remediation and unsupported-question behavior from persisted records only. Evidence references remain project-scoped and bounded. Provider remains `NONE`; no LLM output, security score, fix claim or unsupported intelligence is fabricated.
+- Boundaries remain unchanged: no PostgreSQL/production database or real/bundled vulnerability/security dataset; SCA without data remains `NOT_ASSESSED` / `NO_DATA_LOADED`; account enabled/disabled state is not modeled. This is not a public-target security assessment.
+- Route/proxy smoke (2026-09-29): started the Web/API development servers on `0.0.0.0` with sandbox-only `ALLOWED_HOSTS=*` and in-memory stores. `GET /`, `/login`, and `/security-professional/dashboard` each returned **200** SPA responses; same-origin proxied `GET /api/v1/status` returned **200**; unauthenticated proxied `GET /api/v1/me/security-overview` returned **401** with the normal API security headers. The servers were stopped after the smoke. This verifies route fallback and proxy reachability only—not an authenticated browser journey or browser E2E.
+
+## Verification evidence (Pump 20 — Pentester user type)
+
+- Date: 2026-09-29.
+- `npm run verify`: **PASS** — all 9 gates passed: scope boundaries, secret matcher self-test, source secret scan, shared/API/worker/Web typecheck, ESLint, all workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,121 passed, 0 failed** across 103 files: shared 172 (17), API 688 (59), worker 28 (3), Web 233 (24). The full run includes all prior Developer, Student, Security Professional and security regression suites; no browser E2E was run.
+- Secret scans: PASS, 494 files at the source stage and 494 after production builds (the prior production output was present during this repeat run). Shared/API/worker/Web builds: PASS. `npm audit --audit-level=high`: PASS, zero vulnerabilities.
+- Pentester API journey in `apps/api/test/reportsApi.test.ts` uses temporary JSON stores and controlled DNS/transport fixtures. It verifies session registration and classification, role/plan/target-authorization request tampering rejection, owner-configured DAST target, GET-only observations/findings, finding evidence/lifecycle/history and retest, deterministic project-scoped assistant response with provider state `NONE`, DAST report persistence, cross-account project/scan/target isolation, FREE three-scan quota and exhaustion, seeded PRO entitlement/exemption, and restart-persisted overview, findings and reports. No public/arbitrary target or real model provider was contacted.
+- `apps/api/test/workspaceApi.test.ts` verifies exact owner-derived configured-target indicators/count, cross-account omission and strict contract rejection for invalid counts/flags. Web tests verify Pentester registration/login/existing-session routing, classification-only dashboard guard, server-backed target presentation and links while retaining Developer/Student/Professional UI regressions.
+- Safety boundaries remain: UserType is classification only; target indicators do not prove legal authorization. Existing DAST DNS/SSRF/redirect/transport controls, project ownership, FREE/PRO plan separation, quota/device anti-abuse, entitlements, rate limits, assistant scope/redaction/prompt-injection behavior, reports and scan lifecycle regressions passed. No PostgreSQL/production database, bundled security dataset, active exploitation, fabricated finding/fix/score, or unsupported LLM output was introduced.
+- Live development-preview route/proxy smoke (2026-09-29): started Web and API dev servers bound to `0.0.0.0` with sandbox-only `ALLOWED_HOSTS=*` and in-memory stores. `/`, `/login`, `/register` and `/pentester/dashboard` each returned **200** SPA responses; same-origin proxied `/api/v1/status` returned **200**; anonymous `/api/v1/me/security-overview` returned the expected **401**. The Pentester route is present, but this is route fallback/proxy reachability only—not authenticated browser E2E. The preview server remains running for inspection.
+
+## Verification evidence (Pump 21 — independent UserType capability audit)
+
+- Date: 2026-09-29.
+- `npm ci`: completed from the checked-in lockfile; dependency audit reported zero vulnerabilities.
+- `npm run verify`: **PASS** — all 9 gates passed: scope boundaries, secret matcher self-test, source secret scan, typecheck (shared/API/worker/web), ESLint, full workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,122 passed, 0 failed** across 103 files — shared 172 (17 files), API 688 (59 files), worker 28 (3 files), Web 234 (24 files). This includes the four controlled profile HTTP journeys in `apps/api/test/reportsApi.test.ts` and all cumulative Pumps 1–20 regression suites.
+- Secret scan: PASS over 495 files at the source stage and 495 files including production build output. Shared/API/worker/Web builds: PASS. `npm audit --audit-level=high`: PASS, zero vulnerabilities. `git diff --check`: PASS after the documentation updates.
+- Focused Pentester/DAST UI regression: `npm run test --workspace @drobon/web -- test/workspaceDashboardUi.test.tsx test/dastUi.test.tsx` — 15 passed across two suites, including the explicit `UNVERIFIED` target-permission label and fallback to `/projects` when a configured target is outside the fixed-cap recent-project slice.
+- The four profile journeys use real local HTTP/API routes, temporary JSON stores and controlled scanner/DAST fixtures. DAST tests use the synthetic resolver/transport or a controlled loopback-only transport fixture; no arbitrary/public target was contacted. The journeys are API integration E2E, not browser E2E. Web route/dashboard tests are React Testing Library component/route tests. The production preview-header suite checks static serving, headers and SPA fallback, not an authenticated browser workflow. No manual authenticated route/proxy journey or browser E2E was performed in Pump 21.
+- Audit outcome: existing shared project/scan/finding/remediation/report workflows already served all four UserTypes; no duplicate engine/store or profile-based server privilege was added. Corrected Pentester dashboard labels from “authorized” to “configured” and ensured bounded overview data cannot route a target shortcut to an unrelated active project. The project target UI explicitly shows `UNVERIFIED`; no client authorization claim or legal-permission proof was introduced.
+- Honest remaining limits: no independent third-party engagement verification or structured scope object; no Git/CI integration, course/grade system, production database/separate worker deployment, account enable/disable state, generative assistant provider/history, or loaded SCA intelligence. SCA remains `NOT_ASSESSED` / `NO_DATA_LOADED`; assistant provider remains `NONE`. No public-target, active-exploitation, external credential verification, or fabricated finding/fix/score/output activity occurred.
+- This test evidence is not a security certification or production readiness assessment. The exact local/remote SHA, active branch and final worktree status are reported in the completion summary; the commit cannot embed its own hash.
+
+
+## Verification evidence (Pump 22 — structured owner/project assessments)
+
+- Date: 2026-09-29.
+- `npm ci`: **PASS** from the checked-in lockfile; 341 packages installed, 0 vulnerabilities reported by the install audit.
+- `npm run verify`: **PASS**, all 9 gates: scope boundaries, secret matcher self-test, source secret scan, typecheck (shared/API/worker/web), ESLint, all workspace tests, production builds, post-build secret scan, and dependency audit.
+- Tests: **1,131 passed, 0 failed across 106 files** — shared 175 (18 files), API 691 (60 files), Worker 28 (3 files), Web 237 (25 files). This includes the new assessment contracts/API/UI plus all existing Developer, Student, Security Professional, Pentester, scanner, ownership, quota, lifecycle and report regressions.
+- Secret scans: PASS over 510 files at the source stage and 510 files including production build output (the prior build output was present at the start of the final repeat run). Lint and all workspace typechecks/production builds passed. `npm audit --audit-level=high`: PASS, 0 vulnerabilities.
+- Focused API regression: `assessmentsApi.test.ts`, `config.test.ts`, `scanApi.test.ts`, `dastApi.test.ts`, `dastTarget.test.ts`, `authzMatrix.test.ts`, `authzOwnership.test.ts`, `authzSecurity.test.ts`, `usageQuota.test.ts`, and `reportsApi.test.ts` — **170 passed across 10 files**. Shared assessment contracts: **3 passed**; Web assessment UI component tests: **3 passed**.
+- `apps/api/test/assessmentsApi.test.ts` exercises real local HTTP ownership/authentication, malformed and foreign IDs, forged body fields, bounded exact-host scope, active-scope immutability, lifecycle/idempotency/stale-state checks, linked passive DAST/report association, user-declaration/withdrawal history (never proof), active-scan and FREE-quota closure guards, mismatched replay, archived state and JSON restart persistence. DAST is test-injected; no public target is contacted. `reportsApi.test.ts` independently retains the four-profile FREE/PRO shared-platform regression.
+- Controlled live-preview/proxy smoke: `GET /`, `/security-professional/dashboard`, and `/projects/demo` returned **200** SPA responses; proxied `GET /api/v1/status` returned **200**; anonymous project assessment-list returned **401 UNAUTHORIZED**. A synthetic local Professional registration/login then created a project, uploaded a safe source constant, created and activated an assessment, created a linked SAST scan (**201**, response carried the assessment ID), and read assessment detail (**200**, one linked scan). Servers were bound to `0.0.0.0` on Web `:5173` and API `:3031`; wildcard host allowance and `:memory:` stores were used only for this disposable sandbox preview. No public target/DAST request was made.
+- Route/proxy smoke verified; browser E2E runner unavailable. The local HTTP journey, Vite SPA fallback and React component tests do not constitute browser E2E. The live preview process is available for inspection while this session remains active.
+- Product boundaries remain: assessment scope is metadata, not project/target/DAST permission; a target declaration is only `USER_DECLARED`/`UNVERIFIED`, never independently verified; existing passive DAST policy and FREE/PRO entitlement/quota are unchanged. No real/bundled vulnerability dataset, PostgreSQL, arbitrary target scan, active exploitation, or provider-backed Git/CI/course/grade integration was added.
+- This is test/route evidence, not a security certification or production readiness assessment. Commit and remote SHA verification are reported separately after repository synchronization.
+
+## Verification evidence (MAIN APP Pump 17 — CI/CD and engineering security)
+
+This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry above and UserType Pumps 18–22. It adds release/verification automation without replacing product or scanner functionality.
+
+- Date: 2026-09-29.
+- Clean locked install: `npm ci --ignore-scripts --no-audit --no-fund` **PASS** (341 packages installed). The separate full `npm audit --audit-level=high` gate remains authoritative.
+- `npm run verify`: **PASS**, all 11 required gates: scope boundaries; repository/lock/workspace/credential/dataset/CI integrity; release-evidence self-test; secret-matcher self-test; source secret scan; strict typechecks; ESLint; complete workspace tests; shared/API/worker/Web production builds; post-build secret scan; npm audit. No gate is warn-and-pass.
+- Tests: **1,131 passed, 0 failed across 106 files** — shared 175 (18 files), API 691 (60 files), worker 28 (3 files), Web 237 (25 files). The API suite includes the four controlled UserType account journeys and regressions for auth/ownership, plan/quota/device limits, all scan engines, findings/remediation, reports, assistant, payments, admin/operations and assessments. These are local synthetic-fixture tests; they do not contact a public target or use production credentials.
+- Both secret scans passed over 513 files (sources and current build outputs). All four production builds passed. `npm audit --audit-level=high`: **0 vulnerabilities**. The repository-integrity and release-evidence policy self-tests passed; the CI YAML parsed locally and the static checks confirmed full-SHA action pins, read-only permissions, no privileged PR trigger/secrets/deployment, and verification-before-artifact ordering.
+- Release evidence is generated only by the post-verification GitHub Actions job: it binds the manifest to the exact workflow SHA and version, hashes the lockfile and every payload file, compares two clean builds, and uploads an unsigned, 14-day artifact. No signing, certificate, signed attestation/provenance, tag/release creation, or deployment is claimed. The remote workflow result/artifact is reported separately after the push.
+- Product security boundaries are unchanged: no vulnerability catalog/data is imported, downloaded, bundled or required. SCA remains `NO_DATA_LOADED` / `NOT_ASSESSED`; UserType is classification only; existing auth, ownership, entitlement, quota, rate-limit, payment, admin, SSRF/DAST and legal-authorization constraints remain in force.
+- Browser E2E is **not claimed**: the Web suite covers component/route behavior and its production-preview test, but no real browser automation runner is configured. Local HTTP/API integration E2E and manual preview/API smoke are reported separately.
+- GitHub branch protection/required checks remain owner-managed settings; workflow YAML does not assert that those external settings are active. Production deployment remains deferred.

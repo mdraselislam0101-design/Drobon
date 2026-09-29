@@ -7,6 +7,7 @@ import type { UserRecord, UserRepository } from '../src/auth/repositories.js';
 import type { Finding, ScanDetailResponse } from '@drobon/shared';
 import {
   cleanupTempStoreDir,
+  configureFixtureDastTarget,
   makeTempStoreDir,
   readJson,
   sessionCookieFrom,
@@ -106,7 +107,9 @@ async function createProject(server: TestServer, cookies: Cookies, name = 'Targe
     throw new Error(`Project create failed with status ${res.status}.`);
   }
   const body = (await readJson(res)) as { data: { project: { id: string } } };
-  return body.data.project.id;
+  const projectId = body.data.project.id;
+  await configureFixtureDastTarget(server, cookieHeader(cookies), projectId);
+  return projectId;
 }
 
 interface SourceFile {
@@ -646,7 +649,7 @@ describe('SAST scans: the real engine over HTTP', () => {
     }
   });
 
-  test('SCA (Pump 9) and SECRETS (Pump 10) are REAL engines; DAST still honestly fails', async () => {
+  test('SCA, SECRETS and limited passive DAST are registered real engines', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
     const server = await startTestServer({ users });
@@ -688,17 +691,18 @@ describe('SAST scans: the real engine over HTTP', () => {
       expect(secretsDetail.data.scan.resultSummary?.filesSkipped).toBe(1);
       expect(secretsDetail.data.scan.resultSummary?.truncated).toBe(false);
       expect(secretsDetail.data.scan.sca).toBeUndefined();
-      // DAST remains the honest engine-less control type.
-      for (const scanType of ['DAST'] as const) {
-        const { res, body } = await requestScan(server, owner, projectId, scanType);
-        expect(res.status).toBe(201);
-        await server.scanProcessor.drain();
-        const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
-        expect(detail.data.scan.status, scanType).toBe('FAILED');
-        expect(detail.data.scan.failureCode).toBe('SCAN_ENGINE_NOT_IMPLEMENTED');
-        expect(detail.data.scan.findings).toEqual([]);
-        expect(detail.data.scan.sca).toBeUndefined();
-      }
+      // Pump 11: the bounded passive DAST engine runs only through an
+      // injected synthetic response fixture; no target network is used.
+      const { res, body } = await requestScan(server, owner, projectId, 'DAST');
+      expect(res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
+      expect(detail.data.scan.status).toBe('COMPLETED');
+      expect(detail.data.scan.failureCode).toBeUndefined();
+      expect(detail.data.scan.findings.length).toBeGreaterThan(0);
+      expect(detail.data.scan.findings.every((finding) => finding.scanner === 'DAST')).toBe(true);
+      expect(detail.data.scan.dast?.requestCount).toBe(1);
+      expect(detail.data.scan.sca).toBeUndefined();
     } finally {
       await server.stop();
     }

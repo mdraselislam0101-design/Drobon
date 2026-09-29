@@ -16,7 +16,16 @@ export function PublicOnlyRoute({ children }: { children: ReactElement }): React
   }
   if (state.status === 'ready') {
     const from = readSafePath(location.state);
-    return <Navigate to={from ?? '/account'} replace />;
+    const landing = state.user.userType === 'DEVELOPER'
+      ? '/dashboard'
+      : state.user.userType === 'STUDENT'
+        ? '/student/dashboard'
+        : state.user.userType === 'SECURITY_PROFESSIONAL'
+          ? '/security-professional/dashboard'
+          : state.user.userType === 'PENTESTER'
+            ? '/pentester/dashboard'
+            : '/account';
+    return <Navigate to={from ?? landing} replace />;
   }
   // `error` on the session probe falls through to the form: logging in is
   // still a meaningful action (and likely fixes the connectivity issue).
@@ -74,6 +83,42 @@ export function ProtectedRoute({ minRole }: { minRole?: AccountRole } = {}): Rea
   }
   if (minRole !== undefined && !roleAtLeast(state.user.role, minRole)) {
     return <ForbiddenState />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; the overview API remains self-scoped and authenticated. */
+export function DeveloperDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'DEVELOPER') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; Student access still uses the normal authenticated, self-scoped services. */
+export function StudentDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'STUDENT') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; the API remains self-scoped and authoritative. */
+export function SecurityProfessionalDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'SECURITY_PROFESSIONAL') {
+    return <Navigate to="/projects" replace />;
+  }
+  return <Outlet />;
+}
+
+/** UX-only classification routing; project and scan APIs still enforce owner/plan/quota policy. */
+export function PentesterDashboardRoute(): React.JSX.Element {
+  const { state } = useAuth();
+  if (state.status === 'ready' && state.user.userType !== 'PENTESTER') {
+    return <Navigate to="/projects" replace />;
   }
   return <Outlet />;
 }

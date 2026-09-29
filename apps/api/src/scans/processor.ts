@@ -155,6 +155,7 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
           outcome.resultSummary,
           outcome.findings,
           outcome.sca,
+          outcome.dast,
         );
         if (completed === undefined) {
           logger.error('Scan finalize failed after completion', { scanId: scan.id });
@@ -164,6 +165,19 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
           scanId: completed.id,
           projectId: completed.projectId,
           findingsTotal: completed.resultSummary?.findingsTotal,
+        });
+        return true;
+      }
+      if (outcome.kind === 'timed-out') {
+        const timedOut = await store.timeoutScan(scan.id, outcome.failureCode, outcome.failureMessage);
+        if (timedOut === undefined) {
+          logger.error('Scan finalize failed after engine timeout outcome', { scanId: scan.id });
+          return true;
+        }
+        logger.info('Scan timed out', {
+          scanId: timedOut.id,
+          projectId: timedOut.projectId,
+          failureCode: timedOut.failureCode,
         });
         return true;
       }

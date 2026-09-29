@@ -1,12 +1,13 @@
-// `npm run verify` — the full regression pipeline in dependency order
-// (Pump 1 foundation + Pump 2 authentication).
-// Every step must pass; the summary names each step PASS/FAIL/WARN.
+// `npm run verify` — the authoritative, fail-closed repository pipeline.
+// Every required step must pass; the summary names each step PASS/FAIL.
 import { spawnSync } from 'node:child_process';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
 const STEPS = [
   { name: 'scope boundaries', command: ['node', ['scripts/check-boundaries.mjs']] },
+  { name: 'repository integrity', command: ['node', ['scripts/check-repo-integrity.mjs']] },
+  { name: 'release evidence self-test', command: ['node', ['scripts/release-evidence.mjs', '--self-test']] },
   { name: 'secret matcher self-test', command: ['node', ['scripts/check-no-secrets.mjs', '--self-test']] },
   { name: 'secret scan (sources)', command: ['node', ['scripts/check-no-secrets.mjs']] },
   { name: 'typecheck', command: ['npm', ['run', 'typecheck']] },
@@ -14,7 +15,7 @@ const STEPS = [
   { name: 'tests', command: ['npm', ['run', 'test']] },
   { name: 'production builds', command: ['npm', ['run', 'build']] },
   { name: 'secret scan (incl. builds)', command: ['node', ['scripts/check-no-secrets.mjs']] },
-  { name: 'dependency audit', command: ['npm', ['run', 'audit']], allowWarn: true },
+  { name: 'dependency audit', command: ['npm', ['run', 'audit']] },
 ];
 
 function runStep(step) {
@@ -29,11 +30,8 @@ function runStep(step) {
   if (result.status === 0) {
     return { name: step.name, status: 'PASS', seconds };
   }
-  if (step.allowWarn && result.status !== 0) {
-    // npm audit exits non-zero for findings AND for registry outages.
-    // Findings fail the pipeline; outages (no network) warn loudly instead.
-    return { name: step.name, status: 'FAIL', seconds };
-  }
+  // Includes npm audit registry/network errors: an unavailable security gate
+  // is not a successful verification result.
   return { name: step.name, status: 'FAIL', seconds };
 }
 

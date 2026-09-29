@@ -46,6 +46,12 @@ All variables are documented in `.env.example`. Highlights:
 | `AUTH_SCRYPT_COST`      | `32768`                 | scrypt N (power of two, 1024–1048576)  |
 | `AUTH_SESSION_TTL_SECONDS` | `604800`             | Absolute session lifetime (7 days)     |
 | `AUTH_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_MS` | `30` / `60000` | Credential-endpoint limiter |
+| `PAYMENT_STORE_PATH` | `.data/payments.json` | Durable manual payment + audit store; `:memory:` rejected in production |
+| `PRO_PRICE_MINOR_UNITS` | `100000` | Server-owned BDT poisha (BDT 1,000.00); client must match |
+| `PAYMENT_REVIEWER_IDS` | (empty = no reviewers) | Explicit server-side reviewer user IDs; each also needs live account role `ADMIN` (neither role nor allowlist alone is sufficient) |
+| `PAYMENT_MANUAL_METHODS` | `MANUAL_TRANSFER` | Current manual-only method; not an online gateway |
+| `PAYMENT_MANUAL_INSTRUCTIONS` | contact support | User-visible text; configure accurate instructions before accepting funds |
+| `PAYMENT_RATE_LIMIT_MAX_REQUESTS` / `_WINDOW_MS` | `10` / `60000` | Additional per-IP fixed-window payment mutation limit |
 | `ALLOWED_HOSTS`         | loopback                | Vite host allowlist (`*` = sandbox only) |
 | `VITE_API_BASE_URL`     | (empty = same-origin)   | Public; baked into the browser bundle  |
 | `VITE_APP_NAME/ENV`     | `Drobon Aegis AI` / `development` | Public display values        |
@@ -65,6 +71,17 @@ the environment, don't patch the validator.
 - Node packages use NodeNext ESM: relative imports carry the `.js` extension
   (`./config.js`) even though the file is `.ts`. The Web uses bundler
   resolution (extensionless).
+
+## CI and release evidence
+
+GitHub Actions runs on Arena/main pushes and ordinary PRs to `main` using
+Node 22 from `.nvmrc`, `npm ci --ignore-scripts`, and the authoritative
+`npm run verify`. The workflow is read-only, uses full-SHA-pinned actions,
+receives no application or deployment secrets, and does not deploy. After a
+successful non-PR run it rebuilds twice and uploads source/build SHA-256
+release evidence for 14 days. See `docs/CI_RELEASE.md` for exact gates,
+limitations, and the manual version/release flow. Local development setup can
+continue to use `npm ci` as above.
 
 ## Conventions
 

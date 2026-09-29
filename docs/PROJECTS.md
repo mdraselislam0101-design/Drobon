@@ -1,10 +1,10 @@
 # Projects Foundation (Pump 6)
 
-A Project is the primary user-owned container that future security scans,
-jobs, findings, reports, SBOMs and remediation history will attach to.
-Pump 6 establishes ONLY the secure ownership boundary and CRUD
-lifecycle — no scan engine, no findings, no per-plan limits. Everything
-here is covered by executable tests (see `docs/TESTING.md`).
+A Project is the primary user-owned container for source snapshots,
+scan jobs, findings, SBOMs, and one optional DAST target. Pump 6
+established the secure ownership boundary and CRUD lifecycle; later
+pumps add bounded scan engines without changing that ownership model.
+Everything here is covered by executable tests (see `docs/TESTING.md`).
 
 ## The model
 
@@ -15,12 +15,15 @@ here is covered by executable tests (see `docs/TESTING.md`).
 | `name` | client → validated | 1–120 chars, trimmed, NFC-normalized, no control characters (single line) |
 | `description` | client → validated | 0–2000 chars, trimmed, NFC-normalized; tabs/newlines allowed (multi-line by design), all other control characters rejected |
 | `status` | server only | `ACTIVE` (always at creation) or `ARCHIVED`; changes ONLY through the explicit archive/unarchive operations |
+| `dastTargetUrl` | server-validated, owner-configured | Optional canonical HTTP(S) URL for the limited passive DAST engine; no owner or scan request claim can set it |
 | `createdAt` / `updatedAt` | server | ISO-8601 UTC; `updatedAt` bumps on every successful mutation that changes something |
 
-The public contract (`packages/shared/src/projects.ts`) exposes exactly
-`{ id, name, description, status, createdAt, updatedAt }` — no owner, no
-storage paths, no metadata. Guards reject forged shapes, including
-cross-field junk (`status: 'DELETED'`, empty names, malformed ids).
+The public contract (`packages/shared/src/projects.ts`) exposes the
+project fields `{ id, name, description, status, createdAt, updatedAt }`
+and, only when configured, the optional `dastTargetUrl`. It never exposes
+owner IDs, storage paths, or internal metadata. Guards reject forged
+shapes, including cross-field junk (`status: 'DELETED'`, empty names,
+malformed IDs, or a target on a non-HTTP(S) URL).
 
 ## Ownership (server-authoritative, always)
 
@@ -116,8 +119,8 @@ usage (Pump 5) stores — no database, no ORM, no queue infrastructure:
 - **Project CRUD never consumes a scan.** Creating, listing, viewing,
   editing, archiving and unarchiving projects do not touch the Pump 5
   usage service at all (tested: the usage view stays `used: 0` after a
-  full CRUD cycle). Only a future real scan execution will call
-  `UsageService.consumeScan()`.
+  full CRUD cycle). Real scan creation uses `UsageService.consumeScan()`
+  through the existing server-authoritative scan lifecycle.
 - **No invented plan limits.** Projects work identically for FREE and
   PRO. `UserType` does not determine project entitlements; ADMIN is not
   automatically PRO; creating projects grants nothing. Pump 4
@@ -147,44 +150,59 @@ shell, no second client:
   ProtectedRoute behavior (redirect to `/login` with a `from` path).
 - No project state in localStorage/sessionStorage or the URL beyond
   the id itself; the server response is the only source of truth.
-- Navigation: a "Projects" link joins the auth-aware header nav.
+- Navigation: a "Projects" link joins the auth-aware header nav. Pump 17
+  adds Developer-first "My projects" navigation, bounded overview links back
+  to owned projects, and in-project anchors for settings, DAST target, source,
+  scans/findings/reports and the project assistant. These links are UX only;
+  project ownership remains enforced by the same API resolver.
 
 ## Scans (Pump 7 — implemented foundation)
 
 Scan jobs now exist: `POST/GET /api/v1/projects/:projectId/scans` +
 `GET …/scans/:scanId`. Creating a scan consumes the account's scan
-allowance EXACTLY once, atomically with the durable job append (the
+allowance exactly once, atomically with the durable job append (the
 Pump 5 UsageService stays the single quota authority); ACTIVE projects
 only (archived → 409 PROJECT_ARCHIVED, history stays readable); the
-client may supply only the scan type (+ an idempotency key). No engine
-exists yet, so scans fail honestly with SCAN_ENGINE_NOT_IMPLEMENTED —
-never a fabricated result. See `docs/SCANS.md`.
+client may supply only the scan type (+ an idempotency key). Existing
+SAST, SCA/SBOM, Secrets and bounded passive DAST engines use this same
+lifecycle. See `docs/SCANS.md`.
 
-## Future scan relationship (documented, not implemented)
+## Existing findings and report relationship
 
 ```
-Authenticated account (ownership source — never client-supplied)
-  └── Project (Pump 6 — the container)
-        └── future Scan / Job (calls UsageService for quota)
-              └── future Findings
-                    └── future Reports / SBOM
-                          └── future Remediation / audit evidence
+Authenticated account (server-derived ownership)
+  └── Project
+        ├── source snapshot (SAST/SCA/SECRETS)
+        ├── optional owner-configured DAST target
+        └── Scan / Job (existing quota + lifecycle)
+              ├── findings (SAST/Secrets/DAST) and bounded DAST observations
+              ├── SCA inventory, CycloneDX-subset SBOM, honest intel state
+              └── one persisted report per completed scan (JSON / Markdown)
 ```
 
-Every future child object must derive ownership from the account →
-project chain and re-verify it server-side on every request — a client
-claiming a `projectId` (or `ownerId`) is never authority. There are no
-placeholder scan records and no relational schemas for future systems
-today; the boundary is simply clean: `projectId` is a stable, opaque,
-server-validated reference.
+Every child route resolves the caller's own project on the server before
+reading findings or reports; a client-supplied `projectId`, `ownerId`,
+role, UserType or plan is never authority. Findings and reports link
+back to the stored project/scan context. Reports do not consume scan
+quota. There are no placeholder scan records or relational schemas;
+JSON stores remain the current durable persistence implementation. See
+`docs/REPORTS.md`.
+
+## DAST target configuration (Pump 11)
+
+An owner may configure or remove one HTTP(S) target on their project
+through the authenticated owner-only `PUT` / `DELETE
+/api/v1/projects/:projectId/dast-target` routes. The target is validated
+server-side, stored on the project, and omitted from scan request input;
+DAST scan creation rechecks it before quota use and the engine rechecks
+DNS before each bounded request. This is a limited passive HTTP feature,
+not browser DAST; see `docs/DAST.md`.
 
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-The scan engines themselves (SAST/SCA/SECRETS/DAST execution — the
-Pump 7 orchestration boundary exists, the engines do not; see
-`docs/SCANS.md`), findings, reports, SBOM generation, remediation
-history, per-plan project limits, project sharing/collaboration,
-organization accounts, project deletion (hard delete is deliberately
-absent — ARCHIVED is the lifecycle end-state until an explicit,
-authorized deletion design exists), admin/operator project visibility,
+Multi-scan reports, PDF/signatures, remediation history, browser/full
+DAST and active testing, per-plan project limits, project sharing/collaboration, organization
+accounts, project deletion (hard delete is deliberately absent —
+ARCHIVED is the lifecycle end-state until an explicit, authorized
+deletion design exists), admin/operator project visibility,
 project-level usage analytics, database-backed project store.

@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet } from 'react-router-dom';
+import { roleAtLeast } from '@drobon/shared';
 import { useAuth } from '../auth/context.js';
 
 export function Layout({
@@ -46,11 +47,43 @@ export function Layout({
             </NavLink>
             {state.status === 'ready' && (
               <>
+                {state.user.userType === 'DEVELOPER' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/dashboard"
+                  >
+                    Developer dashboard
+                  </NavLink>
+                )}
+                {state.user.userType === 'STUDENT' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/student/dashboard"
+                  >
+                    Student dashboard
+                  </NavLink>
+                )}
+                {state.user.userType === 'SECURITY_PROFESSIONAL' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/security-professional/dashboard"
+                  >
+                    Security Professional dashboard
+                  </NavLink>
+                )}
+                {state.user.userType === 'PENTESTER' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/pentester/dashboard"
+                  >
+                    Pentester dashboard
+                  </NavLink>
+                )}
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
                   to="/projects"
                 >
-                  Projects
+                  {state.user.userType === 'DEVELOPER' || state.user.userType === 'STUDENT' || state.user.userType === 'SECURITY_PROFESSIONAL' || state.user.userType === 'PENTESTER' ? 'My projects' : 'Projects'}
                 </NavLink>
                 <NavLink
                   className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
@@ -58,6 +91,22 @@ export function Layout({
                 >
                   Account
                 </NavLink>
+                {roleAtLeast(state.user.role, 'ADMIN') && (
+                  <>
+                    <NavLink
+                      className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                      to="/admin/operations"
+                    >
+                      Platform operations
+                    </NavLink>
+                    <NavLink
+                      className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                      to="/admin/payments"
+                    >
+                      Payment review
+                    </NavLink>
+                  </>
+                )}
               </>
             )}
             {state.status === 'anonymous' && (
@@ -89,7 +138,6 @@ export function Layout({
           <span>
             {appName} · v{appVersion}
           </span>
-          <span className="footer-note">Foundation build — Pump 2</span>
         </div>
       </footer>
     </div>

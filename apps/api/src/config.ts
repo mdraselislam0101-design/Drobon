@@ -78,6 +78,8 @@ export interface ApiConfig {
    * survive restarts).
    */
   scanStorePath: string;
+  /** Durable project-scoped Security Professional assessment records. */
+  assessmentStorePath: string;
   /**
    * Durable source-snapshot store path (Pump 8 — the SAST scan
    * target). `:memory:` is the explicitly ephemeral dev/test opt-in —
@@ -92,6 +94,23 @@ export interface ApiConfig {
    * new selector here; anything unknown fails fast at startup.
    */
   vulnIntelProvider: 'none';
+  /** Durable Pump 15 payment + audit JSON document. */
+  paymentStorePath: string;
+  /** Server-authoritative PRO price in BDT poisha (minor units). */
+  proPriceMinorUnits: number;
+  /** Explicit platform payment-reviewer user-id allowlist; account roles are insufficient. */
+  paymentReviewerIds: string[];
+  /** Manual-only methods currently offered; never online gateway integrations. */
+  manualPaymentMethods: Array<'MANUAL_TRANSFER'>;
+  /** Safe user-visible instructions, bounded and server-configured. */
+  manualPaymentInstructions: string;
+  paymentRateLimitMaxRequests: number;
+  paymentRateLimitWindowMs: number;
+  /** Server-side platform-admin user ID allowlist; live account role must also be ADMIN. */
+  platformAdminIds: string[];
+  /** Dedicated per-IP limiter for high-cost platform-admin reads. */
+  adminRateLimitMaxRequests: number;
+  adminRateLimitWindowMs: number;
 }
 
 export class ConfigError extends Error {
@@ -102,6 +121,14 @@ export class ConfigError extends Error {
     this.name = 'ConfigError';
     this.issues = [...issues];
   }
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code < 32 || code === 127) return true;
+  }
+  return false;
 }
 
 function parseInteger(raw: string | undefined, name: string, issues: string[]): number | undefined {
@@ -276,6 +303,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     );
   }
 
+  // --- Structured assessments (Pump 22) ------------------------------------
+  const assessmentStorePath = (env['ASSESSMENT_STORE_PATH'] ?? '.data/assessments.json').trim();
+  const assessmentMemoryStore = assessmentStorePath === ':memory:';
+  if (assessmentStorePath.length === 0) {
+    issues.push('ASSESSMENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (assessmentMemoryStore && environment === 'production') {
+    issues.push('ASSESSMENT_STORE_PATH=":memory:" is not allowed in production (assessment records would not persist)');
+  }
+
   // --- Sources (Pump 8) -----------------------------------------------------
   // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
   // only 'none' exists today, so any attempt to point the app at a
@@ -309,6 +345,74 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     );
   }
 
+  // --- Payment foundation (Pump 15) ---------------------------------------
+  const paymentStorePath = (env['PAYMENT_STORE_PATH'] ?? '.data/payments.json').trim();
+  if (paymentStorePath.length === 0) {
+    issues.push('PAYMENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (paymentStorePath === ':memory:' && environment === 'production') {
+    issues.push('PAYMENT_STORE_PATH=":memory:" is not allowed in production (payment records must persist)');
+  }
+  const proPriceMinorUnits = parseInteger(env['PRO_PRICE_MINOR_UNITS'], 'PRO_PRICE_MINOR_UNITS', issues) ?? 100_000;
+  if (!Number.isSafeInteger(proPriceMinorUnits) || proPriceMinorUnits < 1 || proPriceMinorUnits > 100_000_000) {
+    issues.push('PRO_PRICE_MINOR_UNITS must be an integer between 1 and 100000000');
+  }
+  const paymentReviewerIds: string[] = [];
+  for (const id of (env['PAYMENT_REVIEWER_IDS'] ?? '').split(',')) {
+    const normalized = id.trim();
+    if (normalized.length === 0) continue;
+    if (!/^usr_[A-Za-z0-9_-]{1,128}$/.test(normalized)) {
+      issues.push('PAYMENT_REVIEWER_IDS entries must be bounded server-assigned user ids');
+    } else if (!paymentReviewerIds.includes(normalized)) {
+      paymentReviewerIds.push(normalized);
+    }
+  }
+  const manualPaymentMethods: Array<'MANUAL_TRANSFER'> = [];
+  const rawPaymentMethods = env['PAYMENT_MANUAL_METHODS'] ?? 'MANUAL_TRANSFER';
+  for (const method of rawPaymentMethods.split(',')) {
+    const normalized = method.trim().toUpperCase();
+    if (normalized.length === 0) continue;
+    if (normalized !== 'MANUAL_TRANSFER') {
+      issues.push('PAYMENT_MANUAL_METHODS currently supports only MANUAL_TRANSFER');
+    } else if (!manualPaymentMethods.includes('MANUAL_TRANSFER')) {
+      manualPaymentMethods.push('MANUAL_TRANSFER');
+    }
+  }
+  const manualPaymentInstructions = (env['PAYMENT_MANUAL_INSTRUCTIONS'] ??
+    'Payment instructions are not configured. Contact support before sending funds. A submitted reference is user-provided evidence and is not payment verification.').trim();
+  if (manualPaymentInstructions.length === 0 || manualPaymentInstructions.length > 500 || hasControlCharacter(manualPaymentInstructions)) {
+    issues.push('PAYMENT_MANUAL_INSTRUCTIONS must be 1–500 printable characters');
+  }
+  const paymentRateLimitMaxRequests = parseInteger(env['PAYMENT_RATE_LIMIT_MAX_REQUESTS'], 'PAYMENT_RATE_LIMIT_MAX_REQUESTS', issues) ?? 10;
+  if (paymentRateLimitMaxRequests < 1 || paymentRateLimitMaxRequests > 100_000) {
+    issues.push('PAYMENT_RATE_LIMIT_MAX_REQUESTS must be an integer between 1 and 100000');
+  }
+  const paymentRateLimitWindowMs = parseInteger(env['PAYMENT_RATE_LIMIT_WINDOW_MS'], 'PAYMENT_RATE_LIMIT_WINDOW_MS', issues) ?? 60_000;
+  if (paymentRateLimitWindowMs < 1000 || paymentRateLimitWindowMs > 3_600_000) {
+    issues.push('PAYMENT_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
+  }
+
+  // Platform authority is separate from account ADMIN and payment-reviewer
+  // authority. Only operator-provisioned IDs in this server environment can
+  // be platform admins; the route also requires a fresh live ADMIN role.
+  const platformAdminIds: string[] = [];
+  for (const id of (env['PLATFORM_ADMIN_IDS'] ?? '').split(',')) {
+    const normalized = id.trim();
+    if (normalized.length === 0) continue;
+    if (!/^usr_[A-Za-z0-9_-]{1,128}$/.test(normalized)) {
+      issues.push('PLATFORM_ADMIN_IDS entries must be bounded server-assigned user ids');
+    } else if (!platformAdminIds.includes(normalized)) {
+      platformAdminIds.push(normalized);
+    }
+  }
+  const adminRateLimitMaxRequests = parseInteger(env['ADMIN_RATE_LIMIT_MAX_REQUESTS'], 'ADMIN_RATE_LIMIT_MAX_REQUESTS', issues) ?? 60;
+  if (adminRateLimitMaxRequests < 1 || adminRateLimitMaxRequests > 100_000) {
+    issues.push('ADMIN_RATE_LIMIT_MAX_REQUESTS must be an integer between 1 and 100000');
+  }
+  const adminRateLimitWindowMs = parseInteger(env['ADMIN_RATE_LIMIT_WINDOW_MS'], 'ADMIN_RATE_LIMIT_WINDOW_MS', issues) ?? 60_000;
+  if (adminRateLimitWindowMs < 1000 || adminRateLimitWindowMs > 3_600_000) {
+    issues.push('ADMIN_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -334,7 +438,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     usageConsumeRoutes: environment !== 'production',
     projectStorePath,
     scanStorePath,
+    assessmentStorePath,
     sourceStorePath,
     vulnIntelProvider,
+    paymentStorePath,
+    proPriceMinorUnits,
+    paymentReviewerIds,
+    manualPaymentMethods,
+    manualPaymentInstructions,
+    paymentRateLimitMaxRequests,
+    paymentRateLimitWindowMs,
+    platformAdminIds,
+    adminRateLimitMaxRequests,
+    adminRateLimitWindowMs,
   };
 }

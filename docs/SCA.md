@@ -10,9 +10,8 @@ no lifecycle hooks, no `setup.py` — a `postinstall: "touch /tmp/pwned"`
 script inside an uploaded `package.json` is inert text (verified by
 end-to-end marker-file tests).
 
-SECRETS (Pump 10) is a real engine now (see `docs/SECRETS.md`);
-`DAST` still has no engine and still fails honestly with
-`SCAN_ENGINE_NOT_IMPLEMENTED` (see `docs/SCANS.md`).
+SECRETS (Pump 10) and limited passive DAST (Pump 11) are also real
+engines (see `docs/SECRETS.md` and `docs/DAST.md`).
 
 ## THE DATASET LOCK (absolute)
 
@@ -22,9 +21,11 @@ repository** — not vendored, not embedded, not synthesized into a
 feature:
 
 - With no real vulnerability-intelligence dataset loaded, an SCA scan
-  reports **`NOT_ASSESSED`** with `datasetStatus: NO_DATA_LOADED` and
-  **zero advisories** — even for a snapshot that "looks" vulnerable
-  (old `express`, old `lodash` pins). Nothing is fabricated. Ever.
+  reports **`NOT_ASSESSED`** with `datasetStatus: NO_DATA_LOADED`. Its
+  advisory collection is empty because no provider data was loaded; this
+  is **not** a zero-vulnerabilities verdict, even for a snapshot that
+  "looks" vulnerable (old `express`, old `lodash` pins). Nothing is
+  fabricated. Ever.
 - The scan still SUCCEEDS: the inventory, the direct/transitive
   classification and the SBOM are real work and are fully delivered.
   A missing dataset never fails a scan and never burns analysis.
@@ -224,6 +225,6 @@ findings view is untouched and clearly separate.
 | ----- | ------ |
 | `apps/api/test/scaParsers.test.ts` | name normalization (npm/pypi), all four manifests, adversarial matrices (proto keys, deep nesting, huge maps, malformed locks, invalid versions/names, control chars, traversal-shaped names), bounds (entry cap → PARTIAL, line cap → INVALID_INPUT), shell-looking strings as data |
 | `apps/api/test/scaEngine.test.ts` | multi-ecosystem end-to-end, determinism (ids + SBOM serial), lockfile-priority truth, transitive-graph honesty (pypi-only → UNAVAILABLE), Null-provider honesty (NOT_ASSESSED, 0 advisories), stub-provider reality (validated advisories, phantom/malformed dropped), marker-file non-execution, path/owner fail-closed, caps (manifests/bytes/inventory truncation), deadline/abort, malformed-manifest honesty, default limits |
-| `apps/api/test/scaApi.test.ts` | pre-flight 409 (quota protected), real scan over HTTP (validated payload, detail-route only), idempotent replay, archived 409, cross-account isolation, no content leakage, persistence/restart determinism, tamper guards (forged sca on SAST/QUEUED/malformed → refuse to boot; client injection → 422), SAST regression, SECRETS real (Pump 10)/DAST still NOT_IMPLEMENTED |
+| `apps/api/test/scaApi.test.ts` | pre-flight 409 (quota protected), real scan over HTTP (validated payload, detail-route only), idempotent replay, archived 409, cross-account isolation, no content leakage, persistence/restart determinism, tamper guards (forged sca on SAST/QUEUED/malformed → refuse to boot; client injection → 422), SAST/SECRETS regressions and passive DAST integration (Pump 11) |
 | `packages/shared/test/sca.test.ts` | closed vocabularies, id/fingerprint patterns, caps constants, guard rejections (unknown keys, out-of-vocabulary, fabricated pins, fake hashes/URLs, traversal evidence paths), cross-field honesty (NOT_ASSESSED↔advisories, ASSESSED requires provider+advisories, counts match arrays, manifest cap), deterministic ordering |
 | `apps/web/test/scaUi.test.tsx` | list distinction SCA/SAST, honest banner, inventory/manifests/SBOM rendering as text, client-side ecosystem filter, truncation visibility, ASSESSED-with-advisories path, error/retry honesty |

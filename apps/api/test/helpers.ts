@@ -26,6 +26,11 @@ import {
 } from '../src/scans/sources.js';
 import type { ScanEngine } from '../src/scans/engines.js';
 import type { ScanProcessor } from '../src/scans/processor.js';
+import { createDastTargetPolicy } from '../src/scans/dast/target.js';
+import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
+import type { DastTargetPolicy } from '../src/scans/dast/target.js';
+import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
+import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from '../src/assessments/store.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -51,12 +56,15 @@ export interface TestServer {
    * durable scan state directly.
    */
   scans: ScanStore;
+  assessments: AssessmentStore;
   /**
    * The source-snapshot store backing this server (Pump 8) — always
    * resolved to ONE shared instance (injected or created), so tests can
    * inspect/seed scan targets directly.
    */
   sources: SourceSnapshotStore;
+  /** Durable or in-memory payment store under test. */
+  payments: PaymentStore;
   /**
    * The scan processor (Pump 7). Auto-start is DISABLED in tests:
    * suites drive drain() explicitly for deterministic lifecycle
@@ -87,10 +95,20 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   scanStoreDir?: string;
   /** Inject a scan store directly (defaults: memory or scanStoreDir). */
   scanStore?: ScanStore;
+  /** Use a real JSON assessment store at a temp path for restart proofs. */
+  assessmentStoreDir?: string;
+  /** Inject an assessment store directly (defaults: memory or assessmentStoreDir). */
+  assessmentStore?: AssessmentStore;
   /** Use a real JSON source store at a temp path instead of memory (Pump 8). */
   sourceStoreDir?: string;
   /** Inject a source store directly (defaults: memory or sourceStoreDir). */
   sourceStore?: SourceSnapshotStore;
+  /** Use a real JSON payment store at a temp path for restart proofs. */
+  paymentStoreDir?: string;
+  /** Inject a payment store directly (defaults: memory or paymentStoreDir). */
+  paymentStore?: PaymentStore;
+  /** Deterministic payment timestamps. */
+  paymentNow?: () => number;
   /**
    * Inject scanner engines (Pump 8 default: the REAL SAST engine —
    * SAST scans analyze the project's uploaded source snapshot and
@@ -98,8 +116,33 @@ export type TestServerOverrides = Partial<ApiConfig> & {
    * the registry exactly.
    */
   scanEngines?: readonly ScanEngine[];
+  /** Safe deterministic resolver; never probes arbitrary/public targets. */
+  dastTargetPolicy?: DastTargetPolicy;
+  /** Controlled fixture transport; no real HTTP exchange by default. */
+  dastTransport?: DastTransport;
   /** Scan processor sweep interval (rarely needed in tests). */
   scanProcessorIntervalMs?: number;
+};
+
+const FIXTURE_DAST_RESPONSE: DastProbeResponse = {
+  status: 200,
+  headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'access-control-allow-origin': 'https://drobon-aegis.invalid',
+    'access-control-allow-credentials': 'true',
+    'set-cookie': ['session=FIXTURE_COOKIE_SECRET_DO_NOT_LEAK; Path=/'],
+    server: 'fixture-only/1.0',
+  },
+  body: '<!doctype html><script src="http://fixture.example.org/app.js"></script>',
+  bodyTruncated: false,
+  elapsedMs: 7,
+};
+
+const FIXTURE_DAST_TRANSPORT: DastTransport = {
+  probe: async () => ({
+    ...FIXTURE_DAST_RESPONSE,
+    headers: { ...FIXTURE_DAST_RESPONSE.headers },
+  }),
 };
 
 /**
@@ -125,9 +168,16 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStore,
     scanStoreDir,
     scanStore,
+    assessmentStoreDir,
+    assessmentStore,
     sourceStoreDir,
     sourceStore,
+    paymentStoreDir,
+    paymentStore,
+    paymentNow,
     scanEngines,
+    dastTargetPolicy,
+    dastTransport,
     scanProcessorIntervalMs,
     vulnIntelProvider,
     ...configOverrides
@@ -153,8 +203,19 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageConsumeRoutes: true,
     projectStorePath: ':memory:',
     scanStorePath: ':memory:',
+    assessmentStorePath: ':memory:',
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
+    paymentStorePath: ':memory:',
+    proPriceMinorUnits: 100_000,
+    paymentReviewerIds: [],
+    manualPaymentMethods: ['MANUAL_TRANSFER'],
+    manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds. A submitted reference is user-provided evidence and is not payment verification.',
+    paymentRateLimitMaxRequests: 1000,
+    paymentRateLimitWindowMs: 60_000,
+    platformAdminIds: [],
+    adminRateLimitMaxRequests: 1000,
+    adminRateLimitWindowMs: 60_000,
     ...configOverrides,
   };
   const effectiveStorePath =
@@ -165,14 +226,20 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStoreDir === undefined ? config.projectStorePath : join(projectStoreDir, 'projects.json');
   const effectiveScanStorePath =
     scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
+  const effectiveAssessmentStorePath =
+    assessmentStoreDir === undefined ? config.assessmentStorePath : join(assessmentStoreDir, 'assessments.json');
   const effectiveSourceStorePath =
     sourceStoreDir === undefined ? config.sourceStorePath : join(sourceStoreDir, 'sources.json');
+  const effectivePaymentStorePath =
+    paymentStoreDir === undefined ? config.paymentStorePath : join(paymentStoreDir, 'payments.json');
   const configWithStore: ApiConfig =
     authStoreDir === undefined &&
     usageStoreDir === undefined &&
     projectStoreDir === undefined &&
     scanStoreDir === undefined &&
-    sourceStoreDir === undefined
+    assessmentStoreDir === undefined &&
+    sourceStoreDir === undefined &&
+    paymentStoreDir === undefined
       ? config
       : {
           ...config,
@@ -180,7 +247,9 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
           ...(usageStoreDir === undefined ? {} : { usageStorePath: effectiveUsageStorePath }),
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
           ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
+          ...(assessmentStoreDir === undefined ? {} : { assessmentStorePath: effectiveAssessmentStorePath }),
           ...(sourceStoreDir === undefined ? {} : { sourceStorePath: effectiveSourceStorePath }),
+          ...(paymentStoreDir === undefined ? {} : { paymentStorePath: effectivePaymentStorePath }),
         };
   // A single resolved project-store instance: the app AND the returned
   // TestServer must share it (inject-or-default, never two stores).
@@ -199,11 +268,21 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
       : createJsonFileScanStore(effectiveScanStorePath));
   // Same rule for the source store (Pump 8): exactly ONE instance
   // shared by the app and the test.
+  const resolvedAssessmentStore =
+    assessmentStore ??
+    (assessmentStoreDir === undefined
+      ? createMemoryAssessmentStore()
+      : createJsonFileAssessmentStore(effectiveAssessmentStorePath));
   const resolvedSourceStore =
     sourceStore ??
     (sourceStoreDir === undefined
       ? createMemorySourceStore()
       : createJsonFileSourceStore(effectiveSourceStorePath));
+  const resolvedPaymentStore =
+    paymentStore ??
+    (paymentStoreDir === undefined
+      ? createMemoryPaymentStore()
+      : createJsonFilePaymentStore(effectivePaymentStorePath));
   const resolvedUsers =
     users ??
     (authStoreDir === undefined
@@ -226,12 +305,17 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     logger,
     users: resolvedUsers,
     sessions: resolvedSessions,
+    paymentStore: resolvedPaymentStore,
+    ...(paymentNow === undefined ? {} : { paymentNow }),
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
     scanStore: resolvedScanStore,
+    assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
     ...(scanEngines === undefined ? {} : { scanEngines }),
+    dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
+    dastTransport: dastTransport ?? FIXTURE_DAST_TRANSPORT,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),
     // Deterministic tests: no background processing unless a suite
     // starts the processor itself.
@@ -247,7 +331,9 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(resolvedProjectStore === undefined ? {} : { projects: resolvedProjectStore }),
     scans: resolvedScanStore,
+    assessments: resolvedAssessmentStore,
     sources: resolvedSourceStore,
+    payments: resolvedPaymentStore,
     scanProcessor: started.app.scanProcessor,
     resetRateLimit: started.resetRateLimit,
     stop: started.stop,
@@ -257,6 +343,22 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
 /** Read a fetch Response as unknown JSON. */
 export async function readJson(res: Response): Promise<unknown> {
   return (await res.json()) as unknown;
+}
+
+/** Configure only a synthetic fixture hostname through the real owner-only route. */
+export async function configureFixtureDastTarget(
+  server: TestServer,
+  cookie: string,
+  projectId: string,
+): Promise<void> {
+  const response = await fetch(`${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/dast-target`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ targetUrl: 'https://fixture.example.org/' }),
+  });
+  if (response.status !== 200) {
+    throw new Error(`Fixture DAST target configuration failed with status ${response.status}.`);
+  }
 }
 
 /** Create a throwaway directory for durable-store tests; cleaned by the caller. */

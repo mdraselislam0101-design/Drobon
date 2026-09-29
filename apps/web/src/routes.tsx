@@ -4,9 +4,12 @@ import type { ApiClient } from './api/client.js';
 import { AuthProvider } from './auth/context.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { Layout } from './components/Layout.js';
-import { ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.js';
+import { DeveloperDashboardRoute, PentesterDashboardRoute, ProtectedRoute, PublicOnlyRoute, SecurityProfessionalDashboardRoute, StudentDashboardRoute } from './components/RouteGuards.js';
 import { AccountPage } from './pages/AccountPage.js';
+import { AdminPaymentsPage } from './pages/AdminPaymentsPage.js';
+import { AdminOperationsPage } from './pages/AdminOperationsPage.js';
 import { HomePage } from './pages/HomePage.js';
+import { DeveloperDashboardPage } from './pages/DeveloperDashboardPage.js';
 import { ProjectDetailPage } from './pages/ProjectDetailPage.js';
 import { ProjectsPage } from './pages/ProjectsPage.js';
 import { LoginPage } from './pages/LoginPage.js';
@@ -20,6 +23,12 @@ export const APP_ROUTES = {
   login: '/login',
   register: '/register',
   account: '/account',
+  dashboard: '/dashboard',
+  studentDashboard: '/student/dashboard',
+  securityProfessionalDashboard: '/security-professional/dashboard',
+  pentesterDashboard: '/pentester/dashboard',
+  adminOperations: '/admin/operations',
+  adminPayments: '/admin/payments',
   projects: '/projects',
   project: (projectId: string): string => `/projects/${projectId}`,
 } as const;
@@ -72,6 +81,22 @@ export function AppRoutes({
                 <Route path="account" element={<AccountPage />} />
                 <Route path="projects" element={<ProjectsPage />} />
                 <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+                <Route element={<DeveloperDashboardRoute />}>
+                  <Route path="dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+                <Route element={<StudentDashboardRoute />}>
+                  <Route path="student/dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+                <Route element={<SecurityProfessionalDashboardRoute />}>
+                  <Route path="security-professional/dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+                <Route element={<PentesterDashboardRoute />}>
+                  <Route path="pentester/dashboard" element={<DeveloperDashboardPage />} />
+                </Route>
+              </Route>
+              <Route element={<ProtectedRoute minRole="ADMIN" />}>
+                <Route path="admin/operations" element={<AdminOperationsPage />} />
+                <Route path="admin/payments" element={<AdminPaymentsPage />} />
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>

@@ -119,6 +119,10 @@ decision table `SUBSCRIPTION_ENTITLEMENTS`:
 
 ## Web (display, never authority)
 
+Pump 17's Developer overview consumes the same server-reported subscription
+and entitlement response as the Account page; the classification tag does not
+change the result.
+
 The existing Account page (`/account`) gained a "Plan & subscription"
 section — no second account page, no second client:
 

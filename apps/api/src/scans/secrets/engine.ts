@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   FINDING_EVIDENCE_MAX_LENGTH,
   MAX_FINDINGS_PER_SCAN,
@@ -11,6 +10,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchSecretsRuleLine, SECRETS_RULES, type SecretsRule } from './rules.js';
+import { findingFingerprint } from '../findingIdentity.js';
 
 /**
  * THE REAL SECRETS ENGINE (Pump 10).
@@ -288,12 +288,6 @@ function defensiveGuard(rule: SecretsRule, evidence: string, value: string): str
  * function of the raw secret: the input is the REDACTED evidence
  * (the value is already replaced by a marker at this point).
  */
-function fingerprintOf(ruleId: string, file: string, line: number, evidence: string): string {
-  const evidenceDigest = createHash('sha256').update(evidence, 'utf8').digest('hex');
-  return createHash('sha256')
-    .update(`${ruleId}\n${file}\n${line}\n${evidenceDigest}`, 'utf8')
-    .digest('hex');
-}
 
 interface DiscoveryResult {
   kind: 'ok';
@@ -453,11 +447,16 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
             }
             seenRuleLine.add(dedupeKey);
             const evidence = evidenceFromLine(rule, line, match);
-            const fingerprint = fingerprintOf(rule.id, file.path, index + 1, evidence);
+            const fingerprint = findingFingerprint({
+              scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
+              location: file.path, line: index + 1, evidence,
+            });
             findings.push({
               id: `fnd_${fingerprint.slice(0, 24)}`,
               scanId: record.id,
               ruleId: rule.id,
+              scanner: 'SECRETS',
+              projectId: record.projectId,
               severity: rule.severity,
               title: rule.title,
               description: rule.description,

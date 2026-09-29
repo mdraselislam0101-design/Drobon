@@ -1,5 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import {
+  ASSESSMENT_ID_PATTERN,
   IDEMPOTENCY_KEY_PATTERN,
   type ScanDetailResponse,
   type ScanResponse,
@@ -21,6 +22,7 @@ import type { RequestContext, Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import type { ProjectStore } from '../projects/store.js';
+import type { AssessmentStore } from '../assessments/store.js';
 import {
   createOwnProjectResolver,
   type OwnProjectResolver,
@@ -32,6 +34,7 @@ import type { ScanProcessor } from '../scans/processor.js';
 import type { UserRepository } from '../auth/repositories.js';
 import type { UsageService } from '../usage/service.js';
 import { sendSuccess } from '../respond.js';
+import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '../scans/dast/target.js';
 
 /**
  * Scan-job API (Pump 7) — the secure orchestration boundary future
@@ -80,19 +83,23 @@ export interface ScanRouteDeps {
   config: ApiConfig;
   users: UserRepository;
   projects: ProjectStore;
+  assessments: AssessmentStore;
   scans: ScanStore;
   /** Source snapshots (Pump 8) — the SAST scan target, for pre-flight. */
   sources: SourceSnapshotStore;
   usage: UsageService;
   processor: ScanProcessor;
+  dastTargetPolicy?: DastTargetPolicy;
 }
 
 export function createScanRoutes(deps: ScanRouteDeps): Route[] {
-  const { config, users, projects, scans, sources, usage, processor } = deps;
+  const { config, users, projects, assessments, scans, sources, usage, processor } = deps;
+  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
 
   const createSchema = v.object({
     scanType: v.string({ maxLength: 16, trim: true }),
+    assessmentId: v.optional(v.string({ maxLength: 64, trim: true })),
   });
 
   /**
@@ -145,31 +152,63 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (project.status === 'ARCHIVED') {
           throw projectArchived();
         }
-        // Body: exactly { scanType } — every security-sensitive field
-        // (id, projectId, ownerId, requestedBy, status, createdAt,
-        // startedAt, completedAt, result, subscription, plan, role,
-        // userType, …) is an unknown property and rejected (422).
+        // Body: { scanType, assessmentId? }. Every other
+        // security-sensitive field (id, projectId, ownerId, requestedBy,
+        // status, timestamps, result, subscription, plan, role, userType,
+        // target, …) is unknown and rejected (422). assessmentId is only
+        // a same-owner/project link validated below.
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = createSchema.parse(raw);
         if (!parsed.ok) {
           throw validationError(parsed.issues);
         }
-        if (!isScanType(parsed.value.scanType)) {
+        const scanType = parsed.value.scanType;
+        if (!isScanType(scanType)) {
           throw validationError([
             { path: 'scanType', message: 'Unsupported scan type.' },
           ]);
         }
-        // PUMP 8/9/10 PRE-FLIGHT (quota protection): SAST, SCA and
-        // SECRETS all need a source snapshot as their deterministic
-        // target. Rejecting the request BEFORE quota consumption keeps
-        // a FREE account from burning its monthly allowance on a scan
-        // that can only fail with a *_TARGET_NOT_FOUND code.
-        // Race-window defense: if the snapshot disappears between here
-        // and processing, the engine still fails the scan closed.
+        let assessmentId: string | undefined;
+        if (parsed.value.assessmentId !== undefined) {
+          if (!ASSESSMENT_ID_PATTERN.test(parsed.value.assessmentId)) throw notFound('Assessment not found.');
+          const assessment = await assessments.findByProjectAndId(actor.id, project.id, parsed.value.assessmentId);
+          if (assessment === undefined) throw notFound('Assessment not found.');
+          if (assessment.status !== 'ACTIVE') throw conflict('Only an active project assessment can be linked to a new scan.');
+          assessmentId = assessment.id;
+        }
+        // PUMPS 8–11 PRE-FLIGHT (quota protection): source engines need
+        // a snapshot; DAST needs a configured, currently safe project
+        // target. Reject impossible/unsafe requests BEFORE quota
+        // consumption. Each engine repeats its target safety checks when
+        // execution begins to close the preflight race window.
+        let targetUrl: string | undefined;
+        if (scanType === 'DAST') {
+          if (project.dastTargetUrl === undefined) {
+            throw conflict('Configure a DAST target on this project before requesting a scan.');
+          }
+          try {
+            // Revalidate DNS before quota consumption. Execution repeats
+            // this immediately before every request and pins the result.
+            targetUrl = (await dastTargetPolicy.prepare(project.dastTargetUrl)).url;
+          } catch (error) {
+            const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
+              ? 'The configured DAST target cannot currently be resolved safely.'
+              : 'The configured DAST target no longer passes the public-address safety policy.';
+            throw conflict(message);
+          }
+          if (assessmentId !== undefined) {
+            const linked = await assessments.findByProjectAndId(actor.id, project.id, assessmentId);
+            const targetHost = new URL(targetUrl).hostname.toLowerCase();
+            if (linked === undefined || linked.status !== 'ACTIVE') throw conflict('The linked assessment is no longer active.');
+            if (!linked.scope.inScopeHosts.includes(targetHost) || linked.scope.outOfScopeHosts.includes(targetHost)) {
+              throw conflict('The DAST target host is not explicitly included in this assessment scope.');
+            }
+          }
+        }
         if (
-          parsed.value.scanType === 'SAST' ||
-          parsed.value.scanType === 'SCA' ||
-          parsed.value.scanType === 'SECRETS'
+          scanType === 'SAST' ||
+          scanType === 'SCA' ||
+          scanType === 'SECRETS'
         ) {
           const snapshot = await sources.findByProject(project.id);
           if (snapshot === undefined || snapshot.files.length === 0) {
@@ -194,13 +233,27 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           // Account vanished mid-session — the session is worthless.
           throw unauthorized();
         }
-        const outcome = await scans.createScanWithQuota({
+        const createScan = () => scans.createScanWithQuota({
           ownerId: actor.id,
           projectId: project.id,
-          scanType: parsed.value.scanType,
+          scanType,
+          ...(assessmentId === undefined ? {} : { assessmentId }),
+          ...(targetUrl === undefined ? {} : { targetUrl }),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
           consume: () => usage.consumeScan(record, deviceHash),
         });
+        let outcome: Awaited<ReturnType<typeof scans.createScanWithQuota>>;
+        if (assessmentId === undefined) {
+          outcome = await createScan();
+        } else {
+          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, createScan);
+          if (gated.outcome === 'not-found') throw notFound('Assessment not found.');
+          if (gated.outcome === 'inactive') throw conflict('Only an active project assessment can be linked to a new scan.');
+          outcome = gated.value;
+        }
+        if (outcome.outcome === 'invalid-target') {
+          throw conflict('The DAST target is missing or no longer passes the safety policy.');
+        }
         if (outcome.outcome === 'quota-denied') {
           // Uniform 429 QUOTA_EXCEEDED + Retry-After (next UTC month).
           // Nothing was appended; no hint which limit tripped.

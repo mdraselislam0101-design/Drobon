@@ -1,9 +1,47 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
-import { renderAt, stubClient } from './appFixtures.js';
+import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
 describe('routing', () => {
+  test('an existing Student session visiting login is routed to the Student dashboard', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'STUDENT' as const } })),
+    });
+    await renderAt('/login', client);
+    expect(await screen.findByRole('heading', { name: 'Student security dashboard' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Sign in' })).toBeNull();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('an existing Security Professional session visiting login lands on the professional dashboard', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'SECURITY_PROFESSIONAL' as const } })),
+    });
+    await renderAt('/login', client);
+    expect(await screen.findByRole('heading', { name: 'Security Professional dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('an existing Pentester session visiting login lands on the Pentester dashboard', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'PENTESTER' as const } })),
+    });
+    await renderAt('/login', client);
+    expect(await screen.findByRole('heading', { name: 'Pentester assessment dashboard' })).toBeInTheDocument();
+    expect(client.getSecurityOverview).toHaveBeenCalledTimes(1);
+  });
+
+  test('non-Pentester classification cannot enter the Pentester dashboard directly', async () => {
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: { ...TEST_USER, userType: 'DEVELOPER' as const } })),
+    });
+    await renderAt('/pentester/dashboard', client);
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Pentester assessment dashboard' })).toBeNull();
+    expect(client.getSecurityOverview).not.toHaveBeenCalled();
+  });
+
   test('home renders the hero and foundation grid', async () => {
     await renderAt('/');
     expect(screen.getByRole('heading', { name: 'Drobon Aegis AI' })).toBeInTheDocument();
@@ -11,7 +49,10 @@ describe('routing', () => {
       'href',
       '/status',
     );
-    expect(screen.getByText('Shared contracts')).toBeInTheDocument();
+    expect(screen.getByText('Projects & source')).toBeInTheDocument();
+    expect(screen.getByText(/SCA\/SBOM inventory/)).toBeInTheDocument();
+    expect(screen.getByText('Professional assessments')).toBeInTheDocument();
+    expect(screen.getByText(/developers, students, security professionals and pentesters/)).toBeInTheDocument();
   });
 
   test('unknown routes render the 404 page', async () => {
