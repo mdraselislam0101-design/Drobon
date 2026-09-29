@@ -81,3 +81,30 @@ describe('POST /api/v1/echo', () => {
     expect(res.headers.get('allow')).toBe('POST');
   });
 });
+
+describe('query boundary (Pump 5)', () => {
+  let server: TestServer;
+  beforeAll(async () => {
+    server = await startTestServer({ bodyMaxBytes: 1024 });
+  });
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test('any query string is rejected fail-closed with the uniform 422 vocabulary', async () => {
+    const res = await fetch(`${server.baseUrl}/api/v1/echo?x=1&x=2`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await readJson(res)) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    const clean = await fetch(`${server.baseUrl}/api/v1/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    expect(clean.status).toBe(200);
+  });
+});

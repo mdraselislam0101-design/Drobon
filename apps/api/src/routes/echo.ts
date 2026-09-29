@@ -25,6 +25,7 @@ export function createEchoRoutes(deps: EchoRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/echo',
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: deps.config.bodyMaxBytes });
         const parsed = echoSchema.parse(raw);
         if (!parsed.ok) {

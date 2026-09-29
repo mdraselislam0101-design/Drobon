@@ -161,7 +161,7 @@ describe('GET /api/v1/usage — authentication and self-only access', () => {
     });
   });
 
-  test('no account-id parameter exists — query tampering returns own usage', async () => {
+  test('no account-id parameter exists — query tampering is rejected fail-closed (Pump 5)', async () => {
     const { server, users } = await usageServer();
     await seedUser(users, 'other@example.test', {
       subscription: { ...FREE_ACTIVE },
@@ -170,6 +170,9 @@ describe('GET /api/v1/usage — authentication and self-only access', () => {
     const other = await users.findByEmail('other@example.test');
     const session = await cookieFor(server, 'self@example.test');
     const device = await deviceCookieFor(server, session);
+    // Stray queries of every tampering shape fail closed 422 — none of them
+    // can select another account or forge usage fields, and none reaches the
+    // usage service.
     for (const query of [
       `?userId=${other?.id ?? ''}`,
       `?accountId=${other?.id ?? ''}`,
@@ -178,11 +181,16 @@ describe('GET /api/v1/usage — authentication and self-only access', () => {
       `?period=2027-01`,
     ]) {
       const { res, body } = await getUsage(server, `${session}; ${device}`, query);
-      expect(res.status).toBe(200);
-      expect((body as { data: { used: number } }).data.used).toBe(0);
-      expect((body as { data: { plan: string } }).data.plan).toBe('FREE');
-      expect((body as { data: { period: { period: string } } }).data.period.period).toBe('2026-09');
+      expect(res.status).toBe(422);
+      expect((body as { error: { code: string } }).error.code).toBe('VALIDATION_ERROR');
     }
+    // A clean request still returns the caller's own usage, unmodified by the
+    // rejected attempts above.
+    const clean = await getUsage(server, `${session}; ${device}`);
+    expect(clean.res.status).toBe(200);
+    expect((clean.body as { data: { used: number } }).data.used).toBe(0);
+    expect((clean.body as { data: { plan: string } }).data.plan).toBe('FREE');
+    expect((clean.body as { data: { period: { period: string } } }).data.period.period).toBe('2026-09');
   });
 });
 
@@ -254,8 +262,12 @@ describe('usage authorization matrix (roles/user types never exempt)', () => {
     const deviceB = await deviceCookieFor(server, sessionB);
     // Consume on B so the two views differ.
     await consume(server, `${sessionB}; ${deviceB}`, '{}');
-    // A's read (with any parameter noise) is still A's own view.
-    const { body } = await getUsage(server, `${sessionA}; ${deviceA}`, '?userId=usr_b');
+    // Noise parameters are rejected fail-closed 422 (Pump 5) — they never
+    // reach the usage service and cannot select B's view.
+    const noisy = await getUsage(server, `${sessionA}; ${deviceA}`, '?userId=usr_b');
+    expect(noisy.res.status).toBe(422);
+    // A's clean read is still A's own view.
+    const { body } = await getUsage(server, `${sessionA}; ${deviceA}`);
     expect((body as { data: { used: number } }).data.used).toBe(0);
     // B's view shows its own consumption.
     const bView = await getUsage(server, `${sessionB}; ${deviceB}`);

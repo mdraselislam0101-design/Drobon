@@ -1,4 +1,3 @@
-import type { IncomingMessage } from 'node:http';
 import {
   ASSESSMENT_HOSTS_MAX_COUNT,
   ASSESSMENT_ID_PATTERN,
@@ -19,7 +18,7 @@ import {
   type AssessmentsResponse,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { badRequest, conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
+import { conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
 import type { Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
@@ -35,14 +34,6 @@ export interface AssessmentRouteDeps {
   assessments: AssessmentStore;
   scans: ScanStore;
   now?: () => number;
-}
-
-function rejectUnknownQuery(req: IncomingMessage): void {
-  const raw = req.url ?? '/';
-  let url: URL;
-  try { url = new URL(raw, 'http://drobon.invalid'); }
-  catch { throw badRequest('Assessment request URL is invalid.'); }
-  if ([...url.searchParams.keys()].length > 0) throw badRequest('Assessment routes do not accept query parameters.');
 }
 
 function normalizeText(value: string): string { return value.normalize('NFC'); }
@@ -127,7 +118,7 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'GET', path: '/api/v1/projects/:projectId/assessments', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnknownQuery(req);
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
@@ -138,11 +129,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 16_384) });
         const parsed = parseDetails(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -155,7 +146,7 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnknownQuery(req);
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
@@ -175,11 +166,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'PATCH', path: '/api/v1/projects/:projectId/assessments/:assessmentId', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 16_384) });
         const parsed = parseDetails(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -195,11 +186,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/status', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const parsed = statusSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) }));
         if (!parsed.ok) throw validationError(parsed.issues);
         if (!isAssessmentStatus(parsed.value.status) || parsed.value.status === 'PLANNED') throw validationError([{ path: 'status', message: 'Choose ACTIVE, COMPLETED, or CANCELLED.' }]);
@@ -238,11 +229,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/authorization-declarations', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const parsed = authorizationSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) }));
         if (!parsed.ok) throw validationError(parsed.issues);
         if (parsed.value.confirm !== true || (parsed.value.action !== 'DECLARE' && parsed.value.action !== 'WITHDRAW')) throw validationError([{ path: 'action', message: 'Provide action DECLARE or WITHDRAW and confirm true.' }]);

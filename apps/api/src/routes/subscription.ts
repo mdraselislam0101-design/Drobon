@@ -1,6 +1,7 @@
 import type { SubscriptionResponse } from '@drobon/shared';
 import { internal, unauthorized } from '../errors.js';
 import type { Route } from '../http.js';
+import * as v from '../lib/validate.js';
 import { sendSuccess } from '../respond.js';
 
 /**
@@ -12,9 +13,10 @@ import { sendSuccess } from '../respond.js';
  * - identity comes exclusively from the session — there is no account-id
  *   parameter, path segment or header that could select another account,
  *   so cross-account reads (IDOR) are structurally impossible;
- * - query parameters, request headers and request body are never read —
- *   tampering (`?plan=PRO`, `x-plan`, a forged body) cannot change the
- *   verdict (tested);
+ * - ANY query string is rejected fail-closed (422) before the account is
+ *   consulted, and request body/headers are never read — tampering
+ *   (`?plan=PRO`, `x-plan`, a forged body) cannot change the verdict
+ *   (tested);
  * - anonymous → 401; authenticated → 200; the entitlement verdict is the
  *   server's, derived from live account state on this very request;
  * - there is deliberately NO mutation endpoint: POST/PATCH/PUT/DELETE on
@@ -27,7 +29,8 @@ export function createSubscriptionRoutes(): Route[] {
       method: 'GET',
       path: '/api/v1/subscription',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         if (ctx.user === undefined) {
           // Defensive: requireAuth rejects anonymous requests first.
           throw unauthorized();
