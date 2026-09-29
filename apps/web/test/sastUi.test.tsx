@@ -158,6 +158,9 @@ describe('SAST UI: source snapshot section', () => {
     expect(meta.textContent).toContain('2 files');
     expect(meta.textContent).toContain('120 bytes');
     expect(meta.textContent).toContain('The latest upload replaces');
+    const fileList = await screen.find('snapshot-file-list');
+    expect(fileList.textContent).toContain('index.ts · 80 bytes');
+    expect(fileList.textContent).toContain('lib.ts · 40 bytes');
   });
 
   test('uploading files sends file names as paths and text content, then refreshes metadata', async () => {
@@ -189,6 +192,26 @@ describe('SAST UI: source snapshot section', () => {
       { path: 'lib.ts', content: 'export const y = 2;\n' },
     ]);
     expect(await screen.find('snapshot-meta')).toBeTruthy();
+  });
+
+  test('inline text source form uploads a relative path and source content directly', async () => {
+    const uploadSources = vi.fn(async (): Promise<SourceSnapshotResponse> => SNAPSHOT);
+    await renderSastPage({ uploadSources });
+
+    const pathInput = await screen.find('source-inline-path');
+    const contentInput = await screen.find('source-inline-content');
+    const submitButton = await screen.find('source-inline-submit');
+
+    const user = userEvent.setup();
+    await user.type(pathInput, 'src/app.ts');
+    await user.type(contentInput, 'const safe = true;');
+    await user.click(submitButton);
+
+    const { waitFor } = await import('@testing-library/react');
+    await waitFor(() => expect(uploadSources).toHaveBeenCalledTimes(1));
+    expect(uploadSources).toHaveBeenCalledWith('prj_00000000-0000-4000-8000-000000000001', [
+      { path: 'src/app.ts', content: 'const safe = true;' },
+    ]);
   });
 
   test('a server-rejected upload shows the server message verbatim and keeps the old snapshot', async () => {

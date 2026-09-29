@@ -1062,3 +1062,14 @@ This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry
 - Product security boundaries are unchanged: no vulnerability catalog/data is imported, downloaded, bundled or required. SCA remains `NO_DATA_LOADED` / `NOT_ASSESSED`; UserType is classification only; existing auth, ownership, entitlement, quota, rate-limit, payment, admin, SSRF/DAST and legal-authorization constraints remain in force.
 - Browser E2E is **not claimed**: the Web suite covers component/route behavior and its production-preview test, but no real browser automation runner is configured. Local HTTP/API integration E2E and manual preview/API smoke are reported separately.
 - GitHub branch protection/required checks remain owner-managed settings; workflow YAML does not assert that those external settings are active. Production deployment remains deferred.
+
+## Verification evidence (Forensic baseline + core application upgrade)
+
+- Date: 2026-09-29.
+- `npm run verify`: **PASS**, all 11 required gates: scope boundaries; repository integrity; release-evidence self-test; secret-matcher self-test; source secret scan; strict typechecks; ESLint; complete workspace tests; shared/API/worker/Web production builds; post-build secret scan; npm audit.
+- Tests: **1,139 passed, 0 failed across 106 files** — shared 175 (18 files), API 691 (60 files), worker 28 (3 files), Web 245 (25 files).
+- Core application and preview upgrades verified:
+  - `PUT` and `DELETE /api/v1/projects/:projectId/dast-target` now enforce `409 PROJECT_ARCHIVED` on archived projects (`apps/api/src/routes/projects.ts`, `apps/api/test/dastApi.test.ts`), and `DastTargetSection` in `apps/web/src/pages/ProjectDetailPage.tsx` renders read-only `archived-dast-target-note` when a project is archived (`apps/web/test/dastUi.test.tsx`).
+  - `shouldRewriteToIndex` in `apps/web/vite-plugin-aegis.ts` excludes `/api`, `/api/*`, `/livez`, and `/readyz`, `apps/web/vite.config.ts` shares the `/api`, `/livez`, `/readyz` same-origin proxy across `server` and `preview`, and `allowFrameEmbedding` is enabled only when `ALLOWED_HOSTS=*` in the sandbox preview while preserving default `X-Frame-Options: DENY` and `frame-ancestors 'none'` (`apps/web/test/plugin.test.ts`, `apps/web/test/previewHeaders.test.ts`).
+  - `ProjectDetailPage.tsx` now renders the uploaded file list (`snapshot-file-list`), supports inline relative-path text source uploads alongside file-input uploads (`apps/web/test/sastUi.test.tsx`), automatically polls active (`QUEUED`/`RUNNING`) scans until completion, and synchronizes completed scans with `AssistantSection`.
+- Dataset and database separation locks remain enforced: SCA remains `NO_DATA_LOADED` / `NOT_ASSESSED` (`vulnIntelProvider: 'none'`), assistant remains deterministic (`providerState: 'NONE'`), and persistence uses the existing atomic JSON stores.

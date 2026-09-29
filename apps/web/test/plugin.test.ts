@@ -32,6 +32,18 @@ describe('preview security headers', () => {
     expect(headers['cross-origin-opener-policy']).toBe('same-origin');
     expect(headers['cross-origin-resource-policy']).toBe('same-origin');
   });
+
+  test('opt-in allowFrameEmbedding relaxes only frame headers for sandbox preview', () => {
+    const preview = getPreviewSecurityHeaders({ allowFrameEmbedding: true });
+    expect(preview['x-frame-options']).toBeUndefined();
+    expect(preview['content-security-policy']).toContain(
+      "frame-ancestors 'self' https://*.e2b.app https://*.arena.ai",
+    );
+    expect(preview['x-content-type-options']).toBe('nosniff');
+    const dev = getDevSecurityHeaders({ allowFrameEmbedding: true });
+    expect(dev['x-frame-options']).toBeUndefined();
+    expect(dev['content-security-policy']).toBeUndefined();
+  });
 });
 
 describe('dev security headers', () => {
@@ -54,6 +66,11 @@ describe('shouldRewriteToIndex', () => {
     ['GET', '/deep/nested?x=1', true],
     ['GET', '/', false],
     ['GET', '/index.html', false],
+    ['GET', '/api', false],
+    ['GET', '/api/v1/status', false],
+    ['GET', '/api/v1/me?x=1', false],
+    ['GET', '/livez', false],
+    ['GET', '/readyz', false],
     ['GET', '/assets/index-abc123.js', false],
     ['GET', '/favicon.svg', false],
     ['POST', '/status', false],

@@ -83,6 +83,7 @@ export function ProjectDetailPage(): React.JSX.Element {
   const [reloadToken, setReloadToken] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [latestScans, setLatestScans] = useState<readonly Scan[] | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     if (projectId === undefined) {
@@ -245,6 +246,7 @@ export function ProjectDetailPage(): React.JSX.Element {
 
           <DastTargetSection
             projectId={project.project.id}
+            projectStatus={project.project.status}
             targetUrl={project.project.dastTargetUrl}
             onChanged={(updated) => setProject({ status: 'ready', project: updated })}
           />
@@ -257,15 +259,22 @@ export function ProjectDetailPage(): React.JSX.Element {
             projectStatus={project.project.status}
             dastTargetUrl={project.project.dastTargetUrl}
             showAssessmentTools={showAssessmentTools}
+            onScansLoaded={setLatestScans}
           />
-          <AssistantSection projectId={project.project.id} />
+          <AssistantSection projectId={project.project.id} externalScans={latestScans} />
         </>
       )}
     </section>
   );
 }
 
-function AssistantSection({ projectId }: { projectId: string }): React.JSX.Element {
+function AssistantSection({
+  projectId,
+  externalScans,
+}: {
+  projectId: string;
+  externalScans?: readonly Scan[] | null;
+}): React.JSX.Element {
   const client = useApiClient();
   const [providerStatus, setProviderStatus] = useState<AssistantStatusResponse | null>(null);
   const [scans, setScans] = useState<Scan[]>([]);
@@ -295,6 +304,12 @@ function AssistantSection({ projectId }: { projectId: string }): React.JSX.Eleme
       });
     return () => { active = false; };
   }, [client, projectId]);
+
+  useEffect(() => {
+    if (externalScans !== null && externalScans !== undefined) {
+      setScans(externalScans.filter((scan) => scan.status === 'COMPLETED'));
+    }
+  }, [externalScans]);
 
   useEffect(() => {
     let active = true;
@@ -412,10 +427,12 @@ function AssistantSection({ projectId }: { projectId: string }): React.JSX.Eleme
  */
 function DastTargetSection({
   projectId,
+  projectStatus,
   targetUrl,
   onChanged,
 }: {
   projectId: string;
+  projectStatus: string;
   targetUrl: string | undefined;
   onChanged: (updated: ProjectView) => void;
 }): React.JSX.Element {
@@ -468,36 +485,43 @@ function DastTargetSection({
       {targetUrl !== undefined && (
         <p data-testid="dast-configured-target">Configured target: <code>{targetUrl}</code></p>
       )}
-      <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
-        <div className="field">
-          <label htmlFor="dast-target-url">Project target URL</label>
-          <input
-            id="dast-target-url"
-            name="targetUrl"
-            type="url"
-            value={value}
-            maxLength={2048}
-            autoComplete="url"
-            onChange={(event) => setValue(event.target.value)}
-            placeholder="https://example.org/"
-            aria-describedby="dast-target-hint"
-          />
-          <p className="muted" id="dast-target-hint">
-            No credentials, query string, fragment, custom port, or non-public address. Only the project owner can change this setting.
-          </p>
-        </div>
-        {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
-        <div className="hero-actions">
-          <button type="submit" className="button button-secondary" disabled={busy || value.length === 0} aria-busy={busy}>
-            {busy ? 'Validating…' : 'Save target'}
-          </button>
-          {targetUrl !== undefined && (
-            <button type="button" className="button button-ghost" onClick={() => void clear()} disabled={busy}>
-              Remove target
+      {projectStatus !== 'ACTIVE' ? (
+        <p className="muted" data-testid="archived-dast-target-note">
+          Archived projects cannot change the DAST target. Unarchive the project
+          to configure or remove a target.
+        </p>
+      ) : (
+        <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
+          <div className="field">
+            <label htmlFor="dast-target-url">Project target URL</label>
+            <input
+              id="dast-target-url"
+              name="targetUrl"
+              type="url"
+              value={value}
+              maxLength={2048}
+              autoComplete="url"
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="https://example.org/"
+              aria-describedby="dast-target-hint"
+            />
+            <p className="muted" id="dast-target-hint">
+              No credentials, query string, fragment, custom port, or non-public address. Only the project owner can change this setting.
+            </p>
+          </div>
+          {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
+          <div className="hero-actions">
+            <button type="submit" className="button button-secondary" disabled={busy || value.length === 0} aria-busy={busy}>
+              {busy ? 'Validating…' : 'Save target'}
             </button>
-          )}
-        </div>
-      </form>
+            {targetUrl !== undefined && (
+              <button type="button" className="button button-ghost" onClick={() => void clear()} disabled={busy}>
+                Remove target
+              </button>
+            )}
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -674,11 +698,13 @@ function ScansSection({
   projectStatus,
   dastTargetUrl,
   showAssessmentTools,
+  onScansLoaded,
 }: {
   projectId: string;
   projectStatus: string;
   dastTargetUrl: string | undefined;
   showAssessmentTools: boolean;
+  onScansLoaded?: (scans: readonly Scan[]) => void;
 }): React.JSX.Element {
   const client = useApiClient();
   const [scans, setScans] = useState<Scan[] | null>(null);
@@ -701,6 +727,7 @@ function ScansSection({
       ]);
       setScans(scansData.scans);
       setUsage(usageData);
+      onScansLoaded?.(scansData.scans);
     } catch (error: unknown) {
       // Fail closed: no partial scan data — the honest error instead.
       setScans(null);
@@ -708,11 +735,26 @@ function ScansSection({
         error instanceof ApiClientError ? error.message : 'Could not load the scans.',
       );
     }
-  }, [client, projectId]);
+  }, [client, projectId, onScansLoaded]);
 
   useEffect(() => {
     void load();
   }, [load, reloadToken]);
+
+  const hasActiveScan =
+    scans?.some((scan) => scan.status === 'QUEUED' || scan.status === 'RUNNING') ?? false;
+
+  useEffect(() => {
+    if (!hasActiveScan) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void load();
+    }, 1500);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [hasActiveScan, scans, load]);
 
   useEffect(() => {
     let active = true;
@@ -982,6 +1024,8 @@ function SourcesSection({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [inlinePath, setInlinePath] = useState('');
+  const [inlineContent, setInlineContent] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -1043,6 +1087,29 @@ function SourcesSection({
     }
   };
 
+  const uploadInline = async (): Promise<void> => {
+    const trimmedPath = inlinePath.trim();
+    if (trimmedPath.length === 0) {
+      return;
+    }
+    setUploadError(null);
+    setUploading(true);
+    try {
+      await client.uploadSources(projectId, [{ path: trimmedPath, content: inlineContent }]);
+      setInlinePath('');
+      setInlineContent('');
+      setReloadToken((token) => token + 1);
+    } catch (error: unknown) {
+      setUploadError(
+        error instanceof ApiClientError
+          ? error.message
+          : 'Could not upload the source snapshot. Please try again.',
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <>
       <h2 id="source-snapshot">Source snapshot</h2>
@@ -1056,13 +1123,24 @@ function SourcesSection({
           SCA and SECRETS scans.
         </p>
       ) : snapshot !== null ? (
-        <p className="muted" data-testid="snapshot-meta">
-          {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
-          {snapshot.totalBytes} bytes — uploaded{' '}
-          <code>{snapshot.updatedAt}</code>. The latest upload replaces the
-          previous snapshot and is what SAST, SCA and SECRETS scans
-          analyze.
-        </p>
+        <>
+          <p className="muted" data-testid="snapshot-meta">
+            {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
+            {snapshot.totalBytes} bytes — uploaded{' '}
+            <code>{snapshot.updatedAt}</code>. The latest upload replaces the
+            previous snapshot and is what SAST, SCA and SECRETS scans
+            analyze.
+          </p>
+          {snapshot.files.length > 0 && (
+            <ul className="scan-list" data-testid="snapshot-file-list">
+              {snapshot.files.map((file) => (
+                <li key={file.path} data-testid="snapshot-file-item">
+                  <code>{file.path}</code> · {file.bytes} bytes
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       ) : (
         <LoadingState label="Loading the source snapshot…" />
       )}
@@ -1076,6 +1154,7 @@ function SourcesSection({
           className="scan-form"
           onSubmit={(event) => {
             event.preventDefault();
+            void uploadInline();
           }}
           data-testid="source-form"
         >
@@ -1094,6 +1173,44 @@ function SourcesSection({
               At most 200 files, 256 KiB per file, 768 KiB total. Paths are
               file names; .env and key files are rejected by the server.
             </p>
+          </div>
+          <div className="field">
+            <label htmlFor="source-inline-path">Or paste a text file (relative path)</label>
+            <input
+              id="source-inline-path"
+              name="inlinePath"
+              type="text"
+              value={inlinePath}
+              onChange={(event) => setInlinePath(event.target.value)}
+              placeholder="src/app.ts"
+              maxLength={256}
+              disabled={uploading}
+              data-testid="source-inline-path"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="source-inline-content">Source file content</label>
+            <textarea
+              id="source-inline-content"
+              name="inlineContent"
+              rows={4}
+              value={inlineContent}
+              onChange={(event) => setInlineContent(event.target.value)}
+              placeholder="Paste source code or manifest text…"
+              disabled={uploading}
+              data-testid="source-inline-content"
+            />
+          </div>
+          <div className="hero-actions">
+            <button
+              type="submit"
+              className="button button-secondary"
+              disabled={uploading || inlinePath.trim().length === 0}
+              aria-busy={uploading}
+              data-testid="source-inline-submit"
+            >
+              {uploading ? 'Uploading…' : 'Upload text source'}
+            </button>
           </div>
           {uploading && (
             <p className="muted" data-testid="source-uploading">

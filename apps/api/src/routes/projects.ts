@@ -7,7 +7,7 @@ import {
   type ProjectsResponse,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { forbidden, internal, unauthorized, validationError } from '../errors.js';
+import { forbidden, internal, projectArchived, unauthorized, validationError } from '../errors.js';
 import { AUTHZ_DENIED_MESSAGE } from '../auth/authorization.js';
 import type { RequestContext, Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
@@ -292,6 +292,9 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        if (project.status === 'ARCHIVED') {
+          throw projectArchived();
+        }
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = dastTargetSchema.parse(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -321,6 +324,9 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await ownProjectOr403(ctx.params['projectId'], actor.id);
+        if (project.status === 'ARCHIVED') {
+          throw projectArchived();
+        }
         const updated = await projects.setDastTargetUrl(project.id, undefined);
         if (updated === undefined) throw internal('Project disappeared during DAST target removal.');
         ctx.logger.info('Project DAST target removed', { requestId: ctx.id, userId: actor.id, projectId: project.id });

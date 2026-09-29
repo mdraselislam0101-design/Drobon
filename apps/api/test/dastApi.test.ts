@@ -148,6 +148,20 @@ describe('project-associated DAST target configuration and API lifecycle', () =>
     expect(cleared.status).toBe(200);
     const clearedRead = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}`, { headers: { cookie: cookieHeader(owner) } });
     expect((await readJson(clearedRead) as { data: { project: { dastTargetUrl?: string } } }).data.project.dastTargetUrl).toBeUndefined();
+
+    // Archived projects reject DAST target mutations with 409 PROJECT_ARCHIVED.
+    const archived = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/archive`, {
+      method: 'POST', headers: { cookie: cookieHeader(owner) },
+    });
+    expect(archived.status).toBe(200);
+    const archivedPut = await setTarget(server, owner, projectId, 'https://app.example.org/');
+    expect(archivedPut.status).toBe(409);
+    expect((await readJson(archivedPut) as { error: { code: string } }).error.code).toBe('PROJECT_ARCHIVED');
+    const archivedDelete = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/dast-target`, {
+      method: 'DELETE', headers: { cookie: cookieHeader(owner) },
+    });
+    expect(archivedDelete.status).toBe(409);
+    expect((await readJson(archivedDelete) as { error: { code: string } }).error.code).toBe('PROJECT_ARCHIVED');
   });
 
   test('missing or newly-private DNS targets fail before consuming the existing quota', async () => {
