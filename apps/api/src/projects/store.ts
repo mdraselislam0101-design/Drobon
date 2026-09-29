@@ -227,14 +227,16 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
   return {
     create: (input) =>
       runExclusive(() => {
+        // A new project starts with one consistent server-assigned timestamp.
+        const timestamp = new Date().toISOString();
         const record: ProjectRecord = {
           id: `prj_${randomUUID()}`,
           ownerId: input.ownerId,
           name: input.name,
           description: input.description,
           status: 'ACTIVE',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: timestamp,
+          updatedAt: timestamp,
         };
         // Guard against the astronomically unlikely id collision.
         if (byId.has(record.id)) {
