@@ -240,6 +240,7 @@ describe('auth security controls', () => {
             usageConsumeRoutes: true,
             projectStorePath: `${dir}/projects.json`,
             scanStorePath: `${dir}/scans.json`,
+            assessmentStorePath: `${dir}/assessments.json`,
             sourceStorePath: ':memory:',
             vulnIntelProvider: 'none' as const,
             paymentStorePath: `${dir}/payments.json`,

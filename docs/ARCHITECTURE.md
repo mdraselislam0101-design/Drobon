@@ -5,8 +5,7 @@ plans/entitlements, quotas, projects, scans, reports, assistant, and manual
 payments), Pump 16 (restricted platform operations), Pump 17 (Developer
 workspace completion), Pump 18 (Student presentation over the shared
 overview), Pump 19 (Security Professional presentation and bounded
-assistant summaries over shared records), and Pump 20 (Pentester target and
-assessment presentation over the same owner-scoped DAST/workflow systems):
+assistant summaries over shared records), Pump 20 (Pentester target presentation over the same owner-scoped DAST/workflow systems), and Pump 22 (structured project assessment records linked to existing scans and reports):
 an npm-workspaces monorepo with three runtime components
 (Web, API, Worker) sharing one contract package. TypeScript everywhere,
 strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
@@ -191,6 +190,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   `workspaceSummary` powers the current authenticated account's shared
   overview, including Pentester target-configuration indicators derived from
   owner-held project records.
+- `assessments/` — Pump 22's bounded, owner/project-scoped assessment store. It uses the same atomic restart-safe JSON pattern, validates loaded records, serializes lifecycle mutations and linked scan creation, and stores bounded scope/objective metadata plus append-only lifecycle/declaration history. Assessment scope is never project/target/scan authority (see `docs/SECURITY_PROFESSIONAL.md`).
 - `usage/` — the quota core (Pump 5): `devices.ts` (opaque 32-byte
   base64url device token issuance + hashed lookup, hardened cookie
   serialization), `store.ts` (the single persistence boundary — durable
@@ -236,7 +236,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   transitions. The Pump 14 assistant is deterministic/read-only with no
   active provider, provider calls, chat persistence, tools or quota usage;
   its bounded provenance context reuses the same project/scan/finding/report
-  stores (see `docs/ASSISTANT.md`). Pump 19 adds assessment/DAST summaries
+  stores (see `docs/ASSISTANT.md`). Pump 22 adds owner/project-scoped assessment routes for lifecycle, exact-host scope, timestamped unverified user declarations and summaries of linked existing scans/reports; scan creation can optionally bind an assessment without bypassing ownership, quota or DAST policy. The JSON store is bounded and restart-safe but remains a single-process foundation. Pump 19 adds assistant assessment/DAST summaries
   from latest completed engine records and unresolved/verification/attention
   aggregates from the same project-filtered workflow summary; no engine or
   store is duplicated. Pump 20 also derives Pentester target-configured

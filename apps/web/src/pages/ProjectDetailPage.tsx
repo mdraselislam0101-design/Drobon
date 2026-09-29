@@ -5,6 +5,11 @@ import {
   PROJECT_NAME_MAX_LENGTH,
   ASSISTANT_QUESTION_MAX_LENGTH,
   SCAN_TYPES,
+  isAssessmentHostname,
+  type Assessment,
+  type AssessmentDetailResponse,
+  type AssessmentScope,
+  type AssessmentStatus,
   findingScanner,
   type FindingDetailResponse,
   type AssistantResponse,
@@ -72,6 +77,7 @@ interface ProjectView {
 export function ProjectDetailPage(): React.JSX.Element {
   const { projectId } = useParams<{ projectId: string }>();
   const { state } = useAuth();
+  const showAssessmentTools = state.status === 'ready' && (state.user.userType === 'SECURITY_PROFESSIONAL' || state.user.userType === 'PENTESTER');
   const client = useApiClient();
   const [project, setProject] = useState<ProjectState>({ status: 'loading' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -188,6 +194,7 @@ export function ProjectDetailPage(): React.JSX.Element {
             <a className="nav-link" href="#project-settings">Settings</a>
             <a className="nav-link" href="#dast-target">DAST target</a>
             <a className="nav-link" href="#source-snapshot">Source</a>
+            {showAssessmentTools && <a className="nav-link" href="#assessments">Assessments</a>}
             <a className="nav-link" href="#security-scans">Scans, findings &amp; reports</a>
             <a className="nav-link" href="#assistant-title">Assistant</a>
           </nav>
@@ -242,12 +249,14 @@ export function ProjectDetailPage(): React.JSX.Element {
             onChanged={(updated) => setProject({ status: 'ready', project: updated })}
           />
 
+          {showAssessmentTools && <AssessmentsSection projectId={project.project.id} projectStatus={project.project.status} dastTargetUrl={project.project.dastTargetUrl} />}
           <SourcesSection projectId={project.project.id} projectStatus={project.project.status} />
 
           <ScansSection
             projectId={project.project.id}
             projectStatus={project.project.status}
             dastTargetUrl={project.project.dastTargetUrl}
+            showAssessmentTools={showAssessmentTools}
           />
           <AssistantSection projectId={project.project.id} />
         </>
@@ -493,7 +502,7 @@ function DastTargetSection({
   );
 }
 
-function ScansSection({
+function AssessmentsSection({
   projectId,
   projectStatus,
   dastTargetUrl,
@@ -503,10 +512,182 @@ function ScansSection({
   dastTargetUrl: string | undefined;
 }): React.JSX.Element {
   const client = useApiClient();
+  const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [assessmentId, setAssessmentId] = useState('');
+  const [detail, setDetail] = useState<AssessmentDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [title, setTitle] = useState('');
+  const [objectivesText, setObjectivesText] = useState('');
+  const [inScopeText, setInScopeText] = useState('');
+  const [outOfScopeText, setOutOfScopeText] = useState('');
+  const [scopeNotes, setScopeNotes] = useState('');
+  const [declarationConfirmed, setDeclarationConfirmed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    void client.getAssessments(projectId).then((result) => {
+      if (!active) return;
+      setAssessments(result.assessments);
+      if (assessmentId.length === 0 || !result.assessments.some((item) => item.id === assessmentId)) {
+        setAssessmentId(result.assessments.find((item) => item.status === 'ACTIVE')?.id ?? result.assessments[0]?.id ?? '');
+      }
+      setError(null);
+    }).catch((caught: unknown) => {
+      if (active) setError(caught instanceof ApiClientError ? caught.message : 'Assessment records could not be loaded.');
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [client, projectId, reloadToken]);
+
+  useEffect(() => {
+    let active = true;
+    setDetail(null);
+    setDeclarationConfirmed(false);
+    if (assessmentId.length === 0) return () => { active = false; };
+    void client.getAssessment(projectId, assessmentId).then((result) => {
+      if (active) setDetail(result);
+    }).catch((caught: unknown) => {
+      if (active) setError(caught instanceof ApiClientError ? caught.message : 'Assessment details could not be loaded.');
+    });
+    return () => { active = false; };
+  }, [client, projectId, assessmentId, reloadToken]);
+
+  const selected = assessments.find((item) => item.id === assessmentId);
+  useEffect(() => {
+    setTitle(selected?.title ?? '');
+    setObjectivesText(selected?.objectives.join('\n') ?? '');
+    setInScopeText(selected?.scope.inScopeHosts.join('\n') ?? '');
+    setOutOfScopeText(selected?.scope.outOfScopeHosts.join('\n') ?? '');
+    setScopeNotes(selected?.scope.notes ?? '');
+  }, [assessmentId, selected?.updatedAt]);
+
+  const hostList = (text: string): string[] => text.split(/[\n,]/).map((item) => item.trim().toLowerCase().replace(/\.$/, '')).filter((item) => item.length > 0);
+  const detailsInput = (): { title: string; objectives: string[]; scope: AssessmentScope } => ({
+    title: title.trim(),
+    objectives: objectivesText.split('\n').map((item) => item.trim()).filter((item) => item.length > 0),
+    scope: {
+      inScopeHosts: hostList(inScopeText),
+      outOfScopeHosts: hostList(outOfScopeText),
+      ...(scopeNotes.trim().length === 0 ? {} : { notes: scopeNotes.trim() }),
+    },
+  });
+  const refresh = (): void => setReloadToken((token) => token + 1);
+  const perform = async (action: () => Promise<unknown>): Promise<void> => {
+    setError(null);
+    setBusy(true);
+    try { await action(); refresh(); }
+    catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'The assessment action failed.'); }
+    finally { setBusy(false); }
+  };
+  const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const input = detailsInput();
+    if (assessmentId.length === 0) {
+      await perform(async () => {
+        const result = await client.createAssessment(projectId, input);
+        setAssessments((items) => [result.assessment, ...items]);
+        setAssessmentId(result.assessment.id);
+      });
+    } else if (selected?.status === 'PLANNED') {
+      await perform(() => client.updateAssessment(projectId, assessmentId, input));
+    }
+  };
+  const changeStatus = (status: AssessmentStatus): void => {
+    if (assessmentId.length > 0) void perform(() => client.setAssessmentStatus(projectId, assessmentId, status));
+  };
+
+  const currentDeclaration = dastTargetUrl === undefined ? undefined : [...(detail?.assessment.authorizationDeclarations ?? [])].reverse().find((item) => item.targetUrl === dastTargetUrl);
+  const targetHost = dastTargetUrl === undefined ? '' : (() => { try { return new URL(dastTargetUrl).hostname.toLowerCase(); } catch { return ''; } })();
+  const targetInScope = detail !== null && targetHost.length > 0 && isAssessmentHostname(targetHost) && detail.assessment.scope.inScopeHosts.includes(targetHost) && !detail.assessment.scope.outOfScopeHosts.includes(targetHost);
+  const canDeclare = projectStatus === 'ACTIVE' && detail?.assessment.status === 'ACTIVE' && dastTargetUrl !== undefined && targetInScope;
+  const canComplete = detail !== null && detail.assessment.status === 'ACTIVE' && detail.progress.activeScans === 0 && detail.progress.completedScans > 0;
+  const canCancel = detail !== null && (detail.assessment.status === 'PLANNED' || detail.assessment.status === 'ACTIVE') && detail.progress.activeScans === 0;
+  const readOnly = projectStatus !== 'ACTIVE' || (selected !== undefined && selected.status !== 'PLANNED');
+
+  return (
+    <section className="assessment-panel" id="assessments" aria-labelledby="assessments-title" data-testid="assessments-section">
+      <h2 id="assessments-title">Structured security assessments</h2>
+      <p className="muted">Assessments are project-scoped records for objectives, exact hostname scope, scan links, findings/remediation follow-up, reports and history. Scope is an assessment control context—not permission to access a project, target, scanner or plan entitlement. Subdomains are not implicitly included.</p>
+      <p className="muted"><strong>Third-party permission is not independently verified.</strong> A saved URL or user statement is never proof of legal authorization and never bypasses the existing passive DAST safety policy.</p>
+      {error !== null && <div className="form-alert" role="alert"><p data-testid="assessment-error">{error}</p></div>}
+      {loading ? <p className="muted">Loading assessments…</p> : (
+        <>
+          <div className="field">
+            <label htmlFor="assessment-select">Project assessment</label>
+            <select id="assessment-select" value={assessmentId} onChange={(event) => setAssessmentId(event.target.value)} data-testid="assessment-select">
+              <option value="">Create a new assessment</option>
+              {assessments.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.status}</option>)}
+            </select>
+          </div>
+          <form className="assessment-form" onSubmit={(event) => void save(event)} data-testid="assessment-details-form">
+            <div className="field"><label htmlFor="assessment-title">Title</label><input id="assessment-title" value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} required disabled={readOnly} /></div>
+            <div className="field"><label htmlFor="assessment-objectives">Objectives (one per line)</label><textarea id="assessment-objectives" value={objectivesText} rows={3} maxLength={2400} onChange={(event) => setObjectivesText(event.target.value)} required disabled={readOnly} /><p className="field-hint">Up to 10 bounded objectives; no exploit or credential-attack authorization is implied.</p></div>
+            <div className="assistant-selectors">
+              <div className="field"><label htmlFor="assessment-in-scope">In-scope hostnames (exact matches, one per line)</label><textarea id="assessment-in-scope" value={inScopeText} rows={3} maxLength={5200} onChange={(event) => setInScopeText(event.target.value)} disabled={readOnly} placeholder="app.example.org" /></div>
+              <div className="field"><label htmlFor="assessment-out-scope">Out-of-scope hostnames (one per line)</label><textarea id="assessment-out-scope" value={outOfScopeText} rows={3} maxLength={5200} onChange={(event) => setOutOfScopeText(event.target.value)} disabled={readOnly} placeholder="admin.example.org" /></div>
+            </div>
+            <div className="field"><label htmlFor="assessment-scope-notes">Scope boundaries and exclusions</label><textarea id="assessment-scope-notes" value={scopeNotes} rows={2} maxLength={1000} onChange={(event) => setScopeNotes(event.target.value)} disabled={readOnly} /></div>
+            {projectStatus !== 'ACTIVE' ? <p className="muted">Archived projects are read-only.</p> : !readOnly && <button type="submit" className="button button-secondary" disabled={busy || title.trim().length < 3 || objectivesText.trim().length < 3} data-testid="save-assessment">{busy ? 'Saving…' : assessmentId.length === 0 ? 'Create assessment' : 'Save scope and objectives'}</button>}
+          </form>
+          {detail !== null && (
+            <div className="assessment-detail" data-testid="assessment-detail">
+              <h3>{detail.assessment.title}</h3>
+              <p className="badges"><span className="pill">{detail.assessment.status}</span><span className="pill">{detail.progress.totalScans} linked scans</span><span className="pill">{detail.progress.findingsTotal} findings in completed linked scans</span></p>
+              <div className="hero-actions">
+                {detail.assessment.status === 'PLANNED' && <button type="button" className="button button-secondary" onClick={() => changeStatus('ACTIVE')} disabled={busy || projectStatus !== 'ACTIVE'} data-testid="assessment-start">Start assessment</button>}
+                {canComplete && <button type="button" className="button button-secondary" onClick={() => changeStatus('COMPLETED')} disabled={busy} data-testid="assessment-complete">Complete assessment</button>}
+                {canCancel && <button type="button" className="button button-ghost" onClick={() => changeStatus('CANCELLED')} disabled={busy} data-testid="assessment-cancel">Cancel assessment</button>}
+              </div>
+              {dastTargetUrl !== undefined && (
+                <div className="assessment-authorization" data-testid="assessment-authorization">
+                  <h4>Configured DAST target context</h4>
+                  <p>Target: <code>{dastTargetUrl}</code></p>
+                  <p>Authorization status: <strong data-testid="assessment-authorization-status">{currentDeclaration?.state === 'USER_DECLARED' ? 'USER_DECLARED' : 'UNVERIFIED'}</strong>{currentDeclaration?.state === 'WITHDRAWN' ? ' (previous declaration withdrawn)' : ''}</p>
+                  {!targetInScope && <p className="muted">This exact target hostname is not included in the assessment scope; it cannot be linked to this assessment. Existing project DAST policy remains separately enforced.</p>}
+                  {canDeclare && (
+                    <>
+                      <label className="field-hint"><input type="checkbox" checked={declarationConfirmed} onChange={(event) => setDeclarationConfirmed(event.target.checked)} /> {currentDeclaration?.state === 'USER_DECLARED' ? 'I confirm that I am withdrawing my previous user declaration.' : 'I am recording my own statement for this exact configured URL; Drobon has not verified third-party permission.'}</label>
+                      <button type="button" className="button button-ghost" disabled={busy || !declarationConfirmed} onClick={() => void perform(() => client.recordAssessmentAuthorization(projectId, detail.assessment.id, currentDeclaration?.state === 'USER_DECLARED' ? 'WITHDRAW' : 'DECLARE'))} data-testid="assessment-authorization-action">{currentDeclaration?.state === 'USER_DECLARED' ? 'Withdraw user declaration' : 'Record user declaration'}</button>
+                    </>
+                  )}
+                </div>
+              )}
+              <h4>Linked scan and report history</h4>
+              {detail.progress.recentScans.length === 0 ? <p className="muted">No scans are linked yet. Start this assessment and select it when requesting a scan.</p> : <ul className="assessment-scan-list">{detail.progress.recentScans.map((scan) => <li key={scan.id}><strong>{scan.scanType} · {scan.status}</strong> · {scan.findingsTotal ?? 0} findings{scan.reportAvailable ? ' · report saved' : ''} · <a href={`#scan-${scan.id}`} data-testid={`assessment-linked-scan-${scan.id}`}>Open linked scan and its finding/remediation/report workflow</a></li>)}</ul>}
+              <p className="field-hint">Finding remediation state, notes, rescan verification and persisted reports remain in the existing scan/finding/report workflows. These assessment links do not duplicate scanner data.</p>
+              <h4>Assessment history</h4>
+              <ol className="assessment-history" data-testid="assessment-history">{detail.assessment.history.map((event) => <li key={event.id}><time dateTime={event.at}>{event.at}</time> · {event.type}{event.status === undefined ? '' : ` → ${event.status}`}{event.targetUrl === undefined ? '' : ` · ${event.targetUrl}`}</li>)}</ol>
+            </div>
+          )}
+          <button type="button" className="button button-ghost" onClick={refresh} data-testid="refresh-assessments">Refresh assessment history</button>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ScansSection({
+  projectId,
+  projectStatus,
+  dastTargetUrl,
+  showAssessmentTools,
+}: {
+  projectId: string;
+  projectStatus: string;
+  dastTargetUrl: string | undefined;
+  showAssessmentTools: boolean;
+}): React.JSX.Element {
+  const client = useApiClient();
   const [scans, setScans] = useState<Scan[] | null>(null);
   const [scansError, setScansError] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [scanType, setScanType] = useState<ScanType>('SAST');
+  const [activeAssessments, setActiveAssessments] = useState<Assessment[]>([]);
+  const [assessmentId, setAssessmentId] = useState('');
+  const [assessmentLoadError, setAssessmentLoadError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
@@ -533,6 +714,25 @@ function ScansSection({
     void load();
   }, [load, reloadToken]);
 
+  useEffect(() => {
+    let active = true;
+    if (!showAssessmentTools) {
+      setActiveAssessments([]);
+      setAssessmentId('');
+      return () => { active = false; };
+    }
+    void client.getAssessments(projectId).then((result) => {
+      if (!active) return;
+      const open = result.assessments.filter((item) => item.status === 'ACTIVE');
+      setActiveAssessments(open);
+      if (!open.some((item) => item.id === assessmentId)) setAssessmentId('');
+      setAssessmentLoadError(null);
+    }).catch((caught: unknown) => {
+      if (active) setAssessmentLoadError(caught instanceof ApiClientError ? caught.message : 'Linked assessments are unavailable.');
+    });
+    return () => { active = false; };
+  }, [client, projectId, showAssessmentTools, reloadToken, assessmentId]);
+
   const requestScan = async (): Promise<void> => {
     setFormError(null);
     setSubmitting(true);
@@ -543,7 +743,7 @@ function ScansSection({
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `web-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
-      await client.createScan(projectId, scanType, key);
+      await client.createScan(projectId, scanType, key, undefined, assessmentId.length === 0 ? undefined : assessmentId);
       await load();
     } catch (error: unknown) {
       setFormError(
@@ -598,6 +798,16 @@ function ScansSection({
               ))}
             </select>
           </div>
+          {showAssessmentTools && (
+            <div className="field">
+              <label htmlFor="scan-assessment">Link to active assessment (optional)</label>
+              <select id="scan-assessment" value={assessmentId} onChange={(event) => setAssessmentId(event.target.value)} data-testid="scan-assessment-select">
+                <option value="">No assessment link</option>
+                {activeAssessments.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              </select>
+              {assessmentLoadError !== null && <p className="field-hint">{assessmentLoadError} You can still request an unlinked scan.</p>}
+            </div>
+          )}
           <button
             type="submit"
             className="button button-secondary"
@@ -665,7 +875,7 @@ function ScansSection({
       ) : (
         <ul className="scan-list" data-testid="scans-list">
           {scans.map((scan) => (
-            <li key={scan.id} className="scan-item" data-testid="scan-item">
+            <li key={scan.id} id={`scan-${scan.id}`} className="scan-item" data-testid="scan-item">
               <div className="scan-item-head">
                 <strong data-testid="scan-type">{scan.scanType}</strong>
                 <span

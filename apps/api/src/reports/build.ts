@@ -77,6 +77,7 @@ function scanSnapshot(record: ScanRecord): ReportScanContext {
     projectId: record.projectId,
     scanType: record.scanType,
     status: 'COMPLETED' as const,
+    ...(record.assessmentId === undefined ? {} : { assessmentId: record.assessmentId }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     startedAt: record.startedAt,

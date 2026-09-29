@@ -1,5 +1,6 @@
 import { isDastResult, isSafeDastUrl, type DastResult } from './dast.js';
 import { PROJECT_ID_PATTERN } from './projects.js';
+import { ASSESSMENT_ID_PATTERN } from './assessmentIds.js';
 import { isValidSourcePath } from './sources.js';
 
 /**
@@ -295,6 +296,8 @@ export interface Scan {
   updatedAt: string;
   /** Set once the processor claims the scan (status ≠ QUEUED). */
   startedAt?: string;
+  /** Project/owner-scoped assessment relation, when a scan is explicitly linked. */
+  assessmentId?: string;
   /** Canonical target, present only for DAST scans. */
   targetUrl?: string;
   /** Set on a terminal status (COMPLETED, FAILED, or TIMED_OUT). */
@@ -710,6 +713,7 @@ export function isScan(value: unknown): value is Scan {
     'projectId',
     'scanType',
     'status',
+    'assessmentId',
     'targetUrl',
     'createdAt',
     'updatedAt',
@@ -729,6 +733,7 @@ export function isScan(value: unknown): value is Scan {
     record['projectId'].length === 0 ||
     !isScanType(record['scanType']) ||
     !isScanStatus(record['status']) ||
+    (record['assessmentId'] !== undefined && (typeof record['assessmentId'] !== 'string' || !ASSESSMENT_ID_PATTERN.test(record['assessmentId']))) ||
     typeof record['createdAt'] !== 'string' ||
     typeof record['updatedAt'] !== 'string'
   ) {

@@ -9,7 +9,7 @@ Everything on this page is covered by executable tests
 
 | Concept | Values | Purpose | Grants access? |
 | ------- | ------ | ------- | -------------- |
-| `AccountRole` | `MEMBER` < `ADMIN` < `ACCOUNT_OWNER` | Authorization: what the account may do | Yes — the ONLY thing that may |
+| `AccountRole` | `MEMBER` < `ADMIN` < `ACCOUNT_OWNER` | Role-gated platform capabilities | Yes, for capabilities explicitly declared in `PERMISSIONS` |
 | `UserType` | `DEVELOPER`, `STUDENT`, `SECURITY_PROFESSIONAL`, `PENTESTER` | Classification/visibility: how the user describes themselves | **Never** |
 
 `UserType` cannot bypass authentication, roles, permissions, plan limits
@@ -62,7 +62,10 @@ route match
   future resources copy — self-read via `users:read:self`, cross-read
   only via the explicit `users:read:others` (ADMIN+). `GET /api/v1/users
   ?id=…` is the proof surface: unknown/malformed/oversized/unauthorized
-  ids all answer the identical 403 (no IDOR, no existence oracle).
+  ids all answer the identical 403 (no IDOR, no existence oracle). Project
+  assessments follow the existing authenticated own-project boundary and
+  then scope assessment IDs to that same owner/project; UserType, scope
+  strings and target declarations do not grant resource or DAST authority.
 
 ## Capability probes (observability, not product)
 
@@ -107,12 +110,15 @@ policies, per-resource ACLs, audit trail of role changes, UserType-based
 authorization or entitlements, and admin/partner permissions beyond the
 table above are not implemented. The Developer (Pump 17), Student (Pump 18),
 Security Professional (Pump 19) and Pentester (Pump 20) dashboards use
-UserType only for workspace routing/navigation; the shared overview API
-remains authenticated and self-scoped. Pentester target indicators reflect
-server-stored settings on the caller's owned projects, not independent proof
-of third-party authorization. Ordinary resource access and DAST scan creation
-continue to use the existing role, project ownership, plan, quota, rate-limit
-and target-safety checks.
+UserType only for workspace routing/navigation; Pump 22 assessment controls
+are shown for those classifications, but assessment API authorization still
+depends on authentication and project ownership, never UserType. The shared
+overview API remains authenticated and self-scoped. Pentester target
+indicators reflect server-stored settings on the caller's owned projects,
+not independent proof of third-party authorization. A target-specific
+`USER_DECLARED` statement is timestamped owner metadata and stays unverified;
+ordinary resource access and DAST scan creation continue to use the existing
+role, project ownership, plan, quota, rate-limit and target-safety checks.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

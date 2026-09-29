@@ -1,6 +1,6 @@
 # Drobon Aegis AI
 
-Cybersecurity application — **Pump 21: cumulative security foundation, four UserType workspaces, and an independent capability audit**. The common Developer, Student, Security Professional and Pentester presentations reuse existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, and restricted read-only platform operations.
+Cybersecurity application — **Pump 22: cumulative security foundation, four UserType workspaces, and structured project-bound assessments**. The common Developer, Student, Security Professional and Pentester presentations reuse existing authorization, plans/entitlements, projects, scan lifecycle, SAST, SCA/SBOM, Secrets, limited passive DAST, bounded findings, persisted reports, remediation lifecycle, read-only AI Security Assistant, manual payment review, restricted read-only platform operations, and structured bounded assessments linked to existing scans/findings/reports.
 
 Pump 1 established the clean technical base (Web, API, Worker, shared
 contracts, security, testing, build, docs). Pump 2 added real
@@ -14,7 +14,7 @@ state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
 store, a single server-authoritative entitlement decision point, a
 read-only self-only `GET /api/v1/subscription`, and plan/entitlement
 views on the Account page. Role and UserType never grant PRO.
-Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 added Student-first routing and progress/history over the shared overview. Pump 19 added Security Professional-first routing and a bounded assessment dashboard over the same overview and shared engines. Pump 20 adds Pentester-first routing and server-derived project target indicators over that same owner-scoped workflow. `UserType` remains classification only; role, server entitlement, ownership, quota, rate limits and DAST safety remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP, not a browser or full DAST crawler.
+Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 added Student-first routing and progress/history over the shared overview. Pump 19 added Security Professional-first routing and a bounded assessment dashboard over the same overview and shared engines. Pump 20 added Pentester-first routing and server-derived configured-target indicators. Pump 22 adds owner/project-bound assessment scope, objectives, lifecycle, timestamped user declarations, and links to existing scan/finding/remediation/report workflows. A timestamped target statement may be `USER_DECLARED`, but is never independent proof; third-party permission remains unverified. `UserType` remains classification only; role, server entitlement, ownership, quota, rate limits and DAST safety remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP, not a browser or full DAST crawler.
 
 ## Layout
 
@@ -83,14 +83,14 @@ root commands always build it first; see `docs/DEVELOPMENT.md`.
 - `docs/PAYMENTS.md` — Pump 15 manual payment request, audit/state lifecycle, platform reviewer allowlist, consistency saga and gateway-unavailable boundary
 - `docs/DEVELOPER.md` — Pump 17 Developer registration, account-scoped dashboard/history, shared project workflow, limits and verification
 - `docs/STUDENT.md` — Pump 18 Student capability gap matrix, shared workflow and verified limits
-- `docs/SECURITY_PROFESSIONAL.md` — Pump 19 Professional dashboard, assistant scope, FREE/PRO workflow and verified limits
-- `docs/USER_TYPE_CAPABILITY_AUDIT.md` — Pump 21 independent four-UserType capability matrix, layer-by-layer implementation states, evidence and limitations
+- `docs/SECURITY_PROFESSIONAL.md` — Pumps 19/22 Professional workspace and structured assessment lifecycle, scope, authorization limits and evidence
+- `docs/USER_TYPE_CAPABILITY_AUDIT.md` — Pump 22 independent four-UserType capability matrix, layer-by-layer evidence and explicit deferrals
 - `docs/DEVELOPMENT.md` — setup, workflow, conventions, environment
 - `docs/TESTING.md` — test strategy and how to run everything
 - `docs/SECURITY.md` — threat model, controls, verified status, limitations
 - `docs/BUILD_VERIFICATION.md` — builds and the `verify` pipeline
 
-## Scope (Pump 20, cumulative)
+## Scope (Pump 22, cumulative)
 
 **Included:** everything from Pumps 1–4 (Web shell, typed API client,
 versioned JSON API with validation/correlation/rate limiting/security
@@ -219,6 +219,8 @@ source mutation, lifecycle mutation, or scan-quota consumption is added.
 Dependency intelligence preserves `NOT ASSESSED` / `NO_DATA_LOADED`.
 See `docs/ASSISTANT.md`.
 
+**PLUS Pump 22 (Structured assessments):** owner/project-bound assessment records with bounded objectives and exact DNS hostname scope, explicit PLANNED/ACTIVE/COMPLETED/CANCELLED lifecycle, append-only history, and optional links to existing scans, findings/remediation workflow and reports. Assessment scope is metadata, never access or DAST permission; a timestamped `USER_DECLARED` target statement is not independently verified, and without it permission remains `UNVERIFIED`. The existing passive DAST policy and normal plan/quota checks are unchanged. See `docs/SECURITY_PROFESSIONAL.md` and `docs/DAST.md`.
+
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
 online payment gateway/webhooks/automatic verification, coupons/discounts,
@@ -228,10 +230,10 @@ analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
 external generative AI provider, durable assistant chat history, partner/referral workflows, or other
-user-type-specific workflows beyond the shared Developer/Student/Security Professional/Pentester presentations, UserType-based authorization or entitlements,
+user-type-specific workflows outside the documented shared Developer/Student/Security Professional/Pentester presentations, UserType-based authorization or entitlements,
 multi-scan reports, PDF/signature workflows, and a database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.
 
 ## Status
 
-Pump 21 audit — independently checked the common and profile-specific capabilities of Developer, Student, Security Professional and Pentester across UI, API, server authorization, persistence, security, tests, controlled API journeys and documentation. The audit found the core workflows already shared and covered; no alternate engine/store or UserType-based authority was warranted. It corrected Pentester dashboard wording and a bounded-recent-list shortcut so a saved target is never labeled or routed as independently authorized. Verified permission to assess third-party systems remains external and cannot be inferred from a target setting. See `docs/USER_TYPE_CAPABILITY_AUDIT.md` for the capability matrix and limitations; Pump 21 runtime verification results are recorded in `docs/BUILD_VERIFICATION.md`.
+Pump 22 audit — revalidated the common and profile-specific capabilities of Developer, Student, Security Professional and Pentester across UI, API, server authorization, persistence, security, tests, controlled API journeys and documentation. The audit found the core workflows already shared and covered; no alternate engine/store or UserType-based authority was warranted. Pump 22 adds a structured project assessment with bounded exact-host scope, append-only lifecycle/declaration history, and association to existing scan/report/finding workflows; assessment context grants no project/target/DAST authority. User-declared permission is not independently verified, and DAST safety remains unchanged. Git/CI provider integration and course/grade systems remain explicit deferrals; SCA has no vulnerability dataset. See `docs/USER_TYPE_CAPABILITY_AUDIT.md` for the layer-by-layer matrix and limitations; Pump 22 verification results are recorded in `docs/BUILD_VERIFICATION.md`.

@@ -30,6 +30,7 @@ import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
+import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from '../src/assessments/store.js';
 
 export interface TestServer {
   baseUrl: string;
@@ -55,6 +56,7 @@ export interface TestServer {
    * durable scan state directly.
    */
   scans: ScanStore;
+  assessments: AssessmentStore;
   /**
    * The source-snapshot store backing this server (Pump 8) — always
    * resolved to ONE shared instance (injected or created), so tests can
@@ -93,6 +95,10 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   scanStoreDir?: string;
   /** Inject a scan store directly (defaults: memory or scanStoreDir). */
   scanStore?: ScanStore;
+  /** Use a real JSON assessment store at a temp path for restart proofs. */
+  assessmentStoreDir?: string;
+  /** Inject an assessment store directly (defaults: memory or assessmentStoreDir). */
+  assessmentStore?: AssessmentStore;
   /** Use a real JSON source store at a temp path instead of memory (Pump 8). */
   sourceStoreDir?: string;
   /** Inject a source store directly (defaults: memory or sourceStoreDir). */
@@ -162,6 +168,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStore,
     scanStoreDir,
     scanStore,
+    assessmentStoreDir,
+    assessmentStore,
     sourceStoreDir,
     sourceStore,
     paymentStoreDir,
@@ -195,6 +203,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageConsumeRoutes: true,
     projectStorePath: ':memory:',
     scanStorePath: ':memory:',
+    assessmentStorePath: ':memory:',
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
@@ -217,6 +226,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStoreDir === undefined ? config.projectStorePath : join(projectStoreDir, 'projects.json');
   const effectiveScanStorePath =
     scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
+  const effectiveAssessmentStorePath =
+    assessmentStoreDir === undefined ? config.assessmentStorePath : join(assessmentStoreDir, 'assessments.json');
   const effectiveSourceStorePath =
     sourceStoreDir === undefined ? config.sourceStorePath : join(sourceStoreDir, 'sources.json');
   const effectivePaymentStorePath =
@@ -226,6 +237,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageStoreDir === undefined &&
     projectStoreDir === undefined &&
     scanStoreDir === undefined &&
+    assessmentStoreDir === undefined &&
     sourceStoreDir === undefined &&
     paymentStoreDir === undefined
       ? config
@@ -235,6 +247,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
           ...(usageStoreDir === undefined ? {} : { usageStorePath: effectiveUsageStorePath }),
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
           ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
+          ...(assessmentStoreDir === undefined ? {} : { assessmentStorePath: effectiveAssessmentStorePath }),
           ...(sourceStoreDir === undefined ? {} : { sourceStorePath: effectiveSourceStorePath }),
           ...(paymentStoreDir === undefined ? {} : { paymentStorePath: effectivePaymentStorePath }),
         };
@@ -255,6 +268,11 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
       : createJsonFileScanStore(effectiveScanStorePath));
   // Same rule for the source store (Pump 8): exactly ONE instance
   // shared by the app and the test.
+  const resolvedAssessmentStore =
+    assessmentStore ??
+    (assessmentStoreDir === undefined
+      ? createMemoryAssessmentStore()
+      : createJsonFileAssessmentStore(effectiveAssessmentStorePath));
   const resolvedSourceStore =
     sourceStore ??
     (sourceStoreDir === undefined
@@ -293,6 +311,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
     scanStore: resolvedScanStore,
+    assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
     ...(scanEngines === undefined ? {} : { scanEngines }),
     dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
@@ -312,6 +331,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(resolvedProjectStore === undefined ? {} : { projects: resolvedProjectStore }),
     scans: resolvedScanStore,
+    assessments: resolvedAssessmentStore,
     sources: resolvedSourceStore,
     payments: resolvedPaymentStore,
     scanProcessor: started.app.scanProcessor,

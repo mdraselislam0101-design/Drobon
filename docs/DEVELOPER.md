@@ -21,6 +21,7 @@ model.
 | Project-scoped assistant | Existing bounded deterministic, read-only evidence path; provider unavailable. | Reused; no provider, fabricated answer, or duplicate assistant added. |
 | Developer navigation / unrelated controls | Header showed platform operations to every signed-in account; Admin routes had no Web role guard. | Developer navigation added; Admin pages use a role UX guard and existing APIs still enforce operator authority. No Pentest-specific control was added. |
 | Account enabled/disabled state | No account-state model in current architecture. | Intentionally not invented or displayed. |
+| Git hosting and CI/CD integration | The shipped Developer flow accepts bounded uploaded source snapshots and runs the existing shared scan/report workflow; there is no repository token store, webhook verifier, provider connector, or external clone path. | **NOT_IMPLEMENTED / DEFERRED** — no fake “live” provider state or unauthenticated repository fetch was added. A real provider integration needs a separately scoped credential lifecycle, signed webhook/replay protections, provider-specific authorization and controlled end-to-end fixtures. Current developer workflow remains usable via uploaded snapshots and manual scans. |
 
 ## Registration and authority
 

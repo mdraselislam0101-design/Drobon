@@ -1,4 +1,7 @@
 import {
+  isAssessmentResponse,
+  isAssessmentDetailResponse,
+  isAssessmentsResponse,
   isAssistantResponse,
   isAssistantStatusResponse,
   isAuthResponse,
@@ -31,6 +34,11 @@ import {
   isWorkspaceSecurityOverviewResponse,
   parseApiResponse,
   type ApiErrorDetail,
+  type AssessmentDetailResponse,
+  type AssessmentResponse,
+  type AssessmentStatus,
+  type AssessmentsResponse,
+  type AssessmentScope,
   type AssistantQuestionRequest,
   type AssistantResponse,
   type AssistantStatusResponse,
@@ -233,6 +241,13 @@ export interface ApiClient {
   /** Configure/clear the explicit project-associated passive DAST target. */
   setDastTarget(projectId: string, targetUrl: string, signal?: AbortSignal): Promise<ProjectResponse>;
   clearDastTarget(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /** Assessment UI is classification-only; all ownership and lifecycle checks stay server-side. */
+  getAssessments(projectId: string, signal?: AbortSignal): Promise<AssessmentsResponse>;
+  getAssessment(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse>;
+  createAssessment(projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
+  updateAssessment(projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
+  setAssessmentStatus(projectId: string, assessmentId: string, status: AssessmentStatus, signal?: AbortSignal): Promise<AssessmentResponse>;
+  recordAssessmentAuthorization(projectId: string, assessmentId: string, action: 'DECLARE' | 'WITHDRAW', signal?: AbortSignal): Promise<AssessmentResponse>;
   /** Archive a project (explicit lifecycle operation, owner only, idempotent). */
   archiveProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
   /** Unarchive a project (explicit lifecycle operation, owner only, idempotent). */
@@ -254,6 +269,7 @@ export interface ApiClient {
     scanType: ScanType,
     idempotencyKey: string,
     signal?: AbortSignal,
+    assessmentId?: string,
   ): Promise<ScanResponse>;
   /**
    * One scan's detail (Pump 8): the scan AND its real findings (bounded,
@@ -708,6 +724,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         { method: 'DELETE', ...(signal === undefined ? {} : { signal }) },
         isProjectResponse,
       ),
+    getAssessments: (projectId: string, signal?: AbortSignal): Promise<AssessmentsResponse> =>
+      authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
+    getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
+      authRequest<AssessmentDetailResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}`, signal === undefined ? {} : { signal }, isAssessmentDetailResponse),
+    createAssessment: (projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>
+      authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
+    updateAssessment: (projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>
+      authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
+    setAssessmentStatus: (projectId: string, assessmentId: string, status: AssessmentStatus, signal?: AbortSignal): Promise<AssessmentResponse> =>
+      authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/status`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
+    recordAssessmentAuthorization: (projectId: string, assessmentId: string, action: 'DECLARE' | 'WITHDRAW', signal?: AbortSignal): Promise<AssessmentResponse> =>
+      authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/authorization-declarations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, confirm: true }), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
     archiveProject: (projectId: string, signal?: AbortSignal): Promise<ProjectResponse> =>
       authRequest<ProjectResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/archive`,
@@ -731,6 +759,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       scanType: ScanType,
       idempotencyKey: string,
       signal?: AbortSignal,
+      assessmentId?: string,
     ): Promise<ScanResponse> =>
       authRequest<ScanResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
@@ -740,7 +769,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             'content-type': 'application/json',
             'idempotency-key': idempotencyKey,
           },
-          body: JSON.stringify({ scanType }),
+          body: JSON.stringify({ scanType, ...(assessmentId === undefined ? {} : { assessmentId }) }),
           ...(signal === undefined ? {} : { signal }),
         },
         isScanResponse,

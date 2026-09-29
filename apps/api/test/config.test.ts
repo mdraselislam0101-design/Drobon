@@ -86,6 +86,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ SCAN_STORE_PATH: '  ' })).toThrow(ConfigError);
   });
 
+  test('assessment storage is configurable and must be durable in production', () => {
+    expect(loadConfig({}).assessmentStorePath).toBe('.data/assessments.json');
+    expect(loadConfig({ ASSESSMENT_STORE_PATH: '/var/lib/drobon/assessments.json' }).assessmentStorePath).toBe('/var/lib/drobon/assessments.json');
+    expect(loadConfig({ NODE_ENV: 'test', ASSESSMENT_STORE_PATH: ':memory:' }).assessmentStorePath).toBe(':memory:');
+    expect(() => loadConfig({ NODE_ENV: 'production', ASSESSMENT_STORE_PATH: ':memory:' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ASSESSMENT_STORE_PATH: '  ' })).toThrow(ConfigError);
+  });
+
   test('project storage is configurable and must be durable in production', () => {
     expect(loadConfig({}).projectStorePath).toBe('.data/projects.json');
     expect(loadConfig({ PROJECT_STORE_PATH: '/var/lib/drobon/projects.json' }).projectStorePath).toBe(

@@ -70,6 +70,8 @@ import type { Logger } from './logger.js';
 import { createDastTargetPolicy, type DastTargetPolicy } from './scans/dast/target.js';
 import type { DastTransport } from './scans/dast/http.js';
 import { createDastEngine } from './scans/dast/engine.js';
+import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from './assessments/store.js';
+import { createAssessmentRoutes } from './routes/assessments.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -114,6 +116,8 @@ export interface AppDeps {
    * setups). Tests inject their own instance to control persistence.
    */
   scanStore?: ScanStore;
+  /** Structured owner/project-bound Security Professional assessment records. */
+  assessmentStore?: AssessmentStore;
   /**
    * Source-snapshot store (Pump 8) — the SAST scan target. Defaults to
    * the durable JSON store at `config.sourceStorePath` (`:memory:` for
@@ -222,6 +226,11 @@ export function createApp(deps: AppDeps): App {
     (config.scanStorePath === ':memory:'
       ? createMemoryScanStore()
       : createJsonFileScanStore(config.scanStorePath));
+  const assessmentStore: AssessmentStore =
+    deps.assessmentStore ??
+    (config.assessmentStorePath === ':memory:'
+      ? createMemoryAssessmentStore()
+      : createJsonFileAssessmentStore(config.assessmentStorePath));
   // Source-snapshot store (Pump 8): durable by default (fail-fast on a
   // corrupt document — the process refuses to start). Tests inject
   // their own store; `:memory:` is the ephemeral dev opt-in.
@@ -289,10 +298,12 @@ export function createApp(deps: AppDeps): App {
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
+    ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({
       config,
       users,
       projects: projectStore,
+      assessments: assessmentStore,
       scans: scanStore,
       sources: sourceStore,
       usage,

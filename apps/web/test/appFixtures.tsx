@@ -2,6 +2,9 @@ import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
+  AssessmentResponse,
+  AssessmentDetailResponse,
+  AssessmentsResponse,
   AssistantQuestionRequest,
   AssistantResponse,
   AssistantStatusResponse,
@@ -190,6 +193,12 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     clearDastTarget: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),
+    getAssessments: vi.fn(async (): Promise<AssessmentsResponse> => ({ assessments: [] })),
+    getAssessment: vi.fn(async (): Promise<AssessmentDetailResponse> => { throw new Error('not stubbed'); }),
+    createAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    updateAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    setAssessmentStatus: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
+    recordAssessmentAuthorization: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
     archiveProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw new Error('not stubbed');
     }),

@@ -26,6 +26,7 @@ The dashboard is a bounded progress/history surface based on persisted server st
 
 - FREE remains three scans per UTC month per account, with the existing shared-device anti-abuse controls. PRO is available only through the existing server entitlement (`PRO + ACTIVE`).
 - Account enabled/disabled state is not modeled. DAST consumes normal scan quota and is not an active crawler. External credential verification is not performed.
+- Student explanations, next steps and persisted progress/history use the existing finding and scan workflows. A course catalog, assignments, grades or classroom/teacher administration are **NOT_IMPLEMENTED** and are not implied by the Student presentation. UserType remains classification; the underlying assessment API is governed by project ownership, not a Student-specific or Security-Professional-only privilege.
 - Assistant provider state remains `NONE`; deterministic supported answers use authorized saved evidence, and unsupported generation remains unavailable. Pump 19 adds aggregate assessment/verification/DAST question handlers to that shared assistant.
 - Shared dashboard scan cards also show a completed DAST observation count and completed SCA assessment/dataset states when those persisted results are available; neither is a security verdict or complete-coverage claim.
 - External AEGIS intelligence remains separate. No vulnerability data is loaded or bundled; SCA without it remains `NOT_ASSESSED` / `NO_DATA_LOADED`.

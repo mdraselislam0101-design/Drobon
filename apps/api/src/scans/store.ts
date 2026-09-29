@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
+  ASSESSMENT_ID_PATTERN,
   IDEMPOTENCY_KEY_PATTERN,
   MAX_FINDINGS_PER_SCAN,
   PROJECT_ID_PATTERN,
@@ -107,6 +108,8 @@ export interface ScanRecord {
   ownerId: string;
   projectId: string;
   scanType: ScanType;
+  /** Assessment association is metadata/control context, never scan permission. */
+  assessmentId?: string;
   status: ScanStatus;
   /** Canonical target URL, only for DAST scans; never contains credentials/query/fragment. */
   dastTargetUrl?: string;
@@ -135,8 +138,9 @@ export interface ScanRecord {
 
 /**
  * One remembered idempotency key: (accountId, key) → the scan it
- * created, with the request fingerprint (projectId + scanType) so a
- * reused key with a DIFFERENT request is a conflict, not a silent
+ * created, with the request identity (projectId + scanType + optional
+ * assessment association + DAST target) so a reused key with a DIFFERENT
+ * request is a conflict, not a silent
  * replay of an unrelated scan.
  */
 export interface IdempotencyEntry {
@@ -144,6 +148,8 @@ export interface IdempotencyEntry {
   key: string;
   projectId: string;
   scanType: ScanType;
+  /** Optional linked assessment; absent on legacy records. */
+  assessmentId?: string;
   /** Included in the request identity for DAST; optional on older records. */
   targetUrl?: string;
   scanId: string;
@@ -166,6 +172,8 @@ export interface CreateScanInput {
   ownerId: string;
   projectId: string;
   scanType: ScanType;
+  /** Assessment association validated against this owner's project-bound active record. */
+  assessmentId?: string;
   /** Preflight-validated canonical target, required for new DAST scans. */
   targetUrl?: string;
   /**
@@ -367,6 +375,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     !PROJECT_ID_PATTERN.test(record['projectId']) ||
     !isScanType(record['scanType']) ||
     !isScanStatus(status) ||
+    (record['assessmentId'] !== undefined && (typeof record['assessmentId'] !== 'string' || !ASSESSMENT_ID_PATTERN.test(record['assessmentId']))) ||
     typeof record['createdAt'] !== 'string' ||
     Number.isNaN(Date.parse(record['createdAt'])) ||
     typeof record['updatedAt'] !== 'string' ||
@@ -499,6 +508,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     ownerId: record['ownerId'],
     projectId: record['projectId'],
     scanType: record['scanType'],
+    ...(typeof record['assessmentId'] === 'string' ? { assessmentId: record['assessmentId'] } : {}),
     status,
     createdAt: record['createdAt'],
     ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
@@ -552,6 +562,7 @@ function parseStoredIdempotencyEntry(
     typeof record['projectId'] !== 'string' ||
     !PROJECT_ID_PATTERN.test(record['projectId']) ||
     !isScanType(record['scanType']) ||
+    (record['assessmentId'] !== undefined && (typeof record['assessmentId'] !== 'string' || !ASSESSMENT_ID_PATTERN.test(record['assessmentId']))) ||
     (record['targetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['targetUrl']))) ||
     typeof record['scanId'] !== 'string' ||
     !SCAN_ID_PATTERN.test(record['scanId']) ||
@@ -571,6 +582,7 @@ function parseStoredIdempotencyEntry(
     key: record['key'],
     projectId: record['projectId'],
     scanType: record['scanType'],
+    ...(typeof record['assessmentId'] === 'string' ? { assessmentId: record['assessmentId'] } : {}),
     ...(typeof record['targetUrl'] === 'string' ? { targetUrl: record['targetUrl'] } : {}),
     scanId: record['scanId'],
     createdAt: record['createdAt'],
@@ -676,6 +688,7 @@ function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
     scan.status !== 'COMPLETED' || scan.completedAt === undefined || scan.resultSummary === undefined ||
     report.project.id !== scan.projectId || report.scan.id !== scan.id ||
     report.scan.projectId !== scan.projectId || report.scan.scanType !== scan.scanType ||
+    report.scan.assessmentId !== scan.assessmentId ||
     report.scan.status !== 'COMPLETED' || report.scan.createdAt !== scan.createdAt ||
     report.scan.updatedAt !== scan.updatedAt || report.scan.startedAt !== scan.startedAt ||
     report.scan.completedAt !== scan.completedAt || report.scan.targetUrl !== scan.dastTargetUrl ||
@@ -749,8 +762,9 @@ function loadDocument(path: string): StoreDocument {
       );
     }
     const linkedScan = scans.find((scan) => scan.id === record.scanId);
-    if (linkedScan === undefined || record.targetUrl !== linkedScan.dastTargetUrl) {
-      throw new Error(`Scan store at ${path} has a mismatched DAST idempotency target at index ${index} — refusing to start.`);
+    if (linkedScan === undefined || linkedScan.ownerId !== record.accountId || linkedScan.projectId !== record.projectId ||
+        linkedScan.scanType !== record.scanType || record.targetUrl !== linkedScan.dastTargetUrl || record.assessmentId !== linkedScan.assessmentId) {
+      throw new Error(`Scan store at ${path} has a mismatched idempotency association at index ${index} — refusing to start.`);
     }
     const composite = `${record.accountId}:${record.key}`;
     if (seenKeys.has(composite)) {
@@ -886,7 +900,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             if (
               existing.projectId !== input.projectId ||
               existing.scanType !== input.scanType ||
-              existing.targetUrl !== input.targetUrl
+              existing.targetUrl !== input.targetUrl ||
+              existing.assessmentId !== input.assessmentId
             ) {
               return { outcome: 'conflict' };
             }
@@ -916,6 +931,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           ownerId: input.ownerId,
           projectId: input.projectId,
           scanType: input.scanType,
+          ...(input.assessmentId === undefined ? {} : { assessmentId: input.assessmentId }),
           ...(input.targetUrl === undefined ? {} : { dastTargetUrl: input.targetUrl }),
           status: 'QUEUED',
           createdAt: now,
@@ -929,6 +945,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             key: input.idempotencyKey,
             projectId: input.projectId,
             scanType: input.scanType,
+            ...(input.assessmentId === undefined ? {} : { assessmentId: input.assessmentId }),
             ...(input.targetUrl === undefined ? {} : { targetUrl: input.targetUrl }),
             scanId: record.id,
             createdAt: now,
@@ -1521,6 +1538,7 @@ export function toScanResponse(record: ScanRecord): Scan {
     projectId: record.projectId,
     scanType: record.scanType,
     status: record.status,
+    ...(record.assessmentId === undefined ? {} : { assessmentId: record.assessmentId }),
     ...(record.dastTargetUrl === undefined ? {} : { targetUrl: record.dastTargetUrl }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
