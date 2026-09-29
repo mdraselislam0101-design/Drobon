@@ -28,8 +28,15 @@ export function sendJson(
       ? existingCookies.map(String)
       : [String(existingCookies)];
     const routeCookie = headers['set-cookie'];
-    finalHeaders['set-cookie'] =
-      routeCookie === undefined ? [...existingList] : [...existingList, routeCookie];
+    if (routeCookie === undefined) {
+      finalHeaders['set-cookie'] = [...existingList];
+    } else {
+      const routeCookieName = routeCookie.split('=', 1)[0]?.trim();
+      const retained = existingList.filter(
+        (entry) => entry.split('=', 1)[0]?.trim() !== routeCookieName,
+      );
+      finalHeaders['set-cookie'] = [...retained, routeCookie];
+    }
   }
   res.writeHead(statusCode, finalHeaders);
   res.end(payload);

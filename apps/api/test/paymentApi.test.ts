@@ -73,6 +73,9 @@ describe('Pump 15 payment request, ownership and validation', () => {
     const made = await jsonData<{ payment: { paymentId: string } }>(await create(server, userCookie));
     const other = await sessionFor(server, 'other@example.test', PW);
     expect((await fetch(`${server.baseUrl}/api/v1/payments/${made.payment.paymentId}`, { headers: { cookie: other } })).status).toBe(404);
+    expect((await fetch(`${server.baseUrl}/api/v1/payments/pay_not-a-valid-uuid`, { headers: { cookie: userCookie } })).status).toBe(404);
+    expect((await fetch(`${server.baseUrl}/api/v1/payments/config?plan=PRO`, { headers: { cookie: userCookie } })).status).toBe(422);
+    expect((await fetch(`${server.baseUrl}/api/v1/payments/${made.payment.paymentId}?accountId=usr_other`, { headers: { cookie: userCookie } })).status).toBe(422);
     expect((await fetch(`${server.baseUrl}/api/v1/payments?accountId=${encodeURIComponent((await register(server, 'third@example.test', PW)).user.id)}`, { headers: { cookie: userCookie } })).status).toBe(422);
     const own = await jsonData<{ payments: Array<{ paymentId: string }>; total: number }>(await fetch(`${server.baseUrl}/api/v1/payments`, { headers: { cookie: userCookie } }));
     expect(own.total).toBe(1);

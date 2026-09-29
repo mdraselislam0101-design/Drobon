@@ -65,12 +65,25 @@ export function createAuthzRoutes(deps: AuthzRouteDeps): Route[] {
           // Defensive: requireAuth should have rejected already.
           throw unauthorized();
         }
-        let id: string | null;
+        let searchParams: URLSearchParams;
         try {
-          id = new URL(req.url ?? '', 'http://localhost').searchParams.get('id');
+          searchParams = new URL(req.url ?? '', 'http://localhost').searchParams;
         } catch {
-          id = null;
+          searchParams = new URLSearchParams();
         }
+        const unexpectedKeys = [...new Set(searchParams.keys())].filter((key) => key !== 'id');
+        if (unexpectedKeys.length > 0) {
+          throw validationError(
+            unexpectedKeys.map((path) => ({ path, message: 'Unexpected query parameter.' })),
+          );
+        }
+        const ids = searchParams.getAll('id');
+        if (ids.length > 1) {
+          throw validationError([
+            { path: 'id', message: 'Query parameter id must not be repeated.' },
+          ]);
+        }
+        const id = ids[0] ?? null;
         if (id === null || id.length === 0) {
           throw validationError([{ path: 'id', message: 'A resource id is required.' }]);
         }

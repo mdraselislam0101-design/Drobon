@@ -2,7 +2,7 @@ import type { Middleware } from '../http.js';
 import { isAllowedOrigin } from '../lib/security.js';
 
 const ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-const ALLOW_HEADERS = 'Content-Type, X-Request-Id';
+const ALLOW_HEADERS = 'Content-Type, X-Request-Id, Idempotency-Key';
 const MAX_AGE_SECONDS = '600';
 
 export interface CorsOptions {

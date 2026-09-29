@@ -42,6 +42,30 @@ export function normalizeOrigin(value: string): string | undefined {
 }
 
 /**
+ * Extract and normalize the origin (`scheme://host[:port]`) of an HTTP(S)
+ * `Referer` header URL. Returns `undefined` when the header is malformed,
+ * uses a non-HTTP(S) scheme, or contains embedded credentials/whitespace.
+ */
+export function extractRefererOrigin(value: string): string | undefined {
+  if (value.length === 0 || value.length > 2048 || /\s/.test(value)) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return undefined;
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    return undefined;
+  }
+  return normalizeOrigin(parsed.origin);
+}
+
+/**
  * Strict allowlist membership: both sides are normalized, then compared with
  * exact string equality. No wildcards, no suffix matching, no regex.
  */

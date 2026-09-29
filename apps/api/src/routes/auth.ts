@@ -56,6 +56,16 @@ const registerSchema = v.object({
   userType: v.optional(v.string({ maxLength: 64, trim: true })),
 });
 
+const emptySchema = v.object({});
+
+function rejectUnexpectedQuery(req: { url?: string | undefined }): void {
+  const params = new URL(req.url ?? '/', 'http://drobon.invalid').searchParams;
+  const keys = [...new Set(params.keys())];
+  if (keys.length > 0) {
+    throw validationError(keys.map((path) => ({ path, message: 'Unexpected query parameter.' })));
+  }
+}
+
 type Credentials = { email: string; password: string };
 
 /** Shared policy pass: structural issues already validated by the schema. */
@@ -92,6 +102,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/register',
       handler: async (req, res, ctx): Promise<void> => {
+        rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = registerSchema.parse(raw);
         if (!parsed.ok) {
@@ -137,6 +148,10 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
         if (!created) {
           throw conflict('An account with this email already exists.');
         }
+        const priorToken = readSessionToken(req.headers.cookie);
+        if (priorToken !== undefined) {
+          sessions.revoke(priorToken);
+        }
         const { token } = sessions.issue(record.id);
         ctx.logger.info('Account registered', { requestId: ctx.id, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
@@ -158,6 +173,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/login',
       handler: async (req, res, ctx): Promise<void> => {
+        rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = credentialsSchema.parse(raw);
         if (!parsed.ok) {
@@ -182,6 +198,10 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'bad_password' });
           throw invalidCredentials();
         }
+        const priorToken = readSessionToken(req.headers.cookie);
+        if (priorToken !== undefined) {
+          sessions.revoke(priorToken);
+        }
         const { token } = sessions.issue(record.id);
         ctx.logger.info('Login succeeded', { requestId: ctx.id, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
@@ -197,6 +217,14 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/logout',
       handler: async (req, res, ctx): Promise<void> => {
+        rejectUnexpectedQuery(req);
+        if (req.headers['content-type'] !== undefined) {
+          const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
+          const parsed = emptySchema.parse(raw);
+          if (!parsed.ok) {
+            throw validationError(parsed.issues);
+          }
+        }
         // Idempotent by contract: repeated logouts, logouts without a
         // session, and logouts with garbage cookies all answer 200.
         const token = readSessionToken(req.headers.cookie);
@@ -214,7 +242,8 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/me',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
+        rejectUnexpectedQuery(req);
         const user: AuthUser | undefined = ctx.user;
         if (user === undefined) {
           // Defensive: requireAuth should have rejected already.

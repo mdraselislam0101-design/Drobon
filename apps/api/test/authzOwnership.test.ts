@@ -162,6 +162,16 @@ describe('GET /api/v1/users — ownership boundary', () => {
     expect(missing.status).toBe(422);
     const body = await readJson(missing);
     expect(JSON.stringify(body)).toContain('A resource id is required.');
+
+    const repeated = await fetch(`${server.baseUrl}/api/v1/users?id=usr_alice&id=usr_bob`, {
+      headers: { cookie: alice },
+    });
+    expect(repeated.status).toBe(422);
+
+    const extraQuery = await fetch(`${server.baseUrl}/api/v1/users?id=usr_alice&role=ADMIN`, {
+      headers: { cookie: alice },
+    });
+    expect(extraQuery.status).toBe(422);
   });
 
   test('anonymous access is 401, never 403', async () => {
