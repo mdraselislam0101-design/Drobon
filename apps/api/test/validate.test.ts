@@ -98,3 +98,32 @@ describe('validate', () => {
     }
   });
 });
+
+describe('rejectUnexpectedQuery', () => {
+  test('no query string passes without a response', () => {
+    expect(() => v.rejectUnexpectedQuery({ url: '/api/v1/x' })).not.toThrow();
+    expect(() => v.rejectUnexpectedQuery({ url: '/api/v1/x?' })).not.toThrow();
+    expect(() => v.rejectUnexpectedQuery({})).not.toThrow();
+  });
+
+  test('any key fails closed with a deduplicated 422 VALIDATION_ERROR', () => {
+    let thrown: unknown;
+    try {
+      v.rejectUnexpectedQuery({ url: '/api/v1/x?role=ADMIN&role=MEMBER&status=COMPLETED' });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeDefined();
+    expect((thrown as { code?: unknown }).code).toBe('VALIDATION_ERROR');
+    expect((thrown as { statusCode?: unknown }).statusCode).toBe(422);
+    // Repeated keys (HTTP parameter pollution) are reported once each.
+    const details = (thrown as { details?: unknown }).details as Array<{
+      path: string;
+      message: string;
+    }>;
+    expect(details.map((issue) => issue.path)).toEqual(['role', 'status']);
+    for (const issue of details) {
+      expect(issue.message).toBe('Unexpected query parameter.');
+    }
+  });
+});

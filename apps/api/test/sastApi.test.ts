@@ -504,6 +504,45 @@ describe('source snapshot API: upload validation (the path policy)', () => {
   });
 });
 
+describe('source snapshot API: strict query rejection (Pump 3)', () => {
+  test('unexpected query parameters are rejected (422) with nothing stored', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      const url = `${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/sources`;
+      // PUT + junk query: rejected before any body handling; nothing stored.
+      for (const query of ['?mode=overwrite', '?scan=true']) {
+        const res = await fetch(`${url}${query}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', cookie: cookieHeader(owner) },
+          body: JSON.stringify({ files: [{ path: 'src/index.ts', content: 'const x = 1;\n' }] }),
+        });
+        expect(res.status, query).toBe(422);
+        const json = (await readJson(res)) as { error: { code: string } };
+        expect(json.error.code).toBe('VALIDATION_ERROR');
+      }
+      // GET + junk query: rejected too.
+      const probe = await fetch(`${url}?include=content`, {
+        headers: { cookie: cookieHeader(owner) },
+      });
+      expect(probe.status).toBe(422);
+      // Nothing was stored by any rejected PUT (metadata → honest 404).
+      const cleanGet = await fetch(url, { headers: { cookie: cookieHeader(owner) } });
+      expect(cleanGet.status).toBe(404);
+      // A clean PUT keeps working (the hardening rejects junk, not traffic).
+      const okPut = await putSources(server, owner, projectId, [
+        { path: 'src/index.ts', content: 'const x = 1;\n' },
+      ]);
+      expect(okPut.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
 describe('SAST scans: the real engine over HTTP', () => {
   test('SAST without a snapshot → 409 pre-flight, NOTHING consumed', async () => {
     const users = createMemoryUserRepository();

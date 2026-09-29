@@ -1,9 +1,12 @@
+import { validationError } from '../errors.js';
+
 /**
  * Minimal runtime schema validator for request payloads.
  *
  * Deliberately dependency-free and strict: objects reject unknown keys so
  * that typos and mass-assignment attempts fail loudly instead of being
- * silently dropped.
+ * silently dropped. (The query hardening helper at the bottom of this
+ * module applies the same fail-loud principle to the URL query string.)
  */
 
 export interface ValidationIssue {
@@ -206,4 +209,23 @@ export function optional<T>(inner: Schema<T>): Schema<T | undefined> {
       return inner.parse(value, path);
     },
   };
+}
+
+/**
+ * Reject any request carrying a query string on a route that supports NO
+ * query parameters (auth — Pump 2; payments — Pump 2; scans and source
+ * snapshots — Pump 3).
+ *
+ * Fail closed, never silent-ignore: every distinct key becomes one
+ * validation issue, so the response is the uniform 422 the schema layer
+ * already produces. HTTP parameter pollution dies here too (there is no
+ * supported key to repeat). Routes with a documented parameter allowlist
+ * keep their own allowlist validator instead.
+ */
+export function rejectUnexpectedQuery(req: { url?: string | undefined }): void {
+  const params = new URL(req.url ?? '/', 'http://drobon.invalid').searchParams;
+  const keys = [...new Set(params.keys())];
+  if (keys.length > 0) {
+    throw validationError(keys.map((path) => ({ path, message: 'Unexpected query parameter.' })));
+  }
 }

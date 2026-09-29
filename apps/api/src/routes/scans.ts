@@ -144,6 +144,13 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        // Query hardening (Pump 3): scan routes define no query
+        // parameters at all, so ANY query string is rejected before the
+        // project lookup, body parse, DAST preflight or quota
+        // consumption — a junk request never reaches side effects, and
+        // the response is the uniform 422 (no existence oracle added:
+        // the answer does not depend on project ownership).
+        v.rejectUnexpectedQuery(req);
         // Project ownership first — the uniform Pump 6 policy.
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // ACTIVE projects only: archived projects cannot START new
@@ -294,11 +301,12 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId/scans',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         const records = await scans.listByProject(project.id);
         const body: ScansResponse = {
@@ -311,11 +319,12 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId/scans/:scanId',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // Scan lookup is scoped to the caller's OWN project. Unknown,
         // malformed (pattern-fail/oversized — can never exist) and

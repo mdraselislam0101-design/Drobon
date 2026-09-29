@@ -96,6 +96,10 @@ export function createSourceRoutes(deps: SourceRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        // Query hardening (Pump 3): source routes define no query
+        // parameters — reject any query string before ownership lookup
+        // or body parse (uniform 422; no existence oracle added).
+        v.rejectUnexpectedQuery(req);
         // The uniform Pump 6 project-access policy (no existence oracle).
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // ACTIVE projects only: an archived project is read-only (the
@@ -183,11 +187,12 @@ export function createSourceRoutes(deps: SourceRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId/sources',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         const record = await sources.findByProject(project.id);
         sendSnapshot(res, ctx, record);

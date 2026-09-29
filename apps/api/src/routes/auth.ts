@@ -58,14 +58,6 @@ const registerSchema = v.object({
 
 const emptySchema = v.object({});
 
-function rejectUnexpectedQuery(req: { url?: string | undefined }): void {
-  const params = new URL(req.url ?? '/', 'http://drobon.invalid').searchParams;
-  const keys = [...new Set(params.keys())];
-  if (keys.length > 0) {
-    throw validationError(keys.map((path) => ({ path, message: 'Unexpected query parameter.' })));
-  }
-}
-
 type Credentials = { email: string; password: string };
 
 /** Shared policy pass: structural issues already validated by the schema. */
@@ -102,7 +94,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/register',
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = registerSchema.parse(raw);
         if (!parsed.ok) {
@@ -173,7 +165,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/login',
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = credentialsSchema.parse(raw);
         if (!parsed.ok) {
@@ -217,7 +209,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/logout',
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         if (req.headers['content-type'] !== undefined) {
           const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
           const parsed = emptySchema.parse(raw);
@@ -243,7 +235,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       path: '/api/v1/me',
       requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const user: AuthUser | undefined = ctx.user;
         if (user === undefined) {
           // Defensive: requireAuth should have rejected already.

@@ -103,14 +103,6 @@ function rejectBodyFields(body: unknown): void {
   if (!parsed.ok) throw validationError(parsed.issues);
 }
 
-function rejectUnexpectedQuery(req: { url?: string | undefined }): void {
-  const params = new URL(req.url ?? '/', 'http://drobon.invalid').searchParams;
-  const keys = [...new Set(params.keys())];
-  if (keys.length > 0) {
-    throw validationError(keys.map((path) => ({ path, message: 'Unexpected query parameter.' })));
-  }
-}
-
 function requirePaymentId(raw: string | undefined): string {
   if (typeof raw !== 'string' || raw.length > 64 || !/^pay_[0-9a-f-]{36}$/i.test(raw)) {
     throw notFound();
@@ -125,7 +117,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'GET', path: '/api/v1/payments/config', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
         sendSuccess(res, ctx, payments.config(resolveSubscription(record).plan));
@@ -143,7 +135,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/payments', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
         const subscription = resolveSubscription(record);
@@ -167,7 +159,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'GET', path: '/api/v1/payments/:paymentId', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         sendSuccess(res, ctx, payments.getForAccount(paymentId, actor.id));
       },
@@ -176,7 +168,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/payments/:paymentId/cancel', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         payments.getForAccount(paymentId, actor.id);
         if (req.headers['content-type'] !== undefined) rejectBodyFields(await parseBody(req, config, emptySchema));
@@ -202,7 +194,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'GET', path: '/api/v1/admin/payments/:paymentId/audit', requireAuth: true,
       handler: async (req, res, ctx) => {
         assertPaymentReviewer(ctx, config);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         sendSuccess(res, ctx, payments.audit(paymentId));
       },
@@ -211,7 +203,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/review', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot review your own payment request.');
@@ -223,7 +215,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/approve', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot approve your own payment request.');
@@ -235,7 +227,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/reject', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        rejectUnexpectedQuery(req);
+        v.rejectUnexpectedQuery(req);
         const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot reject your own payment request.');
