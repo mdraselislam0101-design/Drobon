@@ -23,7 +23,7 @@ const STATUS_PAYLOAD = {
 
 describe('createApiClient — payment boundaries', () => {
   test('reads server pricing and sends a manual request with idempotency but no account authority fields', async () => {
-    const config = { currentPlan: 'FREE', proPriceMinorUnits: 100000, currency: 'BDT', manualPaymentMethods: ['MANUAL_TRANSFER'], manualPaymentInstructions: 'Ask support.', onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED' };
+    const config = { currentPlan: 'FREE', proPriceMinorUnits: 100000, currency: 'BDT', manualPaymentMethods: ['MANUAL_TRANSFER'], manualPaymentInstructions: 'Ask support.', onlineGateway: 'UNAVAILABLE', coupons: 'SUPPORTED' };
     const payment = { paymentId: 'pay_00000000-0000-4000-8000-000000000001', plan: 'PRO', amountMinorUnits: 100000, currency: 'BDT', paymentMethod: 'MANUAL_TRANSFER', reference: 'TXN-ABC123', status: 'PENDING', createdAt: '2026-09-29T10:00:00.000Z', submittedAt: '2026-09-29T10:00:00.000Z', updatedAt: '2026-09-29T10:00:00.000Z', reviewedAt: null, approvedAt: null, rejectedAt: null, rejectionReason: null };
     const fetchImpl: FetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ ok: true, data: config, meta: { requestId: 'payment-config' } }))

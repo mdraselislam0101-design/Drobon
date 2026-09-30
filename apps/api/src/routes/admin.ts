@@ -56,7 +56,7 @@ function actorFrom(ctx: RequestContext) {
 }
 
 /** Platform control is operator-provisioned ID allowlist AND live ADMIN role. */
-function assertPlatformAdmin(ctx: RequestContext, config: ApiConfig) {
+export function assertPlatformAdmin(ctx: RequestContext, config: ApiConfig) {
   const actor = actorFrom(ctx);
   if (actor.role !== 'ADMIN' || !config.platformAdminIds.includes(actor.id)) {
     throw forbidden('You do not have access to this resource.');

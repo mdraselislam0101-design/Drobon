@@ -91,6 +91,12 @@ export function Layout({
                 >
                   Account
                 </NavLink>
+                <NavLink
+                  className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                  to="/partner/dashboard"
+                >
+                  Partner dashboard
+                </NavLink>
                 {roleAtLeast(state.user.role, 'ADMIN') && (
                   <>
                     <NavLink
@@ -104,6 +110,12 @@ export function Layout({
                       to="/admin/payments"
                     >
                       Payment review
+                    </NavLink>
+                    <NavLink
+                      className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                      to="/admin/partners"
+                    >
+                      Partners &amp; commissions
                     </NavLink>
                   </>
                 )}

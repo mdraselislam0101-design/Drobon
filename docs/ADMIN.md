@@ -6,6 +6,8 @@ Platform operations are read-only except for the existing Pump 15 payment-review
 
 Payment review remains a distinct capability: each payment-review action requires the live `ADMIN` role and membership in `PAYMENT_REVIEWER_IDS`. Reviewers cannot review their own requests. An account being a platform administrator does not implicitly make it a payment reviewer; operators must configure both allowlists where both capabilities are intended.
 
+Partner/coupon/commission management (Pump 7) is a platform-admin capability using the same `PLATFORM_ADMIN_IDS` + live-role dual gate: `POST /api/v1/admin/partners` (activate an existing user with a unique coupon and integer discount/commission rules), deactivate/reactivate, coupon rule updates (`PATCH …/coupon`), partner list/detail, attributed-payment inspection, commission listing and `available`/`paid` lifecycle transitions. Activation grants complimentary PRO as entitlement only — it never creates a payment, revenue or commission record. Full route detail and the business rules (one identity per user, coupon-as-attribution, commission lifecycle, partner privacy boundary) are documented in `docs/PARTNERS.md`. Partner mutations run under the dedicated payment-mutation limiter and produce audited events with redaction applied to free-text details.
+
 Both allowlists default to empty. There is no API/UI for self-promotion, bootstrap, role changes, platform-ID edits, account deletion, account suspension, UserType mutation, or manual subscription adjustment. The account store does not currently model account status; account rows explicitly report `accountStatus: UNAVAILABLE`. The existing payment saga is the only supported subscription transition.
 
 ## Read routes and bounds

@@ -31,6 +31,14 @@ import {
   isAdminFindingsResponse,
   isAdminAuditResponse,
   isPaymentAuditResponse,
+  isPaymentQuoteResponse,
+  isPartnerDashboardResponse,
+  isAdminCommissionResponse,
+  isAdminCommissionsResponse,
+  isAdminPartnerDetailResponse,
+  isAdminPartnerPaymentsResponse,
+  isAdminPartnerResponse,
+  isAdminPartnersResponse,
   isWorkspaceSecurityOverviewResponse,
   parseApiResponse,
   type ApiErrorDetail,
@@ -80,11 +88,21 @@ import {
   type UserType,
   type Plan,
   type ScanStatus,
+  type PartnerStatus,
+  type CommissionStatus,
   type PaymentAuditAction,
   type PaymentAuditResponse,
   type WorkspaceSecurityOverviewResponse,
   type PaymentMethod,
   type PaymentStatus,
+  type AdminCommissionResponse,
+  type AdminCommissionsResponse,
+  type AdminPartnerDetailResponse,
+  type AdminPartnerPaymentsResponse,
+  type AdminPartnerResponse,
+  type AdminPartnersResponse,
+  type PartnerDashboardResponse,
+  type PaymentQuoteResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -187,7 +205,9 @@ export interface ApiClient {
   getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
   getPaymentConfig(signal?: AbortSignal): Promise<PaymentConfigResponse>;
   getPaymentHistory(page?: number, pageSize?: number, signal?: AbortSignal): Promise<PaymentHistoryResponse>;
-  createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string; couponCode?: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  /** Server-authoritative quote; coupon (if any) resolves server-side only. */
+  getPaymentQuote(couponCode?: string, signal?: AbortSignal): Promise<PaymentQuoteResponse>;
   getPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   cancelPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getAdminDashboard(signal?: AbortSignal): Promise<AdminDashboardResponse>;
@@ -200,6 +220,17 @@ export interface ApiClient {
   approvePayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   rejectPayment(paymentId: string, reason: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getPaymentAudit(paymentId: string, signal?: AbortSignal): Promise<PaymentAuditResponse>;
+  /** Partner self dashboard — aggregate-only projection (Pump 7). */
+  getPartnerDashboard(signal?: AbortSignal): Promise<PartnerDashboardResponse>;
+  /** Platform partner/coupon/commission management (Pump 7; dual-gated admin). */
+  getAdminPartners(page?: number, pageSize?: number, status?: PartnerStatus, signal?: AbortSignal): Promise<AdminPartnersResponse>;
+  activatePartner(input: { userId: string; couponCode: string; discountPercent: number; commissionPercent: number }, signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  getAdminPartner(partnerId: string, signal?: AbortSignal): Promise<AdminPartnerDetailResponse>;
+  setPartnerStatus(partnerId: string, status: 'ACTIVE' | 'DEACTIVATED', signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  updatePartnerCoupon(partnerId: string, patch: { status?: 'ACTIVE' | 'INACTIVE'; discountPercent?: number; commissionPercent?: number; expiresAt?: string | null }, signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  getAdminPartnerPayments(partnerId: string, page?: number, pageSize?: number, signal?: AbortSignal): Promise<AdminPartnerPaymentsResponse>;
+  getAdminCommissions(query?: { page?: number; pageSize?: number; partnerId?: string; status?: CommissionStatus }, signal?: AbortSignal): Promise<AdminCommissionsResponse>;
+  transitionCommission(commissionId: string, to: 'AVAILABLE' | 'PAID', signal?: AbortSignal): Promise<AdminCommissionResponse>;
   /**
    * The authenticated account's OWN usage view (Pump 5): plan, current
    * UTC period, used/limit/remaining and the quota status. Read-only and
@@ -654,6 +685,33 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }, isPaymentDetailResponse),
     getPaymentAudit: (paymentId, signal?: AbortSignal): Promise<PaymentAuditResponse> =>
       authRequest<PaymentAuditResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/audit`, signal === undefined ? {} : { signal }, isPaymentAuditResponse),
+    getPaymentQuote: (couponCode, signal?: AbortSignal): Promise<PaymentQuoteResponse> =>
+      authRequest<PaymentQuoteResponse>(`/api/v1/payments/quote${couponCode === undefined || couponCode.trim() === '' ? '' : `?couponCode=${encodeURIComponent(couponCode.trim())}`}`, signal === undefined ? {} : { signal }, isPaymentQuoteResponse),
+    getPartnerDashboard: (signal?: AbortSignal): Promise<PartnerDashboardResponse> =>
+      authRequest<PartnerDashboardResponse>('/api/v1/partners/me/dashboard', signal === undefined ? {} : { signal }, isPartnerDashboardResponse),
+    getAdminPartners: (page = 1, pageSize = 20, status, signal?: AbortSignal): Promise<AdminPartnersResponse> => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (status !== undefined) params.set('status', status);
+      return authRequest<AdminPartnersResponse>(`/api/v1/admin/partners?${params.toString()}`, signal === undefined ? {} : { signal }, isAdminPartnersResponse);
+    },
+    activatePartner: (input, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>('/api/v1/admin/partners', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    getAdminPartner: (partnerId, signal?: AbortSignal): Promise<AdminPartnerDetailResponse> =>
+      authRequest<AdminPartnerDetailResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}`, signal === undefined ? {} : { signal }, isAdminPartnerDetailResponse),
+    setPartnerStatus: (partnerId, status, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/${status === 'DEACTIVATED' ? 'deactivate' : 'reactivate'}`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    updatePartnerCoupon: (partnerId, patch, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/coupon`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    getAdminPartnerPayments: (partnerId, page = 1, pageSize = 50, signal?: AbortSignal): Promise<AdminPartnerPaymentsResponse> =>
+      authRequest<AdminPartnerPaymentsResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/payments?page=${page}&pageSize=${pageSize}`, signal === undefined ? {} : { signal }, isAdminPartnerPaymentsResponse),
+    getAdminCommissions: (query = {}, signal?: AbortSignal): Promise<AdminCommissionsResponse> => {
+      const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 50) });
+      if (query.partnerId !== undefined) params.set('partnerId', query.partnerId);
+      if (query.status !== undefined) params.set('status', query.status);
+      return authRequest<AdminCommissionsResponse>(`/api/v1/admin/commissions?${params.toString()}`, signal === undefined ? {} : { signal }, isAdminCommissionsResponse);
+    },
+    transitionCommission: (commissionId, to, signal?: AbortSignal): Promise<AdminCommissionResponse> =>
+      authRequest<AdminCommissionResponse>(`/api/v1/admin/commissions/${encodeURIComponent(commissionId)}/${to.toLowerCase()}`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isAdminCommissionResponse),
     getUsage: (signal?: AbortSignal): Promise<UsageResponse> =>
       authRequest<UsageResponse>(
         '/api/v1/usage',

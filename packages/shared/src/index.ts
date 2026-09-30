@@ -12,6 +12,7 @@ export * from './jobs.js';
 export * from './models.js';
 export * from './plans.js';
 export * from './payments.js';
+export * from './partners.js';
 export * from './usage.js';
 export * from './workspace.js';
 export * from './projects.js';

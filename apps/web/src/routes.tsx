@@ -7,7 +7,9 @@ import { Layout } from './components/Layout.js';
 import { DeveloperDashboardRoute, PentesterDashboardRoute, ProtectedRoute, PublicOnlyRoute, SecurityProfessionalDashboardRoute, StudentDashboardRoute } from './components/RouteGuards.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { AdminPaymentsPage } from './pages/AdminPaymentsPage.js';
+import { AdminPartnersPage } from './pages/AdminPartnersPage.js';
 import { AdminOperationsPage } from './pages/AdminOperationsPage.js';
+import { PartnerDashboardPage } from './pages/PartnerDashboardPage.js';
 import { HomePage } from './pages/HomePage.js';
 import { DeveloperDashboardPage } from './pages/DeveloperDashboardPage.js';
 import { ProjectDetailPage } from './pages/ProjectDetailPage.js';
@@ -29,6 +31,8 @@ export const APP_ROUTES = {
   pentesterDashboard: '/pentester/dashboard',
   adminOperations: '/admin/operations',
   adminPayments: '/admin/payments',
+  adminPartners: '/admin/partners',
+  partnerDashboard: '/partner/dashboard',
   projects: '/projects',
   project: (projectId: string): string => `/projects/${projectId}`,
 } as const;
@@ -94,9 +98,11 @@ export function AppRoutes({
                   <Route path="pentester/dashboard" element={<DeveloperDashboardPage />} />
                 </Route>
               </Route>
+              <Route path="partner/dashboard" element={<PartnerDashboardPage />} />
               <Route element={<ProtectedRoute minRole="ADMIN" />}>
                 <Route path="admin/operations" element={<AdminOperationsPage />} />
                 <Route path="admin/payments" element={<AdminPaymentsPage />} />
+                <Route path="admin/partners" element={<AdminPartnersPage />} />
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>

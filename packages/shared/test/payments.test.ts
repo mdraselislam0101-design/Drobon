@@ -37,7 +37,7 @@ const config = {
   manualPaymentMethods: ['MANUAL_TRANSFER'],
   manualPaymentInstructions: 'Contact support before sending funds.',
   onlineGateway: 'UNAVAILABLE',
-  coupons: 'NOT_IMPLEMENTED',
+  coupons: 'SUPPORTED',
 } as const;
 
 const event = {

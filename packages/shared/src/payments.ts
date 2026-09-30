@@ -22,6 +22,7 @@ export function isPaymentStatus(value: unknown): value is PaymentStatus {
 
 export const PAYMENT_AUDIT_ACTIONS = [
   'PAYMENT_CREATED',
+  'PAYMENT_COUPON_ATTRIBUTED',
   'PAYMENT_SUBMITTED',
   'PAYMENT_REVIEW_STARTED',
   'PAYMENT_APPROVAL_STARTED',
@@ -34,10 +35,19 @@ export function isPaymentAuditAction(value: unknown): value is PaymentAuditActio
   return typeof value === 'string' && (PAYMENT_AUDIT_ACTIONS as readonly string[]).includes(value);
 }
 
+/** Coupon attribution projection (Pump 7). Absent when no coupon was applied. */
+export interface PaymentAttributionSummary {
+  couponCode: string;
+  baseAmountMinorUnits: number;
+  discountAmountMinorUnits: number;
+}
+
 export interface PaymentSummary {
   paymentId: string;
   plan: 'PRO';
+  /** Final collected amount (after any coupon discount). */
   amountMinorUnits: number;
+  attribution?: PaymentAttributionSummary;
   currency: 'BDT';
   paymentMethod: PaymentMethod;
   reference: string;
@@ -65,7 +75,7 @@ export interface PaymentConfigResponse {
   manualPaymentMethods: PaymentMethod[];
   manualPaymentInstructions: string;
   onlineGateway: 'UNAVAILABLE';
-  coupons: 'NOT_IMPLEMENTED';
+  coupons: 'SUPPORTED';
 }
 
 export interface PaymentHistoryResponse {
@@ -137,7 +147,19 @@ export function isPaymentSummary(value: unknown): value is PaymentSummary {
     (value['reviewedAt'] === null || isTimestamp(value['reviewedAt'])) &&
     (value['approvedAt'] === null || isTimestamp(value['approvedAt'])) &&
     (value['rejectedAt'] === null || isTimestamp(value['rejectedAt'])) &&
-    (value['rejectionReason'] === null || (typeof value['rejectionReason'] === 'string' && value['rejectionReason'].length <= 300))
+    (value['rejectionReason'] === null || (typeof value['rejectionReason'] === 'string' && value['rejectionReason'].length <= 300)) &&
+    (value['attribution'] === undefined || isAttributionSummary(value['attribution']))
+  );
+}
+
+function isAttributionSummary(value: unknown): value is PaymentAttributionSummary {
+  return (
+    isRecord(value) &&
+    typeof value['couponCode'] === 'string' && /^[A-Z0-9][A-Z0-9-]{2,39}$/.test(value['couponCode']) &&
+    typeof value['baseAmountMinorUnits'] === 'number' &&
+    Number.isSafeInteger(value['baseAmountMinorUnits']) && value['baseAmountMinorUnits'] > 0 &&
+    typeof value['discountAmountMinorUnits'] === 'number' &&
+    Number.isSafeInteger(value['discountAmountMinorUnits']) && value['discountAmountMinorUnits'] >= 0
   );
 }
 
@@ -154,7 +176,7 @@ export function isPaymentConfigResponse(value: unknown): value is PaymentConfigR
     typeof value['manualPaymentInstructions'] === 'string' &&
     value['manualPaymentInstructions'].length > 0 && value['manualPaymentInstructions'].length <= 500 &&
     value['onlineGateway'] === 'UNAVAILABLE' &&
-    value['coupons'] === 'NOT_IMPLEMENTED'
+    value['coupons'] === 'SUPPORTED'
   );
 }
 

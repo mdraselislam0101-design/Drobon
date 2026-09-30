@@ -23,6 +23,7 @@ const createSchema = v.object({
   currency: v.literal('BDT'),
   paymentMethod: v.literal('MANUAL_TRANSFER'),
   reference: v.string({ minLength: 6, maxLength: 64, trim: true, pattern: /^[A-Za-z0-9][A-Za-z0-9._-]{5,63}$/ }),
+  couponCode: v.optional(v.string({ minLength: 3, maxLength: 40, trim: true, pattern: /^[A-Za-z0-9][A-Za-z0-9-]{2,39}$/ })),
 });
 const emptySchema = v.object({});
 const rejectSchema = v.object({ reason: v.string({ minLength: 3, maxLength: 300, trim: true }) });
@@ -124,6 +125,23 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       },
     },
     {
+      method: 'GET', path: '/api/v1/payments/quote', requireAuth: true,
+      handler: async (req, res, ctx) => {
+        actorFrom(ctx);
+        const url = new URL(req.url ?? '/', 'http://drobon.invalid');
+        for (const key of url.searchParams.keys()) {
+          if (key !== 'couponCode' || url.searchParams.getAll(key).length !== 1) {
+            throw validationError([{ path: key, message: 'Unexpected or repeated query parameter.' }]);
+          }
+        }
+        const raw = url.searchParams.get('couponCode');
+        if (raw !== null && !/^[A-Za-z0-9][A-Za-z0-9-]{2,39}$/.test(raw)) {
+          throw validationError([{ path: 'couponCode', message: 'Coupon codes are 3–40 characters of A–Z, 0–9 and dashes.' }]);
+        }
+        sendSuccess(res, ctx, payments.quote(raw));
+      },
+    },
+    {
       method: 'GET', path: '/api/v1/payments', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
@@ -151,6 +169,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
           paymentMethod: input.paymentMethod as PaymentMethod,
           reference: input.reference,
           idempotencyKey,
+          ...(input.couponCode === undefined ? {} : { couponCode: input.couponCode }),
         });
         sendSuccess(res, ctx, { payment: result.payment }, result.created ? 201 : 200);
       },

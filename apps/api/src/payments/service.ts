@@ -7,6 +7,7 @@ import type {
   PaymentDetailResponse,
   PaymentHistoryResponse,
   PaymentMethod,
+  PaymentQuoteResponse,
   PaymentSummary,
   PaymentStatus,
 } from '@drobon/shared';
@@ -27,8 +28,15 @@ const unavailablePaymentProvider: PaymentProvider = {
   availability: () => 'UNAVAILABLE',
 };
 
+/** Optional coupon/commission collaborator injected at composition (Pump 7). */
+export interface PaymentPartnerHooks {
+  resolveCoupon(code: string): { ok: boolean; couponCode: string; partnerId?: string; discountPercent?: number; commissionPercent?: number };
+  settleCommissionForPayment(payment: PaymentRecord, actorId: string): Promise<void>;
+}
+
 export interface PaymentService {
   config(currentPlan: 'FREE' | 'PRO'): PaymentConfigResponse;
+  quote(couponCode: string | null): PaymentQuoteResponse;
   create(input: {
     accountId: string;
     userId: string;
@@ -39,6 +47,7 @@ export interface PaymentService {
     paymentMethod: PaymentMethod;
     reference: string;
     idempotencyKey: string;
+    couponCode?: string;
   }): Promise<{ payment: PaymentSummary; created: boolean }>;
   getForAccount(paymentId: string, accountId: string): PaymentDetailResponse;
   history(accountId: string, page: number, pageSize: number): PaymentHistoryResponse;
@@ -62,6 +71,11 @@ function toSummary(record: PaymentRecord): PaymentSummary {
     paymentId: record.paymentId,
     plan: record.plan,
     amountMinorUnits: record.amountMinorUnits,
+    ...(record.attribution === undefined ? {} : { attribution: {
+      couponCode: record.attribution.couponCode,
+      baseAmountMinorUnits: record.attribution.baseAmountMinorUnits,
+      discountAmountMinorUnits: record.attribution.discountAmountMinorUnits,
+    } }),
     currency: record.currency,
     paymentMethod: record.paymentMethod,
     reference: record.reference,
@@ -140,8 +154,10 @@ export function createPaymentService(options: {
   users: UserRepository;
   now?: () => number;
   provider?: PaymentProvider;
+  partners?: PaymentPartnerHooks;
 }): PaymentService {
   const { config, store, users } = options;
+  const partners = options.partners;
   const now = options.now ?? Date.now;
   const provider = options.provider ?? unavailablePaymentProvider;
   const timestamp = (): string => new Date(now()).toISOString();
@@ -170,6 +186,11 @@ export function createPaymentService(options: {
       }),
     );
     if (!('payment' in result)) throw new Error('Payment approval state changed unexpectedly.');
+    // Coupon-attributed payments settle an idempotent commission (at most one per
+    // payment ever). A persist failure surfaces honestly; startup recovery retries.
+    if (partners !== undefined && result.payment.attribution !== undefined) {
+      await partners.settleCommissionForPayment(result.payment, reviewerId);
+    }
     return toSummary(result.payment);
   };
 
@@ -181,13 +202,34 @@ export function createPaymentService(options: {
       manualPaymentMethods: [...config.manualPaymentMethods],
       manualPaymentInstructions: config.manualPaymentInstructions,
       onlineGateway: provider.availability(),
-      coupons: 'NOT_IMPLEMENTED',
+      coupons: 'SUPPORTED',
     }),
+    quote: (couponCode) => {
+      const baseAmountMinorUnits = config.proPriceMinorUnits;
+      if (couponCode === null) return { baseAmountMinorUnits, currency: 'BDT', coupon: null };
+      const decision = partners?.resolveCoupon(couponCode);
+      if (decision === undefined || !decision.ok) {
+        throw validationError([{ path: 'couponCode', message: 'This coupon is not currently valid.' }]);
+      }
+      const discountPercent = decision.discountPercent as number;
+      const discountAmountMinorUnits = Math.floor((baseAmountMinorUnits * discountPercent) / 100);
+      return {
+        baseAmountMinorUnits,
+        currency: 'BDT',
+        coupon: {
+          code: decision.couponCode,
+          discountPercent,
+          discountAmountMinorUnits,
+          finalAmountMinorUnits: baseAmountMinorUnits - discountAmountMinorUnits,
+        },
+      };
+    },
     create: async (input) => {
       const { reference, key: referenceKey } = normalizeReference(input.reference);
       const previous = store.findByIdempotency(input.accountId, input.idempotencyKey);
       if (previous !== undefined) {
-        const sameRequest = previous.plan === input.plan && previous.paymentMethod === input.paymentMethod &&
+        const sameCoupon = (previous.attribution?.couponCode ?? null) === (input.couponCode === undefined ? null : input.couponCode.trim().toUpperCase());
+        const sameRequest = sameCoupon && previous.plan === input.plan && previous.paymentMethod === input.paymentMethod &&
           previous.referenceKey === referenceKey && previous.amountMinorUnits === input.amountMinorUnits && previous.currency === input.currency;
         if (!sameRequest) throw conflict('The idempotency key was already used for a different payment request.');
         // Preserve a completed/accepted retry even if price configuration or
@@ -198,9 +240,28 @@ export function createPaymentService(options: {
       if (input.plan !== 'PRO') issues.push({ path: 'plan', message: 'Only the PRO plan is available for upgrade.' });
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{5,63}$/.test(input.reference)) issues.push({ path: 'reference', message: 'Payment reference must be 6–64 normalized characters.' });
       if (!Number.isSafeInteger(input.amountMinorUnits) || input.amountMinorUnits < 1) issues.push({ path: 'amountMinorUnits', message: 'Amount must be a positive integer in minor currency units.' });
-      if (input.amountMinorUnits !== config.proPriceMinorUnits) issues.push({ path: 'amountMinorUnits', message: 'Amount does not match the server-configured PRO price.' });
       if (input.currency !== 'BDT') issues.push({ path: 'currency', message: 'Currency does not match the server-configured price.' });
       if (!config.manualPaymentMethods.includes(input.paymentMethod)) issues.push({ path: 'paymentMethod', message: 'This manual payment method is unavailable.' });
+      // Coupon resolution is fully server-side: discount/commission percentages,
+      // ownership and price all derive from the partner store, never the client.
+      let attribution: PaymentRecord['attribution'];
+      let expectedAmount = config.proPriceMinorUnits;
+      if (input.couponCode !== undefined) {
+        const decision = partners?.resolveCoupon(input.couponCode);
+        if (decision === undefined || !decision.ok) issues.push({ path: 'couponCode', message: 'This coupon is not currently valid.' });
+        else {
+          const discountAmountMinorUnits = Math.floor((config.proPriceMinorUnits * (decision.discountPercent as number)) / 100);
+          expectedAmount = config.proPriceMinorUnits - discountAmountMinorUnits;
+          attribution = {
+            couponCode: decision.couponCode,
+            partnerId: decision.partnerId as string,
+            baseAmountMinorUnits: config.proPriceMinorUnits,
+            discountAmountMinorUnits,
+            commissionPercent: decision.commissionPercent as number,
+          };
+        }
+      }
+      if (input.amountMinorUnits !== expectedAmount) issues.push({ path: 'amountMinorUnits', message: 'Amount does not match the server-computed price.' });
       if (issues.length > 0) throw validationError(issues);
       if (input.currentPlan !== 'FREE') throw conflict('A PRO upgrade request is available only to FREE accounts.');
       const createdAt = timestamp();
@@ -210,7 +271,8 @@ export function createPaymentService(options: {
         accountId: input.accountId,
         submittedByUserId: input.userId,
         plan: 'PRO',
-        amountMinorUnits: config.proPriceMinorUnits,
+        amountMinorUnits: expectedAmount,
+        ...(attribution === undefined ? {} : { attribution }),
         currency: 'BDT',
         paymentMethod: input.paymentMethod,
         reference,
@@ -228,6 +290,7 @@ export function createPaymentService(options: {
       };
       const events = [
         auditEvent({ paymentId, accountId: input.accountId, actorId: input.userId, action: 'PAYMENT_CREATED', previousStatus: null, newStatus: 'PENDING', timestamp: createdAt }),
+        ...(attribution === undefined ? [] : [auditEvent({ paymentId, accountId: input.accountId, actorId: input.userId, action: 'PAYMENT_COUPON_ATTRIBUTED', previousStatus: 'PENDING', newStatus: 'PENDING', timestamp: createdAt, reason: `Coupon ${attribution.couponCode} applied by server; discount ${attribution.discountAmountMinorUnits}.` })]),
         auditEvent({ paymentId, accountId: input.accountId, actorId: input.userId, action: 'PAYMENT_SUBMITTED', previousStatus: 'PENDING', newStatus: 'PENDING', timestamp: createdAt }),
       ];
       const result = await store.create(payment, events);

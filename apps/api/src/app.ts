@@ -61,9 +61,12 @@ import { createSourceRoutes } from './routes/sources.js';
 import { createReportsRoutes } from './routes/reports.js';
 import { createAssistantRoutes } from './routes/assistant.js';
 import { createPaymentRoutes } from './routes/payments.js';
+import { createPartnerRoutes } from './routes/partners.js';
 import { createAdminRoutes } from './routes/admin.js';
 import { createWorkspaceRoutes } from './routes/workspace.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
+import { createJsonFilePartnerStore, createMemoryPartnerStore, type PartnerStore } from './partners/store.js';
+import { createPartnerService, type PartnerService } from './partners/service.js';
 import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
@@ -149,6 +152,9 @@ export interface AppDeps {
   scanProcessorAutoStart?: boolean;
   /** Durable payment + audit JSON store; tests may inject a local fixture. */
   paymentStore?: PaymentStore;
+  partnerStore?: PartnerStore;
+  /** Clock for partner/coupon/commission timestamps (injectable for tests). */
+  partnerNow?: () => number;
   /** Payment-service clock (epoch ms), injectable for deterministic tests. */
   paymentNow?: () => number;
 }
@@ -246,13 +252,29 @@ export function createApp(deps: AppDeps): App {
     (config.paymentStorePath === ':memory:'
       ? createMemoryPaymentStore()
       : createJsonFilePaymentStore(config.paymentStorePath));
+  // Partner/coupon/commission share one atomic JSON document ( Pump 7 ). Durable
+  // outside explicitly ephemeral development; production forbids ':memory:'.
+  const partnerStore: PartnerStore =
+    deps.partnerStore ??
+    (config.partnerStorePath === ':memory:'
+      ? createMemoryPartnerStore()
+      : createJsonFilePartnerStore(config.partnerStorePath));
+  const partners: PartnerService = createPartnerService({
+    store: partnerStore,
+    users,
+    payments: paymentStore,
+    ...(deps.partnerNow === undefined ? {} : { now: deps.partnerNow }),
+  });
   const payments: PaymentService = createPaymentService({
     config,
     store: paymentStore,
     users,
     ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
+    partners,
   });
-  const ready = payments.recoverInterruptedApprovals();
+  const ready = payments
+    .recoverInterruptedApprovals()
+    .then(() => partners.recoverUnsettledCommissions());
   // One policy instance is shared by configuration preflight, scan
   // preflight and engine execution. The engine re-resolves and pins
   // every request independently, so saved configuration is never
@@ -294,6 +316,7 @@ export function createApp(deps: AppDeps): App {
     ...createAuthzRoutes({ config, users }),
     ...createSubscriptionRoutes(),
     ...createPaymentRoutes({ config, users, payments }),
+    ...createPartnerRoutes({ config, partners }),
     ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
@@ -348,8 +371,10 @@ export function createApp(deps: AppDeps): App {
       : { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs, now: deps.rateLimitNow },
   );
   const paymentMutationRateLimit: Middleware = async (req, res, ctx, next) => {
-    const paymentMutation = ctx.method === 'POST' &&
-      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') || ctx.pathname.startsWith('/api/v1/admin/payments/'));
+    const paymentMutation = (ctx.method === 'POST' || ctx.method === 'PATCH') &&
+      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') ||
+        ctx.pathname.startsWith('/api/v1/admin/payments/') || ctx.pathname.startsWith('/api/v1/admin/partners/') ||
+        ctx.pathname === '/api/v1/admin/partners' || ctx.pathname.startsWith('/api/v1/admin/commissions/'));
     if (paymentMutation) await paymentRateLimiter.middleware(req, res, ctx, next);
     else await next();
   };

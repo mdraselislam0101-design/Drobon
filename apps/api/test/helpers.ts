@@ -109,6 +109,7 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   paymentStore?: PaymentStore;
   /** Deterministic payment timestamps. */
   paymentNow?: () => number;
+  partnerNow?: () => number;
   /**
    * Inject scanner engines (Pump 8 default: the REAL SAST engine —
    * SAST scans analyze the project's uploaded source snapshot and
@@ -175,6 +176,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     paymentStoreDir,
     paymentStore,
     paymentNow,
+    partnerNow,
     scanEngines,
     dastTargetPolicy,
     dastTransport,
@@ -207,6 +209,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
+    partnerStorePath: ':memory:',
     proPriceMinorUnits: 100_000,
     paymentReviewerIds: [],
     manualPaymentMethods: ['MANUAL_TRANSFER'],
@@ -307,6 +310,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sessions: resolvedSessions,
     paymentStore: resolvedPaymentStore,
     ...(paymentNow === undefined ? {} : { paymentNow }),
+    ...(partnerNow === undefined ? {} : { partnerNow }),
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),

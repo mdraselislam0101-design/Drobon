@@ -386,6 +386,7 @@ describe('auth security controls', () => {
             sourceStorePath: ':memory:',
             vulnIntelProvider: 'none' as const,
             paymentStorePath: `${dir}/payments.json`,
+            partnerStorePath: `${dir}/partners.json`,
             proPriceMinorUnits: 100_000,
             paymentReviewerIds: [],
             manualPaymentMethods: ['MANUAL_TRANSFER'],

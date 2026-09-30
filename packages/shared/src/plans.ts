@@ -17,8 +17,9 @@ import { isRecord } from './guards.js';
  * entitlements exclusively from server-side account state through this
  * table; clients render the server's verdict and never recompute it.
  *
- * Pump 4 scope: exactly two plans (FREE, PRO), no payment integration,
- * no coupons, no partner/referral — those are later roadmap phases.
+ * Pump 4 scope: exactly two plans (FREE, PRO). Pump 7 adds manual
+ * payment upgrades and partner coupons; entitlement still derives only
+ * from this table via server-side subscription state.
  */
 
 /** The complete commercial plan vocabulary (Pump 4: exactly two). */
