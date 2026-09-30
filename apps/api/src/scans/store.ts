@@ -623,7 +623,7 @@ function parseStoredFindingWorkflow(value: unknown, scansById: ReadonlyMap<strin
       if (event.actorType !== 'USER' || !canTransitionFinding(state, event.newState)) return undefined;
       state = event.newState;
     } else if (event.action === 'FINDING_REOBSERVED') {
-      if (state === 'RESOLVED') {
+      if (state === 'RESOLVED' || state === 'FALSE_POSITIVE') {
         if (event.newState !== 'REOPENED' || event.actorType !== 'SYSTEM') return undefined;
         state = 'REOPENED';
       } else if (event.newState !== state || event.actorType !== 'SYSTEM') return undefined;
@@ -1060,7 +1060,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         const verificationState = workflow?.verificationState ?? 'OBSERVED';
         findingsSummary.byLifecycleState[lifecycleState] += 1;
         findingsSummary.byVerificationState[verificationState] += 1;
-        if (lifecycleState !== 'RESOLVED') {
+        if (lifecycleState !== 'RESOLVED' && lifecycleState !== 'FALSE_POSITIVE') {
           findingsSummary.unresolved += 1;
           findingsSummary.unresolvedBySeverity[entry.finding.severity] += 1;
         }
@@ -1104,7 +1104,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
       const byStatus: Record<ScanStatus, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 };
       const byType: Record<ScanType, number> = { SAST: 0, SCA: 0, SECRETS: 0, DAST: 0 };
       const findingsBySeverity: Record<(typeof FINDING_SEVERITIES)[number], number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
-      const findingsByLifecycleState: Record<FindingLifecycleState, number> = { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 };
+      const findingsByLifecycleState: Record<FindingLifecycleState, number> = { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, FALSE_POSITIVE: 0, REOPENED: 0 };
       const latestFindingByIdentity = new Map<string, { finding: Finding; completedAt: string }>();
       let recentlyCompleted = 0;
       let dastObservations = 0;
@@ -1127,11 +1127,11 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
       let unresolvedFindings = 0;
       for (const workflow of findingWorkflowsByKey.values()) {
         findingsByLifecycleState[workflow.state] += 1;
-        if (workflow.state !== 'RESOLVED') unresolvedFindings += 1;
+        if (workflow.state !== 'RESOLVED' && workflow.state !== 'FALSE_POSITIVE') unresolvedFindings += 1;
       }
       for (const [key, entry] of latestFindingByIdentity) {
         const workflow = findingWorkflowsByKey.get(key);
-        if (workflow?.state === 'RESOLVED') continue;
+        if (workflow?.state === 'RESOLVED' || workflow?.state === 'FALSE_POSITIVE') continue;
         findingsBySeverity[entry.finding.severity] += 1;
       }
       return Promise.resolve({ total: scansById.size, byStatus, byType, recentlyCompleted, findingsBySeverity, findingsByLifecycleState, unresolvedFindings, dastObservations, scaNotAssessed });

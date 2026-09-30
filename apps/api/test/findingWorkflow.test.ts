@@ -271,4 +271,67 @@ describe('finding workflow store, notes, guidance and reports', () => {
       cleanupTempStoreDir(dir);
     }
   });
+  test('FALSE_POSITIVE is a terminal triage state and reobservation reopens it (Phase 22)', async () => {
+    const { project } = await fixtureProject();
+    const scans = createMemoryScanStore();
+    const fingerprint = 'b'.repeat(64);
+    const first = await completeScan(scans, project.id, makeFinding('scan_placeholder', fingerprint));
+    if (first.finding === undefined) throw new Error('Expected first scanner finding.');
+
+    expect((await scans.transitionFindingLifecycle(project.id, fingerprint, 'FALSE_POSITIVE', OWNER_ID, '2026-09-28T11:00:00.000Z')).outcome).toBe('updated');
+    const marked = await scans.getFindingWorkflow(project.id, fingerprint);
+    expect(marked?.state).toBe('FALSE_POSITIVE');
+    const markedHistory = (await scans.getFindingHistory(project.id, fingerprint, 1, 50))!;
+    expect(markedHistory.events.some((event) => event.action === 'STATE_CHANGED' && event.previousState === 'OPEN' && event.newState === 'FALSE_POSITIVE')).toBe(true);
+
+    // Terminal: no user transition out of FALSE_POSITIVE.
+    for (const next of ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'] as const) {
+      expect((await scans.transitionFindingLifecycle(project.id, fingerprint, next, OWNER_ID, '2026-09-28T11:01:00.000Z')).outcome).toBe('invalid-transition');
+    }
+
+    // A FALSE_POSITIVE finding is dispositioned: it is not "unresolved" and does
+    // not inflate severity counts, while remaining visible in its lifecycle bucket.
+    const summary = await scans.adminSummary(Date.parse('2026-09-28T11:02:00.000Z'));
+    expect(summary.unresolvedFindings).toBe(0);
+    expect(summary.findingsByLifecycleState.FALSE_POSITIVE).toBe(1);
+    expect(summary.findingsBySeverity.HIGH).toBe(0);
+
+    // Reobservation in a later same-scanner scan reopens it automatically.
+    const second = await completeScan(scans, project.id, makeFinding('scan_placeholder', fingerprint));
+    if (second.finding === undefined) throw new Error('Expected reobserved finding.');
+    const reopened = await scans.getFindingWorkflow(project.id, fingerprint);
+    expect(reopened?.state).toBe('REOPENED');
+    const reopenHistory = (await scans.getFindingHistory(project.id, fingerprint, 1, 50))!;
+    expect(reopenHistory.events.some((event) => event.action === 'FINDING_REOBSERVED' && event.previousState === 'FALSE_POSITIVE' && event.newState === 'REOPENED')).toBe(true);
+
+    // Report snapshots carry the reopened state, not the stale FALSE_POSITIVE.
+    const report = buildSecurityReport(project, second.scan, '2026-09-28T11:05:00.000Z', reopened === undefined ? [] : [reopened]);
+    expect(report.findingWorkflows?.[0]?.state).toBe('REOPENED');
+  });
+
+  test('a FALSE_POSITIVE→REOPENED history reloads from the JSON store after a restart (Phase 22 regression)', async () => {
+    const dir = makeTempStoreDir('finding-workflow-fp-restart');
+    try {
+      const { project } = await fixtureProject();
+      const file = join(dir, 'scans.json');
+      let scans = createJsonFileScanStore(file);
+      const first = await completeScan(scans, project.id, makeFinding('scan_placeholder', 'd'.repeat(64)));
+      const finding = first.finding;
+      if (finding === undefined) throw new Error('Expected finding.');
+      expect((await scans.transitionFindingLifecycle(project.id, finding.fingerprint, 'FALSE_POSITIVE', OWNER_ID, '2026-09-28T11:00:00.000Z')).outcome).toBe('updated');
+      const second = await completeScan(scans, project.id, makeFinding('scan_placeholder', finding.fingerprint));
+      if (second.finding === undefined) throw new Error('Expected reobserved finding.');
+      const beforeRestart = await scans.getFindingWorkflow(project.id, finding.fingerprint);
+      expect(beforeRestart?.state).toBe('REOPENED');
+
+      // Reload from disk: the persisted FALSE_POSITIVE→REOPENED history must replay cleanly.
+      scans = createJsonFileScanStore(file);
+      const afterRestart = await scans.getFindingWorkflow(project.id, finding.fingerprint);
+      expect(afterRestart).toEqual(beforeRestart);
+      expect((await scans.getFindingHistory(project.id, finding.fingerprint, 1, 50))?.events.some((event) => event.action === 'FINDING_REOBSERVED' && event.previousState === 'FALSE_POSITIVE' && event.newState === 'REOPENED')).toBe(true);
+    } finally {
+      cleanupTempStoreDir(dir);
+    }
+  });
+
 });

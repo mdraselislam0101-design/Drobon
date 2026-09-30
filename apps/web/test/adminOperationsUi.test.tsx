@@ -11,7 +11,7 @@ const snapshot: AdminDashboardResponse = {
   projects: { state: 'AVAILABLE', total: 3, active: 2, archived: 1 },
   scans: { state: 'AVAILABLE', total: 12, byStatus: { QUEUED: 1, RUNNING: 1, COMPLETED: 8, FAILED: 1, TIMED_OUT: 1 }, byType: { SAST: 8, SCA: 2, SECRETS: 1, DAST: 1 }, recentlyCompleted: 4 },
   payments: { state: 'AVAILABLE', total: 2, byStatus: { PENDING: 1, UNDER_REVIEW: 0, APPROVING: 0, APPROVED: 1, REJECTED: 0, CANCELLED: 0 }, submittedAmountMinorUnits: 200_000, approvedAmountMinorUnits: 100_000, currency: 'BDT' },
-  findings: { state: 'AVAILABLE', bySeverity: { CRITICAL: 0, HIGH: 2, MEDIUM: 3, LOW: 1, INFO: 0 }, byLifecycleState: { OPEN: 4, ACKNOWLEDGED: 0, IN_PROGRESS: 1, RESOLVED: 1, REOPENED: 0 }, unresolved: 5, dastObservations: 3, scaNotAssessed: 2 },
+  findings: { state: 'AVAILABLE', bySeverity: { CRITICAL: 0, HIGH: 2, MEDIUM: 3, LOW: 1, INFO: 0 }, byLifecycleState: { OPEN: 4, ACKNOWLEDGED: 0, IN_PROGRESS: 1, RESOLVED: 1, FALSE_POSITIVE: 0, REOPENED: 0 }, unresolved: 5, dastObservations: 3, scaNotAssessed: 2 },
   system: { api: 'SERVING', web: 'NOT_ASSESSED', accountPersistence: 'LOADED_AT_STARTUP', paymentPersistence: 'EPHEMERAL', apiAttachedScanProcessor: 'NOT_STARTED', separateWorker: 'NOT_INTEGRATED', assistantFeature: 'DETERMINISTIC_READ_ONLY', aiProvider: 'NONE', paymentGateway: 'UNAVAILABLE', vulnerabilityDataset: 'NO_DATA_LOADED', securityDataset: 'SEPARATE_NOT_LOADED' },
 };
 

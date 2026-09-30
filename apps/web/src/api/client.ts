@@ -353,7 +353,8 @@ export interface ApiClient {
   /** Retrieve an existing persisted report without regenerating it. */
   getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Authenticated, bounded JSON or Markdown export. */
-  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload>;
+  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload>;
+  downloadSbom(projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload>;
   /** Provider availability; currently reports the honest no-provider state. */
   getAssistantStatus(signal?: AbortSignal): Promise<AssistantStatusResponse>;
   /** Read-only deterministic question over one server-authorized project. */
@@ -514,7 +515,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   const requestReportDownload = async (
     path: string,
-    format: 'json' | 'markdown',
+    format: 'json' | 'markdown' | 'sarif' | 'cdx',
     signal?: AbortSignal,
   ): Promise<ReportDownload> => {
     const requestId = generateId();
@@ -542,9 +543,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
       const contentType = response.headers.get('content-type') ?? '';
       const contentDisposition = response.headers.get('content-disposition') ?? '';
-      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md))"$/.exec(contentDisposition);
-      const expectedType = format === 'json' ? /^application\/json(?:;\s*charset=utf-8)?$/i : /^text\/markdown(?:;\s*charset=utf-8)?$/i;
-      const expectedSuffix = format === 'json' ? '.json' : '.md';
+      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json))"$/.exec(contentDisposition);
+      const expectedType = format === 'markdown' ? /^text\/markdown(?:;\s*charset=utf-8)?$/i : format === 'sarif' ? /^application\/sarif\+json(?:;\s*charset=utf-8)?$/i : /^application\/json(?:;\s*charset=utf-8)?$/i;
+      const expectedSuffix = format === 'markdown' ? '.md' : format === 'sarif' ? '.sarif' : format === 'cdx' ? '.cdx.json' : '.json';
       const declaredLength = response.headers.get('content-length');
       if (!expectedType.test(contentType) || filenameMatch === null || !filenameMatch[1]?.endsWith(expectedSuffix) ||
           (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 1024 * 1024))) {
@@ -956,10 +957,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSecurityReportResponse,
       ),
-    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload> =>
+    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload> =>
       requestReportDownload(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
         format,
+        signal,
+      ),
+    downloadSbom: (projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload> =>
+      requestReportDownload(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/sbom`,
+        'cdx',
         signal,
       ),
     getAssistantStatus: (signal?: AbortSignal): Promise<AssistantStatusResponse> =>

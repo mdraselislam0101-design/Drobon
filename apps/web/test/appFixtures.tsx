@@ -208,7 +208,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       findings: {
         currentObserved: 0, unresolved: 0,
         unresolvedBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
-        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, FALSE_POSITIVE: 0, REOPENED: 0 },
         byVerificationState: { OBSERVED: 0, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
       },
       reports: { availableCount: 0, recent: [] },
@@ -267,6 +267,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
+    downloadSbom: (_projectId: string, _scanId: string, _signal?: AbortSignal): Promise<ReportDownload> => Promise.reject(new Error('downloadSbom not implemented in fixture')),
     getAssistantStatus: vi.fn(async (): Promise<AssistantStatusResponse> => ({ providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false })),
     askAssistant: vi.fn(async (_projectId: string, _input: AssistantQuestionRequest): Promise<AssistantResponse> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {

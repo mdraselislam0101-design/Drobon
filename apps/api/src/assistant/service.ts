@@ -322,7 +322,7 @@ export class AssistantService {
         : 0;
       const workflowsByFingerprint = new Map(workflows.map((entry) => [entry.fingerprint, entry]));
       const rows = inspectedFindings.map((entry) => ({ finding: entry, workflow: workflowsByFingerprint.get(entry.fingerprint) }));
-      const unresolved = rows.filter((entry) => entry.workflow !== undefined && entry.workflow.state !== 'RESOLVED');
+      const unresolved = rows.filter((entry) => entry.workflow !== undefined && entry.workflow.state !== 'RESOLVED' && entry.workflow.state !== 'FALSE_POSITIVE');
       const observed = projectWorkflowSummary?.byVerificationState.OBSERVED ?? rows.filter((entry) => entry.workflow?.verificationState === 'OBSERVED').length;
       const notObserved = projectWorkflowSummary?.byVerificationState.NOT_OBSERVED_IN_LATEST_SCAN ?? rows.filter((entry) => entry.workflow?.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN').length;
       const missingWorkflow = projectWorkflowSummary === undefined ? rows.filter((entry) => entry.workflow === undefined).length : 0;
@@ -360,12 +360,12 @@ export class AssistantService {
       const facts = projectWorkflowSummary === undefined
         ? [
           `Selected completed scan set: ${applicableScans.map((scan) => scan.scanType).join(', ')}; ${rows.length} persisted finding record(s) inspected (maximum 10); ${omittedFindingDetails} additional finding detail record(s) omitted from this bounded answer.`,
-          `Unresolved workflow records (state other than RESOLVED): ${unresolvedCount}; by severity: ${severityFact}.`,
+          `Unresolved workflow records (state other than RESOLVED or FALSE_POSITIVE): ${unresolvedCount}; by severity: ${severityFact}.`,
           `Verification state among inspected records: OBSERVED ${observed}; NOT_OBSERVED_IN_LATEST_SCAN ${notObserved}; workflow unavailable ${missingWorkflow}.`,
         ]
         : [
           `Project workflow summary covers ${findingIdentityCount} unique persisted finding identities across completed scan history.`,
-          `Unresolved workflow records (state other than RESOLVED): ${unresolvedCount}; by severity: ${severityFact}.`,
+          `Unresolved workflow records (state other than RESOLVED or FALSE_POSITIVE): ${unresolvedCount}; by severity: ${severityFact}.`,
           `Verification state across persisted finding identities: OBSERVED ${observed}; NOT_OBSERVED_IN_LATEST_SCAN ${notObserved}.`,
         ];
       const limitations = [

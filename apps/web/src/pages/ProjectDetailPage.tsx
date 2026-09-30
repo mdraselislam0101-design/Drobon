@@ -1234,11 +1234,12 @@ function SourcesSection({
  * rendered only as escaped text.
  */
 const FINDING_TRANSITIONS: Readonly<Record<FindingLifecycleState, readonly FindingLifecycleState[]>> = {
-  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
-  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED'],
-  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED'],
+  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED', 'FALSE_POSITIVE'],
   RESOLVED: [],
-  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
+  FALSE_POSITIVE: [],
+  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
 };
 
 function FindingsView({
@@ -1583,7 +1584,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
     catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not retrieve the report.'); }
     finally { setBusy(false); }
   };
-  const download = async (format: 'json' | 'markdown'): Promise<void> => {
+  const download = async (format: 'json' | 'markdown' | 'sarif'): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
@@ -1597,6 +1598,22 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
       window.setTimeout(() => URL.revokeObjectURL(href), 0);
     } catch (caught: unknown) {
       setError(caught instanceof ApiClientError ? caught.message : 'Could not download the report.');
+    } finally { setBusy(false); }
+  };
+  const downloadSbom = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const file = await client.downloadSbom(projectId, scanId);
+      const href = URL.createObjectURL(file.blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = file.filename;
+      anchor.rel = 'noopener';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'This scan has no dependency inventory; a standalone SBOM export is unavailable.');
     } finally { setBusy(false); }
   };
 
@@ -1645,6 +1662,8 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
           <div className="hero-actions">
             <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
             <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>
+            <button type="button" className="button button-ghost" onClick={() => void download('sarif')} disabled={busy} data-testid="download-report-sarif">Download SARIF</button>
+            <button type="button" className="button button-ghost" onClick={() => void downloadSbom()} disabled={busy} data-testid="download-report-sbom">Download SBOM (CycloneDX)</button>
             <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="refresh-report">Retrieve saved report</button>
             <button type="button" className="button button-secondary" onClick={() => void generate()} disabled={busy} data-testid="refresh-report-snapshot">Regenerate current snapshot</button>
           </div>
