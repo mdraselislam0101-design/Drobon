@@ -787,3 +787,116 @@ export function isScan(value: unknown): value is Scan {
   }
   return true; // FAILED
 }
+
+/**
+ * Scan-to-scan regression comparison (Phase 22 Pump 3). Both scans must
+ * belong to the SAME owned project and share the scan type. Identity is
+ * the finding fingerprint (deterministic across rescans), so this is a
+ * PRESENCE/SEVERITY comparison over engine-produced findings — never a
+ * second finding engine and never a correlation guess.
+ *
+ * Honesty contract of the states:
+ * - NEW       — observed in the current scan, absent from the baseline scan.
+ * - UNCHANGED — observed in both, same rule-fixed severity.
+ * - CHANGED   — observed in both, different rule-fixed severity.
+ * - RESOLVED  — observed in the baseline, NOT observed in the current scan.
+ *               Absence in one scan is the same evidence class as the
+ *               existing `NOT_OBSERVED_IN_LATEST_SCAN` workflow state: it
+ *               is retest evidence, never proof the code was repaired.
+ * - REOPENED  — observed in both while the persisted finding workflow is
+ *               currently REOPENED (a closed finding was re-observed).
+ * No historical workflow state is invented: REOPENED only reflects the
+ * store's real current workflow state.
+ */
+export const SCAN_COMPARISON_ENTRY_STATES = ['NEW', 'UNCHANGED', 'RESOLVED', 'REOPENED', 'CHANGED'] as const;
+export type ScanComparisonEntryState = (typeof SCAN_COMPARISON_ENTRY_STATES)[number];
+
+export function isScanComparisonEntryState(value: unknown): value is ScanComparisonEntryState {
+  return typeof value === 'string' && (SCAN_COMPARISON_ENTRY_STATES as readonly string[]).includes(value);
+}
+
+export interface ScanComparisonEntry {
+  /** Deterministic finding identity (stable across rescans). */
+  fingerprint: string;
+  /** The finding id both scans share for this fingerprint. */
+  findingId: string;
+  ruleId: string;
+  /** The comparison location: source file (SAST/SECRETS) or endpoint (DAST). */
+  location: string;
+  state: ScanComparisonEntryState;
+  /** Severity on the baseline side (present when observed there). */
+  baselineSeverity?: FindingSeverity;
+  /** Severity on the current side (present when observed there). */
+  currentSeverity?: FindingSeverity;
+}
+
+export interface ScanComparisonResponse {
+  projectId: string;
+  scanType: ScanType;
+  baselineScanId: string;
+  currentScanId: string;
+  generatedAt: string;
+  counts: {
+    new: number;
+    unchanged: number;
+    resolved: number;
+    reopened: number;
+    changed: number;
+  };
+  /** Bounded by construction: at most 2 × MAX_FINDINGS_PER_SCAN entries. */
+  entries: ScanComparisonEntry[];
+}
+
+const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
+
+/** Closed-shape guard for `GET …/scans/:scanId/compare/:baselineScanId`. */
+export function isScanComparisonResponse(value: unknown): value is ScanComparisonResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 7) return false;
+  const { projectId, scanType, baselineScanId, currentScanId, generatedAt, counts, entries } = record as Record<string, unknown>;
+  if (
+    typeof projectId !== 'string' || !PROJECT_ID_PATTERN.test(projectId) ||
+    !isScanType(scanType) ||
+    typeof baselineScanId !== 'string' || !SCAN_ID_PATTERN.test(baselineScanId) ||
+    typeof currentScanId !== 'string' || !SCAN_ID_PATTERN.test(currentScanId) ||
+    typeof generatedAt !== 'string' || Number.isNaN(Date.parse(generatedAt)) ||
+    typeof counts !== 'object' || counts === null ||
+    !Array.isArray(entries) || entries.length > 2 * MAX_FINDINGS_PER_SCAN
+  ) {
+    return false;
+  }
+  const countRecord = counts as Record<string, unknown>;
+  if (Object.keys(countRecord).length !== 5) return false;
+  let total = 0;
+  for (const key of ['new', 'unchanged', 'resolved', 'reopened', 'changed']) {
+    const count = countRecord[key];
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return false;
+    total += count;
+  }
+  if (total !== entries.length) return false;
+  return entries.every((entry) => {
+    if (typeof entry !== 'object' || entry === null) return false;
+    const item = entry as Record<string, unknown>;
+    const keys = Object.keys(item);
+    if (keys.length !== 6 && keys.length !== 7) return false;
+    const hasBaseline = item['baselineSeverity'] !== undefined;
+    const hasCurrent = item['currentSeverity'] !== undefined;
+    if (!hasBaseline && !hasCurrent) return false;
+    if (
+      typeof item['fingerprint'] !== 'string' || !FINGERPRINT_PATTERN.test(item['fingerprint']) ||
+      typeof item['findingId'] !== 'string' || !FINDING_ID_PATTERN.test(item['findingId']) ||
+      typeof item['ruleId'] !== 'string' || !FINDING_RULE_ID_PATTERN.test(item['ruleId']) ||
+      typeof item['location'] !== 'string' || item['location'].length === 0 || item['location'].length > 500 ||
+      !isScanComparisonEntryState(item['state']) ||
+      (hasBaseline && !isFindingSeverity(item['baselineSeverity'])) ||
+      (hasCurrent && !isFindingSeverity(item['currentSeverity']))
+    ) {
+      return false;
+    }
+    // RESOLVED entries exist only on the baseline side; NEW only on the current side.
+    if (item['state'] === 'RESOLVED' && !hasBaseline) return false;
+    if (item['state'] === 'NEW' && !hasCurrent) return false;
+    return true;
+  });
+}

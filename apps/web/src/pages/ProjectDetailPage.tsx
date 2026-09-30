@@ -18,6 +18,8 @@ import {
   type FindingLifecycleState,
   type FindingsPageResponse,
   type SecurityReportResponse,
+  type AssessmentSummaryResponse,
+  type ScanComparisonResponse,
   type ScanDetailResponse,
   type ScanType,
   type Scan,
@@ -658,6 +660,7 @@ function AssessmentsSection({
           </form>
           {detail !== null && (
             <div className="assessment-detail" data-testid="assessment-detail">
+              <AssessmentSummaryView projectId={projectId} assessmentId={detail.assessment.id} />
               <h3>{detail.assessment.title}</h3>
               <p className="badges"><span className="pill">{detail.assessment.status}</span><span className="pill">{detail.progress.totalScans} linked scans</span><span className="pill">{detail.progress.findingsTotal} findings in completed linked scans</span></p>
               <div className="hero-actions">
@@ -973,6 +976,16 @@ function ScansSection({
               {scan.status === 'COMPLETED' && (
                 <FindingsView projectId={projectId} scanId={scan.id} scanType={scan.scanType} />
               )}
+              {scan.status === 'COMPLETED' && (
+                <ScanCompareView
+                  projectId={projectId}
+                  scanId={scan.id}
+                  scanType={scan.scanType}
+                  candidates={scans
+                    .filter((other) => other.status === 'COMPLETED' && other.scanType === scan.scanType && other.id !== scan.id)
+                    .map((other) => ({ id: other.id, ...(other.completedAt === undefined ? {} : { completedAt: other.completedAt }) }))}
+                />
+              )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
                 <ScaView projectId={projectId} scanId={scan.id} />
               )}
@@ -1241,6 +1254,174 @@ const FINDING_TRANSITIONS: Readonly<Record<FindingLifecycleState, readonly Findi
   FALSE_POSITIVE: [],
   REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
 };
+
+/**
+ * Regression visibility (Phase 22 Pump 3): compare this completed scan
+ * with another completed SAME-TYPE scan of the same owned project. The
+ * server computes the fingerprint-based diff; the UI only renders the
+ * honest states (NEW / UNCHANGED / RESOLVED / REOPENED / CHANGED).
+ * RESOLVED means "not observed in the comparison scan" — retest
+ * evidence, never proof of repair.
+ */
+function ScanCompareView({
+  projectId,
+  scanId,
+  scanType,
+  candidates,
+}: {
+  projectId: string;
+  scanId: string;
+  scanType: ScanType;
+  candidates: Array<{ id: string; completedAt?: string }>;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [open, setOpen] = useState(false);
+  const [baselineId, setBaselineId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<ScanComparisonResponse | null>(null);
+
+  if (candidates.length === 0 && !open) {
+    return (
+      <p className="muted" data-testid={`scan-compare-empty-${scanId}`}>
+        Regression compare needs a second completed {scanType} scan.
+      </p>
+    );
+  }
+
+  const run = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      setComparison(await client.compareScans(projectId, scanId, baselineId));
+    } catch (cause) {
+      setComparison(null);
+      setError(cause instanceof ApiClientError ? cause.message : 'Comparison is unavailable right now.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="scan-compare" data-testid={`scan-compare-${scanId}`}>
+      {!open ? (
+        <button type="button" className="button button-ghost" onClick={() => setOpen(true)} data-testid={`scan-compare-open-${scanId}`}>
+          Regression compare
+        </button>
+      ) : (
+        <>
+          <div className="field">
+            <label htmlFor={`scan-compare-baseline-${scanId}`}>Baseline scan (same type)</label>
+            <select
+              id={`scan-compare-baseline-${scanId}`}
+              value={baselineId}
+              onChange={(event) => setBaselineId(event.target.value)}
+              data-testid={`scan-compare-select-${scanId}`}
+            >
+              <option value="">Choose a completed baseline…</option>
+              {candidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.id}
+                  {candidate.completedAt === undefined ? '' : ` · ${candidate.completedAt}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={busy || baselineId.length === 0}
+            onClick={() => void run()}
+            data-testid={`scan-compare-run-${scanId}`}
+          >
+            {busy ? 'Comparing…' : 'Compare'}
+          </button>
+          {error !== null && <div className="form-alert" role="alert"><p data-testid={`scan-compare-error-${scanId}`}>{error}</p></div>}
+          {comparison !== null && (
+            <div data-testid={`scan-compare-result-${scanId}`}>
+              <p className="badges">
+                <span className="pill" data-testid={`scan-compare-new-${scanId}`}>NEW {comparison.counts.new}</span>
+                <span className="pill" data-testid={`scan-compare-unchanged-${scanId}`}>UNCHANGED {comparison.counts.unchanged}</span>
+                <span className="pill" data-testid={`scan-compare-resolved-${scanId}`}>RESOLVED {comparison.counts.resolved}</span>
+                <span className="pill" data-testid={`scan-compare-reopened-${scanId}`}>REOPENED {comparison.counts.reopened}</span>
+                <span className="pill" data-testid={`scan-compare-changed-${scanId}`}>CHANGED {comparison.counts.changed}</span>
+              </p>
+              <p className="muted">RESOLVED means the fingerprint was not observed in the comparison scan — retest evidence, never proof of repair. Entries: {comparison.entries.length}.</p>
+              {comparison.entries.length > 0 && (
+                <ul className="scan-compare-entries">
+                  {comparison.entries.map((entry) => (
+                    <li key={entry.fingerprint} data-testid={`scan-compare-entry-${entry.fingerprint}`}>
+                      <strong>{entry.state}</strong> · <code>{entry.ruleId}</code> · {entry.location} ·{' '}
+                      {entry.baselineSeverity ?? '—'} → {entry.currentSeverity ?? '—'}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Assessment engagement summary (Phase 22 Pump 3): a bounded computed
+ * aggregate over this assessment's OWN linked scans. Totals summarize
+ * real persisted records only; partial sweeps are surfaced and SCA
+ * status stays honestly NOT ASSESSED / NO DATA LOADED.
+ */
+function AssessmentSummaryView({ projectId, assessmentId }: { projectId: string; assessmentId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [summary, setSummary] = useState<AssessmentSummaryResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      setSummary(await client.getAssessmentSummary(projectId, assessmentId));
+    } catch (cause) {
+      setSummary(null);
+      setError(cause instanceof ApiClientError ? cause.message : 'Summary is unavailable right now.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="assessment-summary" data-testid="assessment-summary">
+      <button type="button" className="button button-secondary" disabled={busy} onClick={() => void load()} data-testid="assessment-summary-load">
+        {busy ? 'Building summary…' : 'Load engagement summary'}
+      </button>
+      {error !== null && <div className="form-alert" role="alert"><p data-testid="assessment-summary-error">{error}</p></div>}
+      {summary !== null && (
+        <div data-testid="assessment-summary-content">
+          <dl className="facts">
+            <div className="fact"><dt>Linked scans</dt><dd data-testid="assessment-summary-scans">{summary.totals.scansLinked} ({summary.totals.scansCompleted} completed{summary.totals.scansFailed > 0 ? `, ${summary.totals.scansFailed} failed` : ''}{summary.totals.scansActive > 0 ? `, ${summary.totals.scansActive} active` : ''})</dd></div>
+            <div className="fact"><dt>Findings (completed scans)</dt><dd data-testid="assessment-summary-findings">{summary.totals.findingsTotal}</dd></div>
+            {summary.totals.findingsBySeverity !== undefined && (
+              <div className="fact"><dt>By severity</dt><dd>{(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const).map((severity) => `${severity} ${summary.totals.findingsBySeverity?.[severity] ?? 0}`).join(' · ')}</dd></div>
+            )}
+            <div className="fact"><dt>Partial sweeps</dt><dd data-testid="assessment-summary-partial">{summary.totals.partialScans}</dd></div>
+            <div className="fact"><dt>Objectives</dt><dd>{summary.objectivesTotal}</dd></div>
+          </dl>
+          <p className="muted">Summarizes persisted records only — no security score, no deduplication across scans, and partial sweeps mean totals may undercount. Dependency intelligence status remains NOT ASSESSED / NO DATA LOADED.</p>
+          {summary.scans.length > 0 && (
+            <ul className="assessment-summary-scans">
+              {summary.scans.map((line) => (
+                <li key={line.scanId} data-testid={`assessment-summary-scan-${line.scanId}`}>
+                  <strong>{line.scanType} · {line.status}</strong> · {line.findingsTotal ?? 0} findings{line.partial === true ? ' · partial' : ''}{line.reportAvailable ? ' · report saved' : ''}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function FindingsView({
   projectId,

@@ -1,6 +1,7 @@
 import {
   isAssessmentResponse,
   isAssessmentDetailResponse,
+  isAssessmentSummaryResponse,
   isAssessmentsResponse,
   isAssistantResponse,
   isAssistantStatusResponse,
@@ -61,7 +62,10 @@ import {
   type LogoutResponse,
   type ProjectResponse,
   type ProjectsResponse,
+  isScanComparisonResponse,
+  type ScanComparisonResponse,
   type ScanDetailResponse,
+  type AssessmentSummaryResponse,
   type ScanResponse,
   type FindingsPageResponse,
   type FindingDetailResponse,
@@ -346,6 +350,10 @@ export interface ApiClient {
     filters?: { severity?: FindingSeverity; scanner?: ScanType; page?: number; pageSize?: number },
     signal?: AbortSignal,
   ): Promise<FindingsPageResponse>;
+  /** Fingerprint-based regression comparison of two OWN completed same-type scans (Pump 3). */
+  compareScans(projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse>;
+  /** Bounded computed aggregate over an OWN assessment's linked scans (Pump 3). */
+  getAssessmentSummary(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentSummaryResponse>;
   /** Authorized detail for one finding nested under its project and scan. */
   getFinding(projectId: string, scanId: string, findingId: string, signal?: AbortSignal): Promise<FindingDetailResponse>;
   /** Server-enforced finding workflow transition; source evidence is never sent. */
@@ -853,6 +861,14 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
     getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
       authRequest<AssessmentDetailResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}`, signal === undefined ? {} : { signal }, isAssessmentDetailResponse),
+    compareScans: (projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse> =>
+      authRequest<ScanComparisonResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(currentScanId)}/compare/${encodeURIComponent(baselineScanId)}`,
+        signal === undefined ? {} : { signal },
+        isScanComparisonResponse,
+      ),
+    getAssessmentSummary: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentSummaryResponse> =>
+      authRequest<AssessmentSummaryResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/summary`, signal === undefined ? {} : { signal }, isAssessmentSummaryResponse),
     createAssessment: (projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>
       authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
     updateAssessment: (projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>

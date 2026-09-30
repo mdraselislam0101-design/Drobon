@@ -48,6 +48,8 @@ import type {
   AdminPartnersResponse,
   PartnerDashboardResponse,
   PaymentQuoteResponse,
+  ScanComparisonResponse,
+  AssessmentSummaryResponse,
   StudentLessonCatalogResponse,
   StudentProgressResponse,
   StudentQuizResultResponse,
@@ -249,6 +251,8 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // Pump 7 defaults: no scans yet (the honest empty world); scan
     // requests are not stubbed (suites that exercise them override).
     getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+    compareScans: vi.fn(async (): Promise<ScanComparisonResponse> => { throw new Error('not stubbed'); }),
+    getAssessmentSummary: vi.fn(async (): Promise<AssessmentSummaryResponse> => { throw new Error('not stubbed'); }),
     createScan: vi.fn(async (): Promise<ScanResponse> => {
       throw new Error('not stubbed');
     }),

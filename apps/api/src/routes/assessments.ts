@@ -15,7 +15,10 @@ import {
   type AssessmentResponse,
   type AssessmentStatus,
   type AssessmentScanSummary,
+  type AssessmentSummaryResponse,
+  type AssessmentSummaryScanLine,
   type AssessmentsResponse,
+  type FindingSeverity,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
 import { conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
@@ -160,6 +163,68 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
           reportAvailable: scan.status === 'COMPLETED' && await scans.findReportByProjectAndScan(project.id, scan.id) !== undefined,
         })));
         const response: AssessmentDetailResponse = { assessment, progress: { ...summary.progress, recentScans } };
+        sendSuccess(res, ctx, response);
+      },
+    },
+    {
+      // Engagement summary (Phase 22 Pump 3): a bounded computed aggregate
+      // over this assessment's OWN linked scans — per-scan severity lines
+      // plus honest totals (partial sweeps surfaced; SCA stays
+      // NO_DATA_LOADED/NOT_ASSESSED; no verdicts, no scores). Read-only,
+      // owner-scoped, no query surface.
+      method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId/summary', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
+        const records = await scans.listByProject(project.id);
+        const summary = progressFor(records, actor.id, project.id, assessment.id);
+        const lines: AssessmentSummaryScanLine[] = await Promise.all(summary.scans.map(async (scan) => ({
+          scanId: scan.id, scanType: scan.scanType, status: scan.status, createdAt: scan.createdAt,
+          ...(scan.completedAt === undefined ? {} : { completedAt: scan.completedAt }),
+          ...(scan.resultSummary === undefined ? {} : { findingsTotal: scan.resultSummary.findingsTotal }),
+          ...(scan.resultSummary?.findingsBySeverity === undefined ? {} : { findingsBySeverity: scan.resultSummary.findingsBySeverity }),
+          ...(scan.resultSummary?.partial === undefined ? {} : { partial: scan.resultSummary.partial }),
+          reportAvailable: scan.status === 'COMPLETED' && await scans.findReportByProjectAndScan(project.id, scan.id) !== undefined,
+        })));
+        // Aggregate severities ONLY over completed scans that actually
+        // carry engine-produced severity buckets; omit the map entirely
+        // when no linked completed scan classified findings.
+        let severityData = false;
+        const bySeverity: Record<FindingSeverity, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+        for (const line of lines) {
+          if (line.status === 'COMPLETED' && line.findingsBySeverity !== undefined) {
+            severityData = true;
+            for (const severity of Object.keys(bySeverity) as FindingSeverity[]) {
+              bySeverity[severity] += line.findingsBySeverity[severity] ?? 0;
+            }
+          }
+        }
+        const response: AssessmentSummaryResponse = {
+          assessment: {
+            id: assessment.id,
+            title: assessment.title,
+            status: assessment.status,
+            createdAt: assessment.createdAt,
+            ...(assessment.startedAt === undefined ? {} : { startedAt: assessment.startedAt }),
+            ...(assessment.completedAt === undefined ? {} : { completedAt: assessment.completedAt }),
+            ...(assessment.cancelledAt === undefined ? {} : { cancelledAt: assessment.cancelledAt }),
+          },
+          objectivesTotal: assessment.objectives.length,
+          scope: { inScopeHosts: assessment.scope.inScopeHosts, outOfScopeHosts: assessment.scope.outOfScopeHosts },
+          totals: {
+            scansLinked: summary.progress.totalScans,
+            scansCompleted: summary.progress.completedScans,
+            scansFailed: summary.progress.failedScans,
+            scansActive: summary.progress.activeScans,
+            findingsTotal: summary.progress.findingsTotal,
+            ...(severityData ? { findingsBySeverity: bySeverity } : {}),
+            partialScans: lines.filter((line) => line.partial === true).length,
+          },
+          scans: lines,
+          generatedAt: at(),
+        };
         sendSuccess(res, ctx, response);
       },
     },

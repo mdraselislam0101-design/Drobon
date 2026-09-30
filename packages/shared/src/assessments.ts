@@ -1,7 +1,7 @@
 import { isSafeDastUrl } from './dast.js';
 import { PROJECT_ID_PATTERN } from './projects.js';
 import { ASSESSMENT_ID_PATTERN } from './assessmentIds.js';
-import { SCAN_ID_PATTERN, isScanStatus, isScanType, type ScanStatus, type ScanType } from './scans.js';
+import { SCAN_ID_PATTERN, isScanStatus, isScanType, type FindingSeverity, type ScanStatus, type ScanType } from './scans.js';
 
 export { ASSESSMENT_ID_PATTERN } from './assessmentIds.js';
 export const ASSESSMENT_EVENT_ID_PATTERN = /^ase_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -211,4 +211,128 @@ export function isAssessmentDetailResponse(value: unknown): value is AssessmentD
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
   return exactKeys(record, ['assessment', 'progress']) && isAssessment(record['assessment']) && isAssessmentProgress(record['progress']);
+}
+
+/**
+ * Assessment engagement summary (Phase 22 Pump 3): a bounded, computed
+ * aggregate over an assessment's LINKED completed scans — per-scan
+ * severity lines plus assessment-level totals. It summarizes real
+ * persisted records only; it never invents findings, verdicts, or
+ * security scores, and truncated/partial scans are surfaced so totals
+ * are never presented as complete coverage.
+ */
+export interface AssessmentSummaryScanLine {
+  scanId: string;
+  scanType: ScanType;
+  status: ScanStatus;
+  createdAt: string;
+  completedAt?: string;
+  findingsTotal?: number;
+  findingsBySeverity?: Record<FindingSeverity, number>;
+  /** True when the engine hit a configured limit on this scan. */
+  partial?: boolean;
+  reportAvailable: boolean;
+}
+
+export interface AssessmentSummaryResponse {
+  assessment: {
+    id: string;
+    title: string;
+    status: AssessmentStatus;
+    createdAt: string;
+    startedAt?: string;
+    completedAt?: string;
+    cancelledAt?: string;
+  };
+  objectivesTotal: number;
+  scope: {
+    inScopeHosts: string[];
+    outOfScopeHosts: string[];
+  };
+  totals: {
+    scansLinked: number;
+    scansCompleted: number;
+    scansFailed: number;
+    scansActive: number;
+    findingsTotal: number;
+    findingsBySeverity?: Record<FindingSeverity, number>;
+    /** Completed scans whose engine reported a partial sweep — totals may undercount. */
+    partialScans: number;
+  };
+  scans: AssessmentSummaryScanLine[];
+  generatedAt: string;
+}
+
+const SEVERITY_KEYS: readonly FindingSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+
+function isSeverityCountMap(value: unknown): value is Record<FindingSeverity, number> {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== SEVERITY_KEYS.length) return false;
+  return SEVERITY_KEYS.every((key) => Number.isInteger(record[key]) && (record[key] as number) >= 0);
+}
+
+function isSummaryScanLine(value: unknown): value is AssessmentSummaryScanLine {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length < 5 || keys.length > 9) return false;
+  if (
+    typeof record['scanId'] !== 'string' || !SCAN_ID_PATTERN.test(record['scanId']) ||
+    !isScanType(record['scanType']) || !isScanStatus(record['status']) ||
+    typeof record['createdAt'] !== 'string' || Number.isNaN(Date.parse(record['createdAt'])) ||
+    typeof record['reportAvailable'] !== 'boolean'
+  ) {
+    return false;
+  }
+  if (record['completedAt'] !== undefined && (typeof record['completedAt'] !== 'string' || Number.isNaN(Date.parse(record['completedAt'])))) return false;
+  if (record['findingsTotal'] !== undefined && (!Number.isInteger(record['findingsTotal']) || (record['findingsTotal'] as number) < 0 || (record['findingsTotal'] as number) > 200)) return false;
+  if (record['findingsBySeverity'] !== undefined && !isSeverityCountMap(record['findingsBySeverity'])) return false;
+  if (record['partial'] !== undefined && typeof record['partial'] !== 'boolean') return false;
+  return true;
+}
+
+export function isAssessmentSummaryResponse(value: unknown): value is AssessmentSummaryResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 6) return false;
+  const { assessment, objectivesTotal, scope, totals, scans, generatedAt } = record as Record<string, unknown>;
+  if (
+    typeof assessment !== 'object' || assessment === null ||
+    !Number.isInteger(objectivesTotal) || (objectivesTotal as number) < 0 ||
+    typeof scope !== 'object' || scope === null ||
+    typeof totals !== 'object' || totals === null ||
+    !Array.isArray(scans) || scans.length > 20 ||
+    typeof generatedAt !== 'string' || Number.isNaN(Date.parse(generatedAt))
+  ) {
+    return false;
+  }
+  const assessmentRecord = assessment as Record<string, unknown>;
+  if (
+    Object.keys(assessmentRecord).length < 4 || Object.keys(assessmentRecord).length > 7 ||
+    typeof assessmentRecord['id'] !== 'string' || !ASSESSMENT_ID_PATTERN.test(assessmentRecord['id']) ||
+    typeof assessmentRecord['title'] !== 'string' || assessmentRecord['title'].length === 0 ||
+    !isAssessmentStatus(assessmentRecord['status']) ||
+    typeof assessmentRecord['createdAt'] !== 'string' || Number.isNaN(Date.parse(assessmentRecord['createdAt']))
+  ) {
+    return false;
+  }
+  const scopeRecord = scope as Record<string, unknown>;
+  if (
+    Object.keys(scopeRecord).length !== 2 ||
+    !Array.isArray(scopeRecord['inScopeHosts']) || scopeRecord['inScopeHosts'].length > ASSESSMENT_HOSTS_MAX_COUNT ||
+    !Array.isArray(scopeRecord['outOfScopeHosts']) || scopeRecord['outOfScopeHosts'].length > ASSESSMENT_HOSTS_MAX_COUNT ||
+    !scopeRecord['inScopeHosts'].every((host) => typeof host === 'string') ||
+    !scopeRecord['outOfScopeHosts'].every((host) => typeof host === 'string')
+  ) {
+    return false;
+  }
+  const totalsRecord = totals as Record<string, unknown>;
+  const totalKeys = Object.keys(totalsRecord);
+  if (totalKeys.length !== 6 && totalKeys.length !== 7) return false;
+  for (const key of ['scansLinked', 'scansCompleted', 'scansFailed', 'scansActive', 'findingsTotal', 'partialScans']) {
+    if (!Number.isInteger(totalsRecord[key]) || (totalsRecord[key] as number) < 0) return false;
+  }
+  if (totalsRecord['findingsBySeverity'] !== undefined && !isSeverityCountMap(totalsRecord['findingsBySeverity'])) return false;
+  return scans.every(isSummaryScanLine);
 }
