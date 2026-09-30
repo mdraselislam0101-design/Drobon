@@ -1207,3 +1207,92 @@ This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry
 - Close-out final live E2E (real started API, three probes ×2 independent runs, 38 checks/run): Developer 13/13 ×2 (project/source, idempotency-key replay+conflict, evidence-backed finding, audited triage + note, invalid transition refusal, clean rescan → RESOLVED + `NOT_OBSERVED_IN_LATEST_SCAN` + coherent history, comparison, report/SARIF/Markdown, quota 2/3, cross-account 403s, logout); Student 13/13 ×2 (catalog without answer leak, quiz integrity incl. forged 422, honest 409s, real-scan IDENTIFY, FIX fail-then-verify, progress tracking, quota, cross-account denial, switch neutrality, logout); Professional/Pentester 12/12 ×2 (comparison states + guards, report, summary honesty, quota 3rd-allowed/4th-denied, switch neutrality, SARIF 2.1.0 + CycloneDX SBOM live, archived-project read-only behavior, cross-account isolation, DAST SSRF refusals loopback/RFC-1918/link-local/malformed → 422, logout).
 - Security/plan invariants re-proven: UserType remains presentation-only (switch preserves identity/ownership/quota/plan/role); FREE 3 scans/month/account enforced live across classifications; `npm run verify` PASS 11/11 at close-out with 341 packages (no dependency change in Phase 22); dataset grep clean (`VULN_INTEL_PROVIDER=none` fatal-locked; Exploit Database stays RESERVED; only clearly synthetic fixtures present); zero production data, zero `.data` in the tree.
 - Remaining honest limitations (NOT_IMPLEMENTED, external-infrastructure or out-of-scope): Git provider/CI/webhook integrations, scheduled scans, external sharing, trend metrics, portfolio assembly, OWASP/CWE authored navigation, notes/bookmarks, mentor/CTF/video/job-board features, dependency-advisory intelligence (separate dataset workstream), exploit-class pentest tooling (RESERVED). None is a material gap for the audited DROBON AEGIS workflows.
+
+## Universal 40+ language & platform SAST (v2 catalog pump)
+
+- Date: 2026-10-01. Expanded the single existing SAST engine to a universal
+  53-family language/configuration catalog (web/API/Android/desktop/native/
+  polyglot/config/infra) with NO new engine, NO schema change, NO quota or
+  authz change, and NO dataset or production data. `apps/api/src/scans/sast/rules.ts`
+  now ships **47 stable rules (`DG-SAST-001`…`DG-SAST-047`)** (was 6);
+  `apps/api/src/scans/sast/languages.ts` is the new pure-data language-model
+  boundary (detection metadata + honest maturity per family, 53 entries);
+  `apps/api/src/scans/sast/engine.ts` is catalog-driven (8 KiB content-sample
+  detection, per-file family tagging, language-gated rule loop).
+- Family coverage: 15 P0 programming languages (JS/TS/JSX/TSX/Python/Java/
+  Kotlin/C/C++/C#/Go/PHP/Rust/Ruby/Swift), 17 P1 languages (Dart/Scala/
+  ObjC/ObjC++/Lua/Solidity/R/Elixir/Erlang/Clojure/Groovy/Perl/Haskell/
+  OCaml/Julia/VB.NET/Apex), 12 P2 config/platform (Bash/POSIX sh/PowerShell/
+  SQL/HTML/CSS/XML/YAML/JSON/Dockerfile/Terraform-HCL/GitHub-Actions), and
+  platform manifests (AndroidManifest.xml; Electron). Honest maturity:
+  **FULL=0** (pattern engine LEVEL 1–2 — parser/AST/dataflow depth is NOT
+  claimed), PARTIAL=32, CONFIG_ANALYSIS=8, SYNTAX_ONLY=2 (HTML/CSS),
+  UNSUPPORTED=11 (Clojure/Haskell/OCaml/Asm/MATLAB/Fortran/COBOL/Crystal/
+  Zig/Nim/V — skipped and counted, never guessed). Counts are DERIVED from
+  the catalog by `sastMaturityCounts()` and asserted by tests — never
+  hand-written.
+- Detection truthfully implemented and unit-tested: extensions
+  (case-insensitive), exact filenames (`Dockerfile`, `Gemfile`,
+  `AndroidManifest.xml`), shebang (`#!/usr/bin/env python3`), `.m`
+  Objective-C-vs-MATLAB markers, GitHub-Actions-vs-plain-YAML content
+  markers (dotfile path segments are unrepresentable in snapshots).
+  Framework detection (`detectFrameworks`: React/Next/Angular/Vue/Express/
+  Fastify/NestJS/Koa/Electron/React Native, Django/Flask/FastAPI/Tornado/
+  aiohttp, Spring Boot, Laravel/Symfony, Gin/Echo/Fiber, Rails,
+  ASP.NET Core, Flutter) is manifest-based and unit-tested; framework-AWARE
+  RULES are the self-contained file-level shapes (Electron `nodeIntegration`,
+  Django `.raw()`, Flask `debug=True`, React `__html`). Cross-file framework
+  dataflow is NOT implemented and NOT claimed.
+- New rules 007–047 (per-family, language-gated by rule data — a Python rule
+  never runs on a Kotlin file): Python dynamic-eval/os.system/pickle-yaml/
+  weak-hash/Django raw SQL/Flask debug; JVM Runtime.exec/JDBC concat/
+  MessageDigest; Android MODE_WORLD_* storage + WebView settings +
+  exported-component manifest rule (047); C-family gets/strcpy/strcat/
+  sprintf; C#/VB process+SQL+weak-crypto+Shell; PHP shell_exec/SQL concat;
+  Go exec.Command+Sprintf; Ruby system+interpolation; Rust Command+format!;
+  Swift DES; Dart Process concat; Lua os.execute; Perl interpolation;
+  Solidity delegatecall/selfdestruct; sh/bash eval; PowerShell
+  Invoke-Expression; Apex SOQL concat; Elixir/Erlang code-eval/os:cmd;
+  R system(paste); Julia run(``); dynamic SQL EXEC(@)/EXECUTE IMMEDIATE;
+  XXE external entities; privileged containers; GHA write-all permissions;
+  Dockerfile pipe-to-shell; Terraform open-world ingress; Electron
+  insecure webPreferences. Every rule has ≥1 positive synthetic fixture and
+  safe-form negative coverage; rules stay pure data (staticSafety guards:
+  no `exec(` calls in languages.ts, no `process` word in rules.ts).
+- Findings/lifecycle/report invariants unchanged and re-proven for every
+  genuinely analyzed language: OPEN/ACKNOWLEDGED/…/REOPENED lifecycle,
+  deterministic `sha256(ruleId/file/line/evidence)` fingerprints, SARIF 2.1.0
+  via the existing report engine (rules derived from findings — new rule ids
+  flow through), Markdown/JSON report, comparison/retest, remediation text.
+- Tests (new/updated, all green): `sastRules.test.ts` (47-rule id
+  ordering/uniqueness/count, authoritative id→CWE map 007–045 with 033/037/
+  046/047 deliberately omitting CWE, per-rule unit blocks incl. safe forms),
+  `sastLanguages.test.ts` (catalog derivation, per-family detection incl.
+  shebang/filename/content tie-breaks, language gating, framework labels,
+  malformed honest handling, pass-through files analyzed with ZERO findings,
+  43-file polyglot snapshot → 10 scanned/4 skipped honest accounting),
+  `sastEngine.test.ts`, `sastApi.test.ts` (HTTP behavior, idempotency,
+  quota, report/SARIF incl. new-language ids), staticSafety guards intact.
+- `npm run verify` final: **PASS 11/11** (typecheck; lint; tests; production
+  builds; both secret scans; npm audit 0 vulnerabilities). No Phase 1–22
+  regression; FREE 3-scans/month + PRO exempt + device anti-abuse re-proven
+  live.
+- Live E2E ×2 independent runs on a fresh isolated instance (probe
+  `/home/user/p26-universal-sast-probe.mjs`, synthetic fixtures only,
+  `.data` wiped after): **15/15 PASS both runs** — anonymous 401; ONE
+  polyglot snapshot (22 files: Python/Java/Kotlin/C/C#/Go/PHP/Rust/Ruby/
+  Swift/Dart/sh/SQL/XML/YAML/GHA/Dockerfile/Terraform/Electron/
+  AndroidManifest) analyzed as one scan detecting **all 22 expected rules
+  with 20+ distinct files**; lifecycle ACKNOWLEDGED on a Python finding;
+  report+SARIF 2.1.0 containing DG-SAST-007/013/047; fix python+java →
+  rescan → comparison `resolved>=2`; unsupported-only project COMPLETED
+  with filesScanned=0/filesSkipped=3/findings=0 (honest); malformed source
+  COMPLETED 0 findings; Android-style project fires 047+016+013; FREE quota
+  exactly 3/3 consumed on account A, 2/3 on account B (fresh device — the
+  device-shared anti-abuse quota denied a second account on the first
+  device by design), logout revocation on both.
+- Dataset/production locks re-proven: zero CVE/NVD/GHSA/OSV/KEV/EPSS/
+  exploit/advisory data (only the pre-existing clearly-synthetic
+  `GHSA-xxxx-yyyy-zzzz` test fixture); `VULN_INTEL_PROVIDER=none` fatal
+  lock unchanged; SCA stays NO_DATA_LOADED→NOT_ASSESSED; Exploit Database
+  stays RESERVED; zero seeds/dumps; zero `.data` in the tree after the run.

@@ -10,6 +10,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
+import { detectLanguageFamily, isAnalyzedMaturity } from './languages.js';
 import { findingFingerprint } from '../findingIdentity.js';
 
 /**
@@ -74,12 +75,13 @@ export const DEFAULT_SAST_LIMITS: SastLimits = {
 };
 
 /**
- * Supported source languages (v1): TypeScript and JavaScript — this
- * repository's own application stack. Every other language is
- * UNSUPPORTED and documented as such (files are skipped and counted,
- * never claimed as scanned, never guessed at).
+ * Supported source languages (v2 — universal catalog): detection and
+ * maturity live in `languages.ts` (53 language/configuration families
+ * with honest PARTIAL / CONFIG_ANALYSIS / SYNTAX_ONLY / UNSUPPORTED
+ * statuses). Files of PARTIAL and CONFIG_ANALYSIS families are
+ * analyzed; everything else — unknown files included — is skipped and
+ * counted, never claimed as scanned, never guessed at.
  */
-export const SAST_SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'] as const;
 
 /**
  * Directory segments never analyzed: dependency trees, build output and
@@ -115,11 +117,6 @@ export interface SastEngineOptions {
 /** Deterministic file ordering: path byte-order ASC. */
 function comparePaths(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function isSupportedFile(path: string): boolean {
-  const lower = path.toLowerCase();
-  return SAST_SUPPORTED_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 function isIgnoredDir(path: string): boolean {
@@ -166,14 +163,14 @@ function evidenceFromLine(rule: SastRule, rawLine: string, column: number): stri
 
 interface DiscoveryResult {
   kind: 'ok';
-  files: Array<{ path: string; content: string }>;
+  files: Array<{ path: string; content: string; family: string }>;
   skipped: number;
 }
 
 type DiscoveryFailure = { kind: 'input-invalid' } | { kind: 'file-limit' } | { kind: 'too-large' };
 
 function discover(snapshot: SourceSnapshotRecord, limits: SastLimits): DiscoveryResult | DiscoveryFailure {
-  const scannable: Array<{ path: string; content: string }> = [];
+  const scannable: Array<{ path: string; content: string; family: string }> = [];
   let skipped = 0;
   let totalBytes = 0;
   // Deterministic order: path ASC (stable scan output for stable input).
@@ -185,7 +182,12 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits): Discovery
     if (!isValidSourcePath(file.path)) {
       return { kind: 'input-invalid' };
     }
-    if (!isSupportedFile(file.path) || isIgnoredDir(file.path)) {
+    // UNIVERSAL DETECTION: a file is analyzed only when the catalog
+    // detects it as a family with real analysis (PARTIAL or
+    // CONFIG_ANALYSIS). Unknown, SYNTAX_ONLY and UNSUPPORTED files are
+    // skipped and counted — never guessed at, never claimed as scanned.
+    const detection = detectLanguageFamily(file.path, file.content.slice(0, 8192));
+    if (detection === undefined || !isAnalyzedMaturity(detection.maturity) || isIgnoredDir(file.path)) {
       skipped += 1;
       continue;
     }
@@ -200,7 +202,7 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits): Discovery
     if (totalBytes > limits.maxTotalBytes) {
       return { kind: 'too-large' };
     }
-    scannable.push({ path: file.path, content: file.content });
+    scannable.push({ path: file.path, content: file.content, family: detection.family });
   }
   return { kind: 'ok', files: scannable, skipped };
 }
@@ -298,6 +300,12 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           }
           const line = lines[index] ?? '';
           for (const rule of SAST_RULES) {
+            // LANGUAGE GATING (v2): a family-scoped rule runs only on
+            // files of its own families; universal rules run on every
+            // analyzed file.
+            if (rule.languages !== undefined && !rule.languages.includes(file.family)) {
+              continue;
+            }
             const match = matchRuleLine(rule, line);
             if (match === undefined) {
               continue;

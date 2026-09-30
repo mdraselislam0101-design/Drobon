@@ -747,7 +747,7 @@ describe('SAST scans: the real engine over HTTP', () => {
     }
   });
 
-  test('unsupported-language-only snapshots complete honestly with filesScanned 0', async () => {
+  test('v2: pass-through-only python/java snapshots are analyzed honestly with zero findings', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
     const server = await startTestServer({ users });
@@ -766,8 +766,8 @@ describe('SAST scans: the real engine over HTTP', () => {
       expect(detail.data.scan.resultSummary).toEqual({
         findingsTotal: 0,
         findingsBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
-        filesScanned: 0,
-        filesSkipped: 2,
+        filesScanned: 2,
+        filesSkipped: 0,
         truncated: false,
       });
     } finally {
