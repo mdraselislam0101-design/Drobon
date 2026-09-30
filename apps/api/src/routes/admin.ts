@@ -31,14 +31,22 @@ import {
   type UserType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { forbidden, unauthorized, validationError } from '../errors.js';
+import { conflict, forbidden, notFound, unauthorized, validationError } from '../errors.js';
 import type { RequestContext, Route } from '../http.js';
 import type { UserRepository } from '../auth/repositories.js';
 import { normalizeSubscription } from '../auth/subscriptions.js';
+import {
+  PRICE_MAX_MINOR_UNITS,
+  PRICE_MIN_MINOR_UNITS,
+  type PaymentConfigState,
+  type PaymentConfigStore,
+} from '../payments/configStore.js';
 import type { PaymentService } from '../payments/service.js';
 import type { ProjectStore } from '../projects/store.js';
 import type { ScanStore } from '../scans/store.js';
 import type { ScanProcessor } from '../scans/processor.js';
+import { readJsonBody } from '../lib/body.js';
+import * as v from '../lib/validate.js';
 import { sendSuccess } from '../respond.js';
 
 export interface AdminRouteDeps {
@@ -48,6 +56,8 @@ export interface AdminRouteDeps {
   scans: ScanStore;
   payments: PaymentService;
   scanProcessor: ScanProcessor;
+  /** Runtime admin-managed payment configuration (Phase 20). */
+  paymentConfig: PaymentConfigStore;
 }
 
 function actorFrom(ctx: RequestContext) {
@@ -130,8 +140,36 @@ function accountFilters(params: URLSearchParams) {
   };
 }
 
+/** Phase 20: closed admin schemas for the payment configuration surface. */
+const paymentConfigPriceSchema = v.object({
+  proPriceMinorUnits: v.number({ integer: true, min: PRICE_MIN_MINOR_UNITS, max: PRICE_MAX_MINOR_UNITS }),
+});
+const paymentConfigMethodAddSchema = v.object({
+  displayName: v.string({ minLength: 1, maxLength: 80, trim: true }),
+  accountNumber: v.string({ minLength: 4, maxLength: 40, trim: true }),
+  instructions: v.optional(v.string({ maxLength: 300, trim: true })),
+});
+const paymentConfigMethodPatchSchema = v.object({
+  displayName: v.optional(v.string({ minLength: 1, maxLength: 80, trim: true })),
+  accountNumber: v.optional(v.string({ minLength: 4, maxLength: 40, trim: true })),
+  instructions: v.optional(v.string({ maxLength: 300, trim: true })),
+  enabled: v.optional(v.boolean()),
+});
+
+function toAdminConfigResponse(state: PaymentConfigState) {
+  return {
+    proPriceMinorUnits: state.proPriceMinorUnits,
+    currency: 'BDT' as const,
+    destinations: state.destinations.map(({ methodId, method, displayName, accountNumber, instructions, enabled }) => ({
+      methodId, method, displayName, accountNumber, instructions, enabled,
+    })),
+    updatedAt: state.updatedAt,
+    audit: state.audit.map((entry) => ({ ...entry })),
+  };
+}
+
 export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
-  const { config, users, projects, scans, payments, scanProcessor } = deps;
+  const { config, users, projects, scans, payments, scanProcessor, paymentConfig } = deps;
   return [
     {
       method: 'GET', path: '/api/v1/admin/dashboard', requireAuth: true,
@@ -274,6 +312,89 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         });
         const events: AdminAuditRecord[] = result.events.map((event) => ({ source: 'PAYMENT', ...event }));
         sendSuccess(res, ctx, { events, page, pageSize, total: result.total, coverage: 'PAYMENT_EVENTS_ONLY' });
+      },
+    },
+
+    // ---- Phase 20: platform-admin payment configuration -------------------
+    // Server-authoritative runtime configuration: PRO price + manual-transfer
+    // destinations. Only the dual-gated platform admin (live ADMIN role AND
+    // operator-provisioned ID allowlist) may read or mutate it. Changes apply
+    // to NEW quotes/payments only; historical payment records snapshot their
+    // own amounts and are never rewritten. Account numbers appear raw only
+    // here (the admin manages them); audit details store masked values.
+    {
+      method: 'GET', path: '/api/v1/admin/payment-config', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        assertPlatformAdmin(ctx, config);
+        if (query(req, []).size !== 0) throw validationError([{ path: 'query', message: 'Payment configuration does not accept query parameters.' }]);
+        sendSuccess(res, ctx, toAdminConfigResponse(paymentConfig.current()));
+      },
+    },
+    {
+      method: 'PATCH', path: '/api/v1/admin/payment-config', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = assertPlatformAdmin(ctx, config);
+        v.rejectUnexpectedQuery(req);
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = paymentConfigPriceSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const updated = await paymentConfig.setPrice(actor.id, parsed.value.proPriceMinorUnits, new Date().toISOString());
+        ctx.logger.info('Payment config price updated', { requestId: ctx.id, actorId: actor.id });
+        sendSuccess(res, ctx, toAdminConfigResponse(updated));
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/admin/payment-config/methods', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = assertPlatformAdmin(ctx, config);
+        v.rejectUnexpectedQuery(req);
+        const keyHeader = req.headers['idempotency-key'];
+        if (typeof keyHeader !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(keyHeader)) {
+          throw validationError([{ path: 'Idempotency-Key', message: 'Supply an 8–128 character idempotency key.' }]);
+        }
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = paymentConfigMethodAddSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const result = await paymentConfig.addMethod(
+          actor.id,
+          {
+            displayName: parsed.value.displayName,
+            accountNumber: parsed.value.accountNumber,
+            instructions: parsed.value.instructions ?? '',
+          },
+          new Date().toISOString(),
+          keyHeader,
+        );
+        if (result.kind === 'DUPLICATE_DISPLAY_NAME') throw conflict('A payment destination with this display name already exists.');
+        ctx.logger.info('Payment config destination added', { requestId: ctx.id, actorId: actor.id, replay: result.kind === 'REPLAY' });
+        sendSuccess(res, ctx, { destination: { methodId: result.destination.methodId, method: result.destination.method, displayName: result.destination.displayName, accountNumber: result.destination.accountNumber, instructions: result.destination.instructions, enabled: result.destination.enabled } }, result.kind === 'CREATED' ? 201 : 200);
+      },
+    },
+    {
+      method: 'PATCH', path: '/api/v1/admin/payment-config/methods/:methodId', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = assertPlatformAdmin(ctx, config);
+        v.rejectUnexpectedQuery(req);
+        const methodId = ctx.params['methodId'];
+        if (typeof methodId !== 'string' || !/^pmd_[0-9a-f-]{36}$/i.test(methodId)) throw notFound();
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = paymentConfigMethodPatchSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const patch: { displayName?: string; accountNumber?: string; instructions?: string; enabled?: boolean } = {};
+        if (parsed.value.displayName !== undefined) patch.displayName = parsed.value.displayName;
+        if (parsed.value.accountNumber !== undefined) patch.accountNumber = parsed.value.accountNumber;
+        if (parsed.value.instructions !== undefined) patch.instructions = parsed.value.instructions;
+        if (parsed.value.enabled !== undefined) patch.enabled = parsed.value.enabled;
+        // `v.optional` materializes every shape key as `undefined`, so the
+        // emptiness check must look at the mapped patch, not the parse output.
+        if (patch.displayName === undefined && patch.accountNumber === undefined && patch.instructions === undefined && patch.enabled === undefined) {
+          throw validationError([{ path: 'body', message: 'Supply at least one destination field to update.' }]);
+        }
+        const result = await paymentConfig.updateMethod(actor.id, methodId, patch, new Date().toISOString());
+        if (result.kind === 'NOT_FOUND') throw notFound();
+        if (result.kind === 'DUPLICATE_DISPLAY_NAME') throw conflict('Another payment destination already uses this display name.');
+        ctx.logger.info('Payment config destination updated', { requestId: ctx.id, actorId: actor.id, methodId });
+        sendSuccess(res, ctx, toAdminConfigResponse(result.state));
       },
     },
 

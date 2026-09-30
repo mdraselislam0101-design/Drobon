@@ -66,6 +66,7 @@ import { createAdminRoutes } from './routes/admin.js';
 import { createWorkspaceRoutes } from './routes/workspace.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
 import { createJsonFilePartnerStore, createMemoryPartnerStore, type PartnerStore } from './partners/store.js';
+import { createJsonFilePaymentConfigStore, createMemoryPaymentConfigStore, type PaymentConfigStore } from './payments/configStore.js';
 import { createPartnerService, type PartnerService } from './partners/service.js';
 import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
@@ -153,6 +154,7 @@ export interface AppDeps {
   /** Durable payment + audit JSON store; tests may inject a local fixture. */
   paymentStore?: PaymentStore;
   partnerStore?: PartnerStore;
+  paymentConfigStore?: PaymentConfigStore;
   /** Clock for partner/coupon/commission timestamps (injectable for tests). */
   partnerNow?: () => number;
   /** Payment-service clock (epoch ms), injectable for deterministic tests. */
@@ -259,6 +261,14 @@ export function createApp(deps: AppDeps): App {
     (config.partnerStorePath === ':memory:'
       ? createMemoryPartnerStore()
       : createJsonFilePartnerStore(config.partnerStorePath));
+  // Runtime admin-managed payment configuration (Phase 20): PRO price and
+  // manual-transfer destinations. Seeded from the boot-time environment until
+  // the first platform-admin change; durable outside ephemeral development.
+  const paymentConfig: PaymentConfigStore =
+    deps.paymentConfigStore ??
+    (config.paymentConfigStorePath === ':memory:'
+      ? createMemoryPaymentConfigStore(config.proPriceMinorUnits)
+      : createJsonFilePaymentConfigStore(config.paymentConfigStorePath, config.proPriceMinorUnits));
   const partners: PartnerService = createPartnerService({
     store: partnerStore,
     users,
@@ -269,6 +279,7 @@ export function createApp(deps: AppDeps): App {
     config,
     store: paymentStore,
     users,
+    paymentConfig,
     ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
     partners,
   });
@@ -317,7 +328,7 @@ export function createApp(deps: AppDeps): App {
     ...createSubscriptionRoutes(),
     ...createPaymentRoutes({ config, users, payments }),
     ...createPartnerRoutes({ config, partners }),
-    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
+    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
@@ -374,7 +385,8 @@ export function createApp(deps: AppDeps): App {
     const paymentMutation = (ctx.method === 'POST' || ctx.method === 'PATCH') &&
       (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') ||
         ctx.pathname.startsWith('/api/v1/admin/payments/') || ctx.pathname.startsWith('/api/v1/admin/partners/') ||
-        ctx.pathname === '/api/v1/admin/partners' || ctx.pathname.startsWith('/api/v1/admin/commissions/'));
+        ctx.pathname === '/api/v1/admin/partners' || ctx.pathname.startsWith('/api/v1/admin/commissions/') ||
+        ctx.pathname === '/api/v1/admin/payment-config' || ctx.pathname.startsWith('/api/v1/admin/payment-config/'));
     if (paymentMutation) await paymentRateLimiter.middleware(req, res, ctx, next);
     else await next();
   };

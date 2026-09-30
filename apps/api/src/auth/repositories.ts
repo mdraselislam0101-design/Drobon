@@ -73,6 +73,13 @@ export interface UserRepository {
   findById(id: string): Promise<UserRecord | undefined>;
   /** Server-only entitlement mutation used by the payment approval saga. */
   activatePro(id: string, at: string): Promise<'ACTIVATED' | 'ALREADY_ACTIVE' | 'NOT_FOUND'>;
+  /**
+   * Classification-only mutation (Phase 20): rewrites `userType` and nothing
+   * else. Role, subscription and every other field are untouched by design —
+   * switching user type never grants entitlements, resets quota or changes
+   * ownership. Returns the updated record, or `undefined` when missing.
+   */
+  setUserType(id: string, userType: UserType): Promise<UserRecord | undefined>;
   /** Bounded safe account projection for platform-admin read-only operations. */
   adminPage(filters: AdminAccountFilters, page: number, pageSize: number): Promise<AdminAccountPage>;
   /** Aggregate counts from the existing account/subscription records. */

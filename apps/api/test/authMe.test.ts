@@ -73,6 +73,7 @@ describe('GET /api/v1/me', () => {
         findByEmail: async () => undefined,
         findById: async () => undefined,
         activatePro: async () => 'NOT_FOUND',
+        setUserType: async () => undefined,
         adminPage: async () => ({ accounts: [], total: 0 }),
         adminCounts: async () => ({ total: 0, byPlan: { FREE: 0, PRO: 0 }, bySubscriptionStatus: { ACTIVE: 0, INACTIVE: 0, CANCELLED: 0, EXPIRED: 0 }, byRole: { MEMBER: 0, ADMIN: 0, ACCOUNT_OWNER: 0 }, byUserType: { DEVELOPER: 0, STUDENT: 0, SECURITY_PROFESSIONAL: 0, PENTESTER: 0, NONE: 0 } }),
       };

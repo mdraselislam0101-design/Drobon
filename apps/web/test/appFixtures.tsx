@@ -2,6 +2,7 @@ import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
+  AdminPaymentConfigResponse,
   AssessmentResponse,
   AssessmentDetailResponse,
   AssessmentsResponse,
@@ -30,6 +31,7 @@ import type {
   PaymentConfigResponse,
   PaymentHistoryResponse,
   PaymentDetailResponse,
+  PaymentMethodDestination,
   AdminPaymentsResponse,
   AdminDashboardResponse,
   AdminAccountsResponse,
@@ -151,12 +153,20 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
       manualPaymentMethods: ['MANUAL_TRANSFER'],
       manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
+      manualPaymentDestinations: [],
       onlineGateway: 'UNAVAILABLE', coupons: 'SUPPORTED',
     })),
+    // Phase 20: classification switch — self-only, presentation layer.
+    updateUserType: vi.fn(async (userType): Promise<CurrentUserResponse> => ({ user: { ...TEST_USER, userType } })),
     getPaymentHistory: vi.fn(async (): Promise<PaymentHistoryResponse> => ({ payments: [], page: 1, pageSize: 20, total: 0 })),
     createPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     getPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     cancelPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    // Phase 20: platform-admin payment configuration (default: denied).
+    getAdminPaymentConfig: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
+    updateAdminPaymentPrice: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
+    addAdminPaymentMethod: vi.fn(async (): Promise<{ destination: PaymentMethodDestination }> => { throw forbiddenError(); }),
+    updateAdminPaymentMethod: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
     getAdminDashboard: vi.fn(async (): Promise<AdminDashboardResponse> => { throw forbiddenError(); }),
     getAdminAccounts: vi.fn(async (): Promise<AdminAccountsResponse> => ({ accounts: [], page: 1, pageSize: 25, total: 0 })),
     getAdminScans: vi.fn(async (): Promise<AdminScansResponse> => ({ scans: [], page: 1, pageSize: 25, total: 0 })),

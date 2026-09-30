@@ -47,6 +47,7 @@ const paymentConfig: PaymentConfigResponse = {
   currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
   manualPaymentMethods: ['MANUAL_TRANSFER'],
   manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
+  manualPaymentDestinations: [],
   onlineGateway: 'UNAVAILABLE', coupons: 'SUPPORTED',
 };
 

@@ -135,6 +135,21 @@ export function createJsonFileUserRepository(path: string): UserRepository {
       queue = run.catch(() => undefined);
       return run;
     },
+    setUserType: (id, userType) => {
+      const run = queue.then(() => {
+        const current = byId.get(id);
+        if (current === undefined) return undefined;
+        // Classification-only: every other field is carried over untouched.
+        const updated: UserRecord = { ...current, userType };
+        const nextUsers = [...byEmail.values()].map((record) => record.id === id ? updated : record);
+        persist(nextUsers);
+        byId.set(id, updated);
+        byEmail.set(updated.email, updated);
+        return updated;
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    },
     adminPage: (filters, page, pageSize) => Promise.resolve(buildAdminAccountPage(byId.values(), filters, page, pageSize)),
     adminCounts: () => Promise.resolve(buildAdminAccountCounts(byId.values())),
   };

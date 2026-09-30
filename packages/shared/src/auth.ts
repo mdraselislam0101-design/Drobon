@@ -46,6 +46,25 @@ export interface LoginRequest {
 }
 
 /**
+ * `PATCH /api/v1/me/user-type` request body (Phase 20). Exactly ONE
+ * classification field — the route rejects any other key (mass-assignment
+ * defense): role, plan, quota and ownership can never ride along. Switching
+ * is presentation/workflow only; it never grants entitlements.
+ */
+export interface UpdateUserTypeRequest {
+  userType: UserType;
+}
+
+/** Guard for {@link UpdateUserTypeRequest} at the client boundary. */
+export function isUpdateUserTypeRequest(value: unknown): value is UpdateUserTypeRequest {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    isUserType(value['userType'])
+  );
+}
+
+/**
  * `POST /api/v1/auth/register` and `POST /api/v1/auth/login` response.
  * The session itself travels ONLY in an `httpOnly` cookie — tokens are
  * never part of a JSON body.

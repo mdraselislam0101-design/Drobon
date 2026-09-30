@@ -98,6 +98,8 @@ export interface ApiConfig {
   paymentStorePath: string;
   /** Durable Pump 7 partner/coupon/commission JSON document. */
   partnerStorePath: string;
+  /** Durable Phase 20 runtime payment-configuration JSON document. */
+  paymentConfigStorePath: string;
   /** Server-authoritative PRO price in BDT poisha (minor units). */
   proPriceMinorUnits: number;
   /** Explicit platform payment-reviewer user-id allowlist; account roles are insufficient. */
@@ -360,6 +362,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   } else if (partnerStorePath === ':memory:' && environment === 'production') {
     issues.push('PARTNER_STORE_PATH=":memory:" is not allowed in production (partner/commission records must persist)');
   }
+  const paymentConfigStorePath = (env['PAYMENT_CONFIG_STORE_PATH'] ?? '.data/payment-config.json').trim();
+  if (paymentConfigStorePath.length === 0) {
+    issues.push('PAYMENT_CONFIG_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (paymentConfigStorePath === ':memory:' && environment === 'production') {
+    issues.push('PAYMENT_CONFIG_STORE_PATH=":memory:" is not allowed in production (admin payment configuration must persist)');
+  }
   const proPriceMinorUnits = parseInteger(env['PRO_PRICE_MINOR_UNITS'], 'PRO_PRICE_MINOR_UNITS', issues) ?? 100_000;
   if (!Number.isSafeInteger(proPriceMinorUnits) || proPriceMinorUnits < 1 || proPriceMinorUnits > 100_000_000) {
     issues.push('PRO_PRICE_MINOR_UNITS must be an integer between 1 and 100000000');
@@ -451,6 +459,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     vulnIntelProvider,
     paymentStorePath,
     partnerStorePath,
+    paymentConfigStorePath,
     proPriceMinorUnits,
     paymentReviewerIds,
     manualPaymentMethods,

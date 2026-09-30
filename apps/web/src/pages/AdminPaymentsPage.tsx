@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AdminPaymentSummary, PaymentAuditEvent } from '@drobon/shared';
+import type { AdminPaymentConfigResponse, AdminPaymentSummary, PaymentAuditEvent } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 
@@ -58,6 +58,7 @@ export function AdminPaymentsPage(): React.JSX.Element {
     <section className="panel payment-admin" aria-labelledby="payment-admin-title">
       <p className="eyebrow">Platform operations</p>
       <h1 id="payment-admin-title">Payment review</h1>
+      <PaymentConfigPanel client={client} />
       <p className="muted">Only server-configured platform reviewer accounts can view or mutate payment records. Account roles alone do not grant this access.</p>
       <p className="form-alert" role="note">Manual review only. A submitted reference is evidence supplied by the user, not independent proof of payment. No online gateway or webhook is configured.</p>
       {error !== null && <div className="form-alert" role="alert"><p>{error}</p><button type="button" className="button button-ghost" onClick={() => void reload()}>Refresh</button></div>}
@@ -95,5 +96,174 @@ export function AdminPaymentsPage(): React.JSX.Element {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Phase 20 — platform-admin payment configuration. This is a privileged Admin
+ * control (NOT a UserType capability): the surface is visible here, but every
+ * read and mutation is independently enforced server-side by the dual-gated
+ * platform-admin check. A reviewer or ordinary account that somehow renders
+ * this panel gets 403 from the API on every call — the UI never decides.
+ */
+function PaymentConfigPanel({ client }: { client: ReturnType<typeof useApiClient> }): React.JSX.Element {
+  const [config, setConfig] = useState<AdminPaymentConfigResponse | null>(null);
+  const [denied, setDenied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [priceInput, setPriceInput] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [newMethod, setNewMethod] = useState({ displayName: '', accountNumber: '', instructions: '' });
+
+  const messageFor = (cause: unknown, fallback: string): string =>
+    cause instanceof ApiClientError ? cause.message : fallback;
+
+  const load = useCallback(async (): Promise<void> => {
+    setLoadError(null);
+    setDenied(false);
+    try {
+      const result = await client.getAdminPaymentConfig();
+      setConfig(result);
+      setPriceInput((result.proPriceMinorUnits / 100).toFixed(2));
+    } catch (cause: unknown) {
+      if (cause instanceof ApiClientError && cause.status === 403) setDenied(true);
+      else setLoadError(messageFor(cause, 'Payment configuration is unavailable.'));
+    }
+  }, [client]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const savePrice = async (): Promise<void> => {
+    setBusy(true); setNotice(null); setFormError(null);
+    try {
+      const minor = Math.round(Number.parseFloat(priceInput) * 100);
+      if (!Number.isFinite(minor) || minor < 1) throw new Error('Enter a positive price.');
+      const result = await client.updateAdminPaymentPrice(minor);
+      setConfig(result);
+      setNotice('PRO price updated. New payments use the new price immediately; existing payment records are unchanged.');
+    } catch (cause: unknown) {
+      setFormError(messageFor(cause, 'The price could not be updated.'));
+    } finally { setBusy(false); }
+  };
+
+  const toggleMethod = async (methodId: string, enabled: boolean): Promise<void> => {
+    setBusy(true); setNotice(null); setFormError(null);
+    try {
+      const result = await client.updateAdminPaymentMethod(methodId, { enabled });
+      setConfig(result);
+      setNotice(enabled ? 'Payment destination enabled.' : 'Payment destination disabled — it is no longer offered for new payments.');
+    } catch (cause: unknown) {
+      setFormError(messageFor(cause, 'The destination could not be updated.'));
+    } finally { setBusy(false); }
+  };
+
+  const addMethod = async (): Promise<void> => {
+    setBusy(true); setNotice(null); setFormError(null);
+    try {
+      const key = `paycfg-${crypto.randomUUID()}`;
+      await client.addAdminPaymentMethod(
+        { displayName: newMethod.displayName, accountNumber: newMethod.accountNumber, ...(newMethod.instructions.trim() === '' ? {} : { instructions: newMethod.instructions }) },
+        key,
+      );
+      setNewMethod({ displayName: '', accountNumber: '', instructions: '' });
+      await load();
+      setNotice('Payment destination added.');
+    } catch (cause: unknown) {
+      setFormError(messageFor(cause, 'The destination could not be added.'));
+    } finally { setBusy(false); }
+  };
+
+  if (denied) {
+    return (
+      <div className="form-alert" role="note" data-testid="payment-config-denied">
+        <p>Payment configuration is restricted to explicitly authorized platform administrators. Your account can review payments but cannot change pricing or destinations.</p>
+      </div>
+    );
+  }
+  if (loadError !== null) {
+    return <div className="form-alert" role="alert"><p>{loadError}</p><button type="button" className="button button-ghost" onClick={() => void load()}>Retry</button></div>;
+  }
+  if (config === null) {
+    return <p role="status">Loading payment configuration…</p>;
+  }
+
+  return (
+    <div className="payment-config-panel" data-testid="payment-config-panel">
+      <h2>Payment configuration (platform admin)</h2>
+      <p className="muted">
+        Server-authoritative. Changes apply to new quotes and payments immediately; historical payment records keep their own snapshot and are never rewritten. Account numbers are masked in the audit trail.
+      </p>
+      {notice !== null && <p className="notice" role="status" data-testid="payment-config-notice">{notice}</p>}
+      {formError !== null && <div className="form-alert" role="alert" data-testid="payment-config-error"><p>{formError}</p></div>}
+
+      <div className="payment-config-price">
+        <label htmlFor="pro-price">PRO price (BDT)</label>
+        <input
+          id="pro-price"
+          type="number"
+          min="0.01"
+          step="0.01"
+          value={priceInput}
+          onChange={(event) => setPriceInput(event.target.value)}
+          data-testid="payment-config-price-input"
+        />
+        <button type="button" className="button button-secondary" onClick={() => void savePrice()} disabled={busy} aria-busy={busy} data-testid="payment-config-save-price">
+          {busy ? 'Saving…' : 'Save price'}
+        </button>
+        <p className="muted">Current server price: BDT {(config.proPriceMinorUnits / 100).toFixed(2)}. Last updated {config.updatedAt}.</p>
+      </div>
+
+      <h3>Manual-transfer destinations</h3>
+      {config.destinations.length === 0 && (
+        <p className="muted" data-testid="payment-config-no-methods">No destinations configured. Until one is added, the legacy boot-time manual-transfer behavior remains active.</p>
+      )}
+      {config.destinations.length > 0 && (
+        <div className="table-wrap">
+          <table className="payment-table" data-testid="payment-config-methods">
+            <thead><tr><th>Display name</th><th>Account number</th><th>Instructions</th><th>Enabled</th><th>Toggle</th></tr></thead>
+            <tbody>
+              {config.destinations.map((method) => (
+                <tr key={method.methodId} data-testid={`payment-config-method-${method.methodId}`}>
+                  <td>{method.displayName}</td>
+                  <td><code>{method.accountNumber}</code></td>
+                  <td>{method.instructions === '' ? '—' : method.instructions}</td>
+                  <td>{method.enabled ? 'Yes' : 'No'}</td>
+                  <td>
+                    <button type="button" className="button button-ghost" onClick={() => void toggleMethod(method.methodId, !method.enabled)} disabled={busy} data-testid={`payment-config-toggle-${method.methodId}`}>
+                      {method.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h3>Add a destination</h3>
+      <div className="payment-config-add">
+        <label htmlFor="method-name">Display name</label>
+        <input id="method-name" maxLength={80} value={newMethod.displayName} onChange={(event) => setNewMethod((c) => ({ ...c, displayName: event.target.value }))} placeholder="e.g. bKash" data-testid="payment-config-new-name" />
+        <label htmlFor="method-account">Account number</label>
+        <input id="method-account" maxLength={40} value={newMethod.accountNumber} onChange={(event) => setNewMethod((c) => ({ ...c, accountNumber: event.target.value }))} placeholder="01XXXXXXXXX" data-testid="payment-config-new-account" />
+        <label htmlFor="method-instructions">Instructions (optional)</label>
+        <input id="method-instructions" maxLength={300} value={newMethod.instructions} onChange={(event) => setNewMethod((c) => ({ ...c, instructions: event.target.value }))} data-testid="payment-config-new-instructions" />
+        <button type="button" className="button button-secondary" onClick={() => void addMethod()} disabled={busy || newMethod.displayName.trim() === '' || newMethod.accountNumber.trim().length < 4} aria-busy={busy} data-testid="payment-config-add-method">
+          {busy ? 'Adding…' : 'Add destination'}
+        </button>
+      </div>
+
+      {config.audit.length > 0 && (
+        <>
+          <h3>Configuration audit (masked)</h3>
+          <ul aria-label="Payment configuration audit trail" data-testid="payment-config-audit">
+            {config.audit.slice(-8).reverse().map((entry) => (
+              <li key={entry.entryId}>{entry.action} · {entry.detail} · {entry.at}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }

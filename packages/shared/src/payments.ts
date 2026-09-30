@@ -68,14 +68,63 @@ export interface AdminPaymentSummary extends PaymentSummary {
   reviewerId: string | null;
 }
 
+/**
+ * A platform-configured manual-transfer destination (Phase 20). Managed
+ * exclusively by platform admins via `PATCH/POST /api/v1/admin/payment-config…`.
+ * The transfer METHOD contract (`MANUAL_TRANSFER`) is unchanged — destinations
+ * are the server-authoritative "where do I send the money" metadata shown to
+ * users. Account numbers are transfer targets (safe to show to the payer);
+ * audit records still mask them.
+ */
+export interface PaymentMethodDestination {
+  methodId: string;
+  method: PaymentMethod;
+  displayName: string;
+  accountNumber: string;
+  instructions: string;
+  enabled: boolean;
+}
+
+export const PAYMENT_CONFIG_AUDIT_ACTIONS = [
+  'PAYMENT_CONFIG_PRICE_UPDATED',
+  'PAYMENT_CONFIG_METHOD_ADDED',
+  'PAYMENT_CONFIG_METHOD_UPDATED',
+] as const;
+export type PaymentConfigAuditAction = (typeof PAYMENT_CONFIG_AUDIT_ACTIONS)[number];
+export function isPaymentConfigAuditAction(value: unknown): value is PaymentConfigAuditAction {
+  return typeof value === 'string' && (PAYMENT_CONFIG_AUDIT_ACTIONS as readonly string[]).includes(value);
+}
+
+/** Bounded audit entry for an admin payment-configuration change. */
+export interface PaymentConfigAuditEntry {
+  entryId: string;
+  at: string;
+  actorId: string;
+  action: PaymentConfigAuditAction;
+  /** Human-readable change summary with account numbers masked. */
+  detail: string;
+}
+
 export interface PaymentConfigResponse {
   currentPlan: 'FREE' | 'PRO';
   proPriceMinorUnits: number;
   currency: 'BDT';
   manualPaymentMethods: PaymentMethod[];
   manualPaymentInstructions: string;
+  /** Currently ENABLED transfer destinations (disabled ones are never offered). */
+  manualPaymentDestinations: PaymentMethodDestination[];
   onlineGateway: 'UNAVAILABLE';
   coupons: 'SUPPORTED';
+}
+
+/** Platform-admin view of the live payment configuration (Phase 20). */
+export interface AdminPaymentConfigResponse {
+  proPriceMinorUnits: number;
+  currency: 'BDT';
+  /** ALL destinations, enabled and disabled. */
+  destinations: PaymentMethodDestination[];
+  updatedAt: string;
+  audit: PaymentConfigAuditEntry[];
 }
 
 export interface PaymentHistoryResponse {
@@ -163,6 +212,29 @@ function isAttributionSummary(value: unknown): value is PaymentAttributionSummar
   );
 }
 
+export function isPaymentMethodDestination(value: unknown): value is PaymentMethodDestination {
+  return (
+    isRecord(value) &&
+    typeof value['methodId'] === 'string' && /^pmd_[0-9a-f-]{36}$/i.test(value['methodId']) &&
+    isPaymentMethod(value['method']) &&
+    typeof value['displayName'] === 'string' && value['displayName'].length >= 1 && value['displayName'].length <= 80 &&
+    typeof value['accountNumber'] === 'string' && value['accountNumber'].length >= 4 && value['accountNumber'].length <= 40 &&
+    typeof value['instructions'] === 'string' && value['instructions'].length <= 300 &&
+    typeof value['enabled'] === 'boolean'
+  );
+}
+
+export function isPaymentConfigAuditEntry(value: unknown): value is PaymentConfigAuditEntry {
+  return (
+    isRecord(value) &&
+    typeof value['entryId'] === 'string' && /^pca_[0-9a-f-]{36}$/i.test(value['entryId']) &&
+    isTimestamp(value['at']) &&
+    typeof value['actorId'] === 'string' && value['actorId'].length > 0 &&
+    isPaymentConfigAuditAction(value['action']) &&
+    typeof value['detail'] === 'string' && value['detail'].length > 0 && value['detail'].length <= 300
+  );
+}
+
 export function isPaymentConfigResponse(value: unknown): value is PaymentConfigResponse {
   return (
     isRecord(value) &&
@@ -175,8 +247,26 @@ export function isPaymentConfigResponse(value: unknown): value is PaymentConfigR
     value['manualPaymentMethods'].every(isPaymentMethod) &&
     typeof value['manualPaymentInstructions'] === 'string' &&
     value['manualPaymentInstructions'].length > 0 && value['manualPaymentInstructions'].length <= 500 &&
+    Array.isArray(value['manualPaymentDestinations']) &&
+    value['manualPaymentDestinations'].every(isPaymentMethodDestination) &&
     value['onlineGateway'] === 'UNAVAILABLE' &&
     value['coupons'] === 'SUPPORTED'
+  );
+}
+
+export function isAdminPaymentConfigResponse(value: unknown): value is AdminPaymentConfigResponse {
+  return (
+    isRecord(value) &&
+    typeof value['proPriceMinorUnits'] === 'number' &&
+    Number.isSafeInteger(value['proPriceMinorUnits']) &&
+    value['proPriceMinorUnits'] > 0 &&
+    value['currency'] === 'BDT' &&
+    Array.isArray(value['destinations']) &&
+    value['destinations'].every(isPaymentMethodDestination) &&
+    isTimestamp(value['updatedAt']) &&
+    Array.isArray(value['audit']) &&
+    value['audit'].length <= 200 &&
+    value['audit'].every(isPaymentConfigAuditEntry)
   );
 }
 

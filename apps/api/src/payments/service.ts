@@ -15,6 +15,7 @@ import type { ApiConfig } from '../config.js';
 import { conflict, notFound, validationError } from '../errors.js';
 import { redactAssistantText } from '../assistant/redaction.js';
 import type { UserRepository } from '../auth/repositories.js';
+import { manualMethodsFromState, type PaymentConfigStore } from './configStore.js';
 import type { PaymentAdminCounts, PaymentAdminFilters, PaymentAuditFilters, PaymentRecord, PaymentStore } from './store.js';
 
 /** Provider boundary. No charge, verification or webhook methods exist until a real integration is configured. */
@@ -152,11 +153,19 @@ export function createPaymentService(options: {
   config: ApiConfig;
   store: PaymentStore;
   users: UserRepository;
+  /**
+   * Runtime admin-managed payment configuration (Phase 20). Price and
+   * transfer-destination availability are read LIVE from this store on every
+   * quote/config/create — the server is authoritative and clients can forge
+   * none of it. Historical payment records snapshot their own amounts and
+   * are never rewritten by configuration changes.
+   */
+  paymentConfig: PaymentConfigStore;
   now?: () => number;
   provider?: PaymentProvider;
   partners?: PaymentPartnerHooks;
 }): PaymentService {
-  const { config, store, users } = options;
+  const { config, store, users, paymentConfig } = options;
   const partners = options.partners;
   const now = options.now ?? Date.now;
   const provider = options.provider ?? unavailablePaymentProvider;
@@ -195,17 +204,28 @@ export function createPaymentService(options: {
   };
 
   return {
-    config: (currentPlan) => ({
-      currentPlan,
-      proPriceMinorUnits: config.proPriceMinorUnits,
-      currency: 'BDT',
-      manualPaymentMethods: [...config.manualPaymentMethods],
-      manualPaymentInstructions: config.manualPaymentInstructions,
-      onlineGateway: provider.availability(),
-      coupons: 'SUPPORTED',
-    }),
+    config: (currentPlan) => {
+      // Live server-authoritative snapshot: the runtime store (managed by
+      // platform admins) is the source of truth for price + destinations.
+      const live = paymentConfig.current();
+      const enabled = live.destinations.filter((destination) => destination.enabled);
+      return {
+        currentPlan,
+        proPriceMinorUnits: live.proPriceMinorUnits,
+        currency: 'BDT',
+        manualPaymentMethods: manualMethodsFromState(live),
+        manualPaymentInstructions: enabled.length === 0
+          ? config.manualPaymentInstructions
+          : enabled.map((d) => `${d.displayName}: account ${d.accountNumber}${d.instructions.length === 0 ? '' : ` — ${d.instructions}`}`).join(' | ').slice(0, 500),
+        manualPaymentDestinations: enabled.map(({ methodId, method, displayName, accountNumber, instructions, enabled: isEnabled }) => ({
+          methodId, method, displayName, accountNumber, instructions, enabled: isEnabled,
+        })),
+        onlineGateway: provider.availability(),
+        coupons: 'SUPPORTED',
+      };
+    },
     quote: (couponCode) => {
-      const baseAmountMinorUnits = config.proPriceMinorUnits;
+      const baseAmountMinorUnits = paymentConfig.current().proPriceMinorUnits;
       if (couponCode === null) return { baseAmountMinorUnits, currency: 'BDT', coupon: null };
       const decision = partners?.resolveCoupon(couponCode);
       if (decision === undefined || !decision.ok) {
@@ -241,21 +261,25 @@ export function createPaymentService(options: {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{5,63}$/.test(input.reference)) issues.push({ path: 'reference', message: 'Payment reference must be 6–64 normalized characters.' });
       if (!Number.isSafeInteger(input.amountMinorUnits) || input.amountMinorUnits < 1) issues.push({ path: 'amountMinorUnits', message: 'Amount must be a positive integer in minor currency units.' });
       if (input.currency !== 'BDT') issues.push({ path: 'currency', message: 'Currency does not match the server-configured price.' });
-      if (!config.manualPaymentMethods.includes(input.paymentMethod)) issues.push({ path: 'paymentMethod', message: 'This manual payment method is unavailable.' });
+      // Method availability + price are read LIVE from the runtime payment
+      // configuration — a client-quoted price or a disabled method can never
+      // pass: the server recomputes everything below.
+      const live = paymentConfig.current();
+      if (!manualMethodsFromState(live).includes(input.paymentMethod)) issues.push({ path: 'paymentMethod', message: 'This manual payment method is unavailable.' });
       // Coupon resolution is fully server-side: discount/commission percentages,
       // ownership and price all derive from the partner store, never the client.
       let attribution: PaymentRecord['attribution'];
-      let expectedAmount = config.proPriceMinorUnits;
+      let expectedAmount = live.proPriceMinorUnits;
       if (input.couponCode !== undefined) {
         const decision = partners?.resolveCoupon(input.couponCode);
         if (decision === undefined || !decision.ok) issues.push({ path: 'couponCode', message: 'This coupon is not currently valid.' });
         else {
-          const discountAmountMinorUnits = Math.floor((config.proPriceMinorUnits * (decision.discountPercent as number)) / 100);
-          expectedAmount = config.proPriceMinorUnits - discountAmountMinorUnits;
+          const discountAmountMinorUnits = Math.floor((live.proPriceMinorUnits * (decision.discountPercent as number)) / 100);
+          expectedAmount = live.proPriceMinorUnits - discountAmountMinorUnits;
           attribution = {
             couponCode: decision.couponCode,
             partnerId: decision.partnerId as string,
-            baseAmountMinorUnits: config.proPriceMinorUnits,
+            baseAmountMinorUnits: live.proPriceMinorUnits,
             discountAmountMinorUnits,
             commissionPercent: decision.commissionPercent as number,
           };

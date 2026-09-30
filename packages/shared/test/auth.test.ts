@@ -8,6 +8,7 @@ import {
   isAuthUser,
   isCurrentUserResponse,
   isLogoutResponse,
+  isUpdateUserTypeRequest,
   isValidEmail,
   normalizeEmail,
   passwordPolicyIssue,
@@ -124,5 +125,21 @@ describe('auth guards', () => {
     expect(isCurrentUserResponse({})).toBe(false);
     expect(isLogoutResponse({ loggedOut: true })).toBe(true);
     expect(isLogoutResponse({ loggedOut: 'yes' })).toBe(false);
+  });
+
+  test('Phase 20 user-type switch request is exactly one known classification field', () => {
+    expect(isUpdateUserTypeRequest({ userType: 'DEVELOPER' })).toBe(true);
+    expect(isUpdateUserTypeRequest({ userType: 'STUDENT' })).toBe(true);
+    expect(isUpdateUserTypeRequest({ userType: 'SECURITY_PROFESSIONAL' })).toBe(true);
+    expect(isUpdateUserTypeRequest({ userType: 'PENTESTER' })).toBe(true);
+    // Mass assignment must never ride along on a classification switch.
+    expect(isUpdateUserTypeRequest({ userType: 'STUDENT', role: 'ADMIN' })).toBe(false);
+    expect(isUpdateUserTypeRequest({ userType: 'STUDENT', plan: 'PRO' })).toBe(false);
+    expect(isUpdateUserTypeRequest({ userType: 'STUDENT', subscription: {} })).toBe(false);
+    // Unknown values, wrong shapes and empty bodies are rejected.
+    expect(isUpdateUserTypeRequest({ userType: 'WIZARD' })).toBe(false);
+    expect(isUpdateUserTypeRequest({ userType: null })).toBe(false);
+    expect(isUpdateUserTypeRequest({})).toBe(false);
+    expect(isUpdateUserTypeRequest('STUDENT')).toBe(false);
   });
 });

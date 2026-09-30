@@ -117,6 +117,16 @@ export function PaymentPanel(): React.JSX.Element {
           </p>
           <p className="form-alert" role="note">Online payment processing is currently unavailable. This page supports a manual request only; no payment is automatically verified.</p>
           <p className="muted">{config.manualPaymentInstructions}</p>
+          {config.manualPaymentDestinations.length > 0 && (
+            <ul className="payment-destinations" aria-label="Current transfer destinations" data-testid="payment-destinations">
+              {config.manualPaymentDestinations.map((destination) => (
+                <li key={destination.methodId} data-testid={`payment-destination-${destination.methodId}`}>
+                  <strong>{destination.displayName}</strong> — account <code>{destination.accountNumber}</code>
+                  {destination.instructions !== '' && <span className="muted"> · {destination.instructions}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
           {config.currentPlan === 'FREE' && config.manualPaymentMethods.length > 0 && (
             <form className="payment-request-form" onSubmit={(event) => void submit(event)}>
               <label htmlFor="payment-method">Payment method</label>

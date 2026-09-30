@@ -56,6 +56,15 @@ const registerSchema = v.object({
   userType: v.optional(v.string({ maxLength: 64, trim: true })),
 });
 
+/**
+ * Classification switch (Phase 20): exactly ONE field. Unknown keys are
+ * rejected by the schema (mass-assignment defense) — role, plan, quota and
+ * ownership can never ride along on a user-type switch.
+ */
+const updateUserTypeSchema = v.object({
+  userType: v.string({ maxLength: 64, trim: true }),
+});
+
 const emptySchema = v.object({});
 
 type Credentials = { email: string; password: string };
@@ -242,6 +251,32 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           throw unauthorized();
         }
         const body: CurrentUserResponse = { user };
+        sendSuccess(res, ctx, body);
+      },
+    },
+    {
+      // Classification-only switch (Phase 20). The repository mutation
+      // rewrites `userType` and nothing else: role, subscription, quota,
+      // device anti-abuse state and ownership are structurally untouched.
+      // The pipeline's origin guard + SameSite=Strict cookies provide the
+      // CSRF defense; the global limiter covers bursts.
+      method: 'PATCH',
+      path: '/api/v1/me/user-type',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = updateUserTypeSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        if (!isUserType(parsed.value.userType)) {
+          throw validationError([{ path: 'userType', message: 'Unsupported user type.' }]);
+        }
+        const updated = await users.setUserType(actor.id, parsed.value.userType);
+        if (updated === undefined) throw unauthorized();
+        ctx.logger.info('User type updated', { requestId: ctx.id, userId: updated.id });
+        const body: CurrentUserResponse = { user: toAuthUser(updated) };
         sendSuccess(res, ctx, body);
       },
     },

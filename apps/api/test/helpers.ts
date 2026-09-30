@@ -210,6 +210,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
     partnerStorePath: ':memory:',
+    paymentConfigStorePath: ':memory:',
     proPriceMinorUnits: 100_000,
     paymentReviewerIds: [],
     manualPaymentMethods: ['MANUAL_TRANSFER'],

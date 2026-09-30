@@ -21,9 +21,11 @@ import {
   isSourceSnapshotResponse,
   isSubscriptionResponse,
   isUsageResponse,
+  isAdminPaymentConfigResponse,
   isPaymentConfigResponse,
   isPaymentHistoryResponse,
   isPaymentDetailResponse,
+  isPaymentMethodDestination,
   isAdminPaymentsResponse,
   isAdminDashboardResponse,
   isAdminAccountsResponse,
@@ -75,9 +77,11 @@ import {
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
+  type AdminPaymentConfigResponse,
   type PaymentConfigResponse,
   type PaymentHistoryResponse,
   type PaymentDetailResponse,
+  type PaymentMethodDestination,
   type AdminPaymentsResponse,
   type AdminDashboardResponse,
   type AdminAccountsResponse,
@@ -203,6 +207,11 @@ export interface ApiClient {
    * client renders the server's verdict and never recomputes it.
    */
   getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
+  /**
+   * Phase 20: classification-only user-type switch. The server rewrites the
+   * `userType` tag and nothing else — never role, plan, quota or ownership.
+   */
+  updateUserType(userType: UserType, signal?: AbortSignal): Promise<CurrentUserResponse>;
   getPaymentConfig(signal?: AbortSignal): Promise<PaymentConfigResponse>;
   getPaymentHistory(page?: number, pageSize?: number, signal?: AbortSignal): Promise<PaymentHistoryResponse>;
   createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string; couponCode?: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
@@ -220,6 +229,19 @@ export interface ApiClient {
   approvePayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   rejectPayment(paymentId: string, reason: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getPaymentAudit(paymentId: string, signal?: AbortSignal): Promise<PaymentAuditResponse>;
+  /** Phase 20: platform-admin runtime payment configuration (dual-gated). */
+  getAdminPaymentConfig(signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
+  updateAdminPaymentPrice(proPriceMinorUnits: number, signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
+  addAdminPaymentMethod(
+    input: { displayName: string; accountNumber: string; instructions?: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ destination: PaymentMethodDestination }>;
+  updateAdminPaymentMethod(
+    methodId: string,
+    patch: { displayName?: string; accountNumber?: string; instructions?: string; enabled?: boolean },
+    signal?: AbortSignal,
+  ): Promise<AdminPaymentConfigResponse>;
   /** Partner self dashboard — aggregate-only projection (Pump 7). */
   getPartnerDashboard(signal?: AbortSignal): Promise<PartnerDashboardResponse>;
   /** Platform partner/coupon/commission management (Pump 7; dual-gated admin). */
@@ -644,6 +666,13 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSubscriptionResponse,
       ),
+    updateUserType: (userType, signal?: AbortSignal): Promise<CurrentUserResponse> =>
+      authRequest<CurrentUserResponse>('/api/v1/me/user-type', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userType }),
+        ...(signal === undefined ? {} : { signal }),
+      }, isCurrentUserResponse),
     getPaymentConfig: (signal?: AbortSignal): Promise<PaymentConfigResponse> =>
       authRequest<PaymentConfigResponse>('/api/v1/payments/config', signal === undefined ? {} : { signal }, isPaymentConfigResponse),
     getPaymentHistory: (page = 1, pageSize = 20, signal?: AbortSignal): Promise<PaymentHistoryResponse> =>
@@ -685,6 +714,30 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }, isPaymentDetailResponse),
     getPaymentAudit: (paymentId, signal?: AbortSignal): Promise<PaymentAuditResponse> =>
       authRequest<PaymentAuditResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/audit`, signal === undefined ? {} : { signal }, isPaymentAuditResponse),
+    getAdminPaymentConfig: (signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>('/api/v1/admin/payment-config', signal === undefined ? {} : { signal }, isAdminPaymentConfigResponse),
+    updateAdminPaymentPrice: (proPriceMinorUnits, signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>('/api/v1/admin/payment-config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proPriceMinorUnits }),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminPaymentConfigResponse),
+    addAdminPaymentMethod: (input, idempotencyKey, signal?: AbortSignal): Promise<{ destination: PaymentMethodDestination }> =>
+      authRequest<{ destination: PaymentMethodDestination }>('/api/v1/admin/payment-config/methods', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+        body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, (value): value is { destination: PaymentMethodDestination } =>
+        typeof value === 'object' && value !== null && isPaymentMethodDestination((value as { destination?: unknown }).destination)),
+    updateAdminPaymentMethod: (methodId, patch, signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>(`/api/v1/admin/payment-config/methods/${encodeURIComponent(methodId)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminPaymentConfigResponse),
     getPaymentQuote: (couponCode, signal?: AbortSignal): Promise<PaymentQuoteResponse> =>
       authRequest<PaymentQuoteResponse>(`/api/v1/payments/quote${couponCode === undefined || couponCode.trim() === '' ? '' : `?couponCode=${encodeURIComponent(couponCode.trim())}`}`, signal === undefined ? {} : { signal }, isPaymentQuoteResponse),
     getPartnerDashboard: (signal?: AbortSignal): Promise<PartnerDashboardResponse> =>
