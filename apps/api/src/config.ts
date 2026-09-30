@@ -80,6 +80,7 @@ export interface ApiConfig {
   scanStorePath: string;
   /** Durable project-scoped Security Professional assessment records. */
   assessmentStorePath: string;
+  studentStorePath: string;
   /**
    * Durable source-snapshot store path (Pump 8 — the SAST scan
    * target). `:memory:` is the explicitly ephemeral dev/test opt-in —
@@ -316,6 +317,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('ASSESSMENT_STORE_PATH=":memory:" is not allowed in production (assessment records would not persist)');
   }
 
+  // --- Student progress (Phase 22 Pump 2) -----------------------------------
+  const studentStorePath = (env['STUDENT_STORE_PATH'] ?? '.data/student-progress.json').trim();
+  const studentMemoryStore = studentStorePath === ':memory:';
+  if (studentStorePath.length === 0) {
+    issues.push('STUDENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (studentMemoryStore && environment === 'production') {
+    issues.push('STUDENT_STORE_PATH=":memory:" is not allowed in production (student progress would not persist)');
+  }
+
   // --- Sources (Pump 8) -----------------------------------------------------
   // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
   // only 'none' exists today, so any attempt to point the app at a
@@ -455,6 +465,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     projectStorePath,
     scanStorePath,
     assessmentStorePath,
+    studentStorePath,
     sourceStorePath,
     vulnIntelProvider,
     paymentStorePath,

@@ -39,20 +39,30 @@ describe('static safety', () => {
     // Exempt from that one pattern, with a compensating structural
     // control in the test after next.
     const PARSER_DATALIST_FILE = 'scans/sca/parsers.ts';
+    // The Student lesson catalog (Phase 22) is EDUCATIONAL DATA: its
+    // synthetic fixtures necessarily NAME the APIs they teach (`eval(`,
+    // `exec(`, `process.env`) inside string constants. The file is
+    // exempt from the API-NAME patterns below and covered instead by a
+    // structural guarantee in the lesson-data test after next (pure
+    // data module: no runtime imports, forbidden names only inside
+    // string literals).
+    const LESSON_DATA_FILE = 'student/lessons.ts';
     const forbidden: Array<{
       pattern: RegExp;
       reason: string;
       exemptRuleData?: boolean;
       exemptParserDenylist?: boolean;
+      exemptLessonData?: boolean;
     }> = [
-      { pattern: /child_process/, reason: 'child processes are forbidden', exemptRuleData: true },
-      { pattern: /\bexec(Sync|File)?\s*\(/, reason: 'exec is forbidden', exemptRuleData: true },
-      { pattern: /\bspawn(Sync)?\s*\(/, reason: 'spawn is forbidden', exemptRuleData: true },
-      { pattern: /\beval\s*\(/, reason: 'eval is forbidden', exemptRuleData: true },
+      { pattern: /child_process/, reason: 'child processes are forbidden', exemptRuleData: true, exemptLessonData: true },
+      { pattern: /\bexec(Sync|File)?\s*\(/, reason: 'exec is forbidden', exemptRuleData: true, exemptLessonData: true },
+      { pattern: /\bspawn(Sync)?\s*\(/, reason: 'spawn is forbidden', exemptRuleData: true, exemptLessonData: true },
+      { pattern: /\beval\s*\(/, reason: 'eval is forbidden', exemptRuleData: true, exemptLessonData: true },
       {
         pattern: /new\s+Function\s*\(/,
         reason: 'Function constructor is forbidden',
         exemptRuleData: true,
+        exemptLessonData: true,
       },
       {
         pattern: /__proto__/,
@@ -62,11 +72,14 @@ describe('static safety', () => {
     ];
     const violations: string[] = [];
     for (const { file, content } of sources()) {
-      for (const { pattern, reason, exemptRuleData, exemptParserDenylist } of forbidden) {
+      for (const { pattern, reason, exemptRuleData, exemptParserDenylist, exemptLessonData } of forbidden) {
         if (file === RULE_DATA_FILE && exemptRuleData === true) {
           continue;
         }
         if (file === PARSER_DATALIST_FILE && exemptParserDenylist === true) {
+          continue;
+        }
+        if (file === LESSON_DATA_FILE && exemptLessonData === true) {
           continue;
         }
         if (pattern.test(content)) {
@@ -89,6 +102,26 @@ describe('static safety', () => {
     expect(rules?.content).not.toMatch(/\bprocess\b/);
   });
 
+  test('the Student lesson catalog is pure data (API names only inside string literals)', () => {
+    // Compensating control for the exemption above: the lesson module
+    // may import TYPES only, must never use require(), and — once every
+    // string literal is stripped — must contain none of the forbidden
+    // API names at all. The fixtures can therefore only ever be inert
+    // text: the module cannot invoke what it depicts.
+    const lessons = sources().find(({ file }) => file === 'student/lessons.ts');
+    expect(lessons).toBeDefined();
+    const content = lessons?.content ?? '';
+    expect(content).not.toMatch(/^\s*import\s(?!type\b)/m);
+    expect(content).not.toMatch(/require\s*\(/);
+    const stripped = content
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+    for (const pattern of [/child_process/, /\bexec(Sync|File)?\s*\(/, /\bspawn(Sync)?\s*\(/, /\beval\s*\(/, /new\s+Function\s*\(/, /process\.env/]) {
+      expect(pattern.test(stripped)).toBe(false);
+    }
+  });
+
   test('the SCA parser prototype-key denylist is data, not access', () => {
     // Compensating control for the exemption above: the literal may
     // exist ONLY inside the denylist constant and its documentation —
@@ -104,10 +137,16 @@ describe('static safety', () => {
   });
 
   test('process.env is read only in config.ts', () => {
+    // `student/lessons.ts` is the one additional reader of the TEXT
+    // `process.env` (Phase 22): its hard-coded-secrets lesson names the
+    // remediation inside a fixture string. It is not a runtime read —
+    // the lesson-data structural test below proves the module has no
+    // runtime imports and that `process.env` occurs only inside string
+    // literals.
     const readers = sources()
       .filter(({ content }) => content.includes('process.env'))
       .map(({ file }) => file);
-    expect(readers).toEqual(['config.ts']);
+    expect(readers.sort()).toEqual(['config.ts', 'student/lessons.ts']);
   });
 
   test('no source imports a database, dataset or shell module', () => {

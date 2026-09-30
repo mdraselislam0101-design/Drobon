@@ -21,3 +21,4 @@ export * from './findings.js';
 export * from './reports.js';
 export * from './sca.js';
 export * from './sources.js';
+export * from './student.js';

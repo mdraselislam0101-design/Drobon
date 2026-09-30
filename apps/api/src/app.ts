@@ -64,6 +64,8 @@ import { createPaymentRoutes } from './routes/payments.js';
 import { createPartnerRoutes } from './routes/partners.js';
 import { createAdminRoutes } from './routes/admin.js';
 import { createWorkspaceRoutes } from './routes/workspace.js';
+import { createStudentRoutes } from './routes/student.js';
+import { createJsonFileStudentStore, createMemoryStudentStore, type StudentStore } from './student/store.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
 import { createJsonFilePartnerStore, createMemoryPartnerStore, type PartnerStore } from './partners/store.js';
 import { createJsonFilePaymentConfigStore, createMemoryPaymentConfigStore, type PaymentConfigStore } from './payments/configStore.js';
@@ -239,6 +241,9 @@ export function createApp(deps: AppDeps): App {
     (config.assessmentStorePath === ':memory:'
       ? createMemoryAssessmentStore()
       : createJsonFileAssessmentStore(config.assessmentStorePath));
+  const studentStore: StudentStore = (config.studentStorePath === ':memory:'
+      ? createMemoryStudentStore()
+      : createJsonFileStudentStore(config.studentStorePath));
   // Source-snapshot store (Pump 8): durable by default (fail-fast on a
   // corrupt document — the process refuses to start). Tests inject
   // their own store; `:memory:` is the ephemeral dev opt-in.
@@ -331,6 +336,7 @@ export function createApp(deps: AppDeps): App {
     ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
+    ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({

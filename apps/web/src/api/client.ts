@@ -70,6 +70,12 @@ import {
   type FindingWorkflowResponse,
   type FindingSeverity,
   type SecurityReportResponse,
+  isStudentLessonCatalogResponse,
+  isStudentProgressResponse,
+  isStudentQuizResultResponse,
+  type StudentLessonCatalogResponse,
+  type StudentProgressResponse,
+  type StudentQuizResultResponse,
   type ScansResponse,
   type ScanType,
   type SourceFileInput,
@@ -355,6 +361,13 @@ export interface ApiClient {
   /** Authenticated, bounded JSON or Markdown export. */
   downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload>;
   downloadSbom(projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload>;
+  /** Internally authored Student lesson catalog; quiz answers stay server-side. */
+  getStudentLessons(signal?: AbortSignal): Promise<StudentLessonCatalogResponse>;
+  /** The caller's OWN server-authoritative learning progress. */
+  getStudentProgress(signal?: AbortSignal): Promise<StudentProgressResponse>;
+  acknowledgeLessonRead(lessonId: string, signal?: AbortSignal): Promise<StudentProgressResponse>;
+  submitLessonQuiz(lessonId: string, answers: Array<number | null>, signal?: AbortSignal): Promise<StudentQuizResultResponse>;
+  verifyLessonPractice(lessonId: string, stage: 'IDENTIFY' | 'FIX', signal?: AbortSignal): Promise<StudentProgressResponse>;
   /** Provider availability; currently reports the honest no-provider state. */
   getAssistantStatus(signal?: AbortSignal): Promise<AssistantStatusResponse>;
   /** Read-only deterministic question over one server-authorized project. */
@@ -968,6 +981,36 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/sbom`,
         'cdx',
         signal,
+      ),
+    getStudentLessons: (signal?: AbortSignal): Promise<StudentLessonCatalogResponse> =>
+      authRequest<StudentLessonCatalogResponse>(
+        '/api/v1/student/lessons',
+        signal === undefined ? {} : { signal },
+        isStudentLessonCatalogResponse,
+      ),
+    getStudentProgress: (signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        '/api/v1/student/progress',
+        signal === undefined ? {} : { signal },
+        isStudentProgressResponse,
+      ),
+    acknowledgeLessonRead: (lessonId: string, signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/read`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', ...(signal === undefined ? {} : { signal }) },
+        isStudentProgressResponse,
+      ),
+    submitLessonQuiz: (lessonId: string, answers: Array<number | null>, signal?: AbortSignal): Promise<StudentQuizResultResponse> =>
+      authRequest<StudentQuizResultResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/quiz`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers }), ...(signal === undefined ? {} : { signal }) },
+        isStudentQuizResultResponse,
+      ),
+    verifyLessonPractice: (lessonId: string, stage: 'IDENTIFY' | 'FIX', signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/practice/${stage}`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', ...(signal === undefined ? {} : { signal }) },
+        isStudentProgressResponse,
       ),
     getAssistantStatus: (signal?: AbortSignal): Promise<AssistantStatusResponse> =>
       authRequest<AssistantStatusResponse>(

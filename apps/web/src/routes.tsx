@@ -12,6 +12,7 @@ import { AdminOperationsPage } from './pages/AdminOperationsPage.js';
 import { PartnerDashboardPage } from './pages/PartnerDashboardPage.js';
 import { HomePage } from './pages/HomePage.js';
 import { DeveloperDashboardPage } from './pages/DeveloperDashboardPage.js';
+import { StudentLearnPage } from './pages/StudentLearnPage.js';
 import { ProjectDetailPage } from './pages/ProjectDetailPage.js';
 import { ProjectsPage } from './pages/ProjectsPage.js';
 import { LoginPage } from './pages/LoginPage.js';
@@ -90,6 +91,7 @@ export function AppRoutes({
                 </Route>
                 <Route element={<StudentDashboardRoute />}>
                   <Route path="student/dashboard" element={<DeveloperDashboardPage />} />
+                  <Route path="student/learn" element={<StudentLearnPage />} />
                 </Route>
                 <Route element={<SecurityProfessionalDashboardRoute />}>
                   <Route path="security-professional/dashboard" element={<DeveloperDashboardPage />} />

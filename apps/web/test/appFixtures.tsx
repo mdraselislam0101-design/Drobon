@@ -47,7 +47,10 @@ import type {
   AdminPartnerResponse,
   AdminPartnersResponse,
   PartnerDashboardResponse,
-  PaymentQuoteResponse
+  PaymentQuoteResponse,
+  StudentLessonCatalogResponse,
+  StudentProgressResponse,
+  StudentQuizResultResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
@@ -268,6 +271,11 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
     downloadSbom: (_projectId: string, _scanId: string, _signal?: AbortSignal): Promise<ReportDownload> => Promise.reject(new Error('downloadSbom not implemented in fixture')),
+    getStudentLessons: vi.fn(async (): Promise<StudentLessonCatalogResponse> => ({ lessons: [] })),
+    getStudentProgress: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
+    acknowledgeLessonRead: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
+    submitLessonQuiz: vi.fn(async (_lessonId: string, _answers: Array<number | null>): Promise<StudentQuizResultResponse> => { throw new Error('not stubbed'); }),
+    verifyLessonPractice: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
     getAssistantStatus: vi.fn(async (): Promise<AssistantStatusResponse> => ({ providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false })),
     askAssistant: vi.fn(async (_projectId: string, _input: AssistantQuestionRequest): Promise<AssistantResponse> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {

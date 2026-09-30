@@ -63,6 +63,14 @@ export function Layout({
                     Student dashboard
                   </NavLink>
                 )}
+                {state.user.userType === 'STUDENT' && (
+                  <NavLink
+                    className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+                    to="/student/learn"
+                  >
+                    Learning path
+                  </NavLink>
+                )}
                 {state.user.userType === 'SECURITY_PROFESSIONAL' && (
                   <NavLink
                     className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}

@@ -97,6 +97,7 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   scanStore?: ScanStore;
   /** Use a real JSON assessment store at a temp path for restart proofs. */
   assessmentStoreDir?: string;
+  studentStoreDir?: string;
   /** Inject an assessment store directly (defaults: memory or assessmentStoreDir). */
   assessmentStore?: AssessmentStore;
   /** Use a real JSON source store at a temp path instead of memory (Pump 8). */
@@ -171,6 +172,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStore,
     assessmentStoreDir,
     assessmentStore,
+    studentStoreDir,
     sourceStoreDir,
     sourceStore,
     paymentStoreDir,
@@ -206,6 +208,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStorePath: ':memory:',
     scanStorePath: ':memory:',
     assessmentStorePath: ':memory:',
+    studentStorePath: ':memory:',
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
@@ -232,6 +235,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
   const effectiveAssessmentStorePath =
     assessmentStoreDir === undefined ? config.assessmentStorePath : join(assessmentStoreDir, 'assessments.json');
+  const effectiveStudentStorePath =
+    studentStoreDir === undefined ? config.studentStorePath : join(studentStoreDir, 'student-progress.json');
   const effectiveSourceStorePath =
     sourceStoreDir === undefined ? config.sourceStorePath : join(sourceStoreDir, 'sources.json');
   const effectivePaymentStorePath =
@@ -243,7 +248,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStoreDir === undefined &&
     assessmentStoreDir === undefined &&
     sourceStoreDir === undefined &&
-    paymentStoreDir === undefined
+    paymentStoreDir === undefined &&
+    studentStoreDir === undefined
       ? config
       : {
           ...config,
@@ -252,6 +258,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
           ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
           ...(assessmentStoreDir === undefined ? {} : { assessmentStorePath: effectiveAssessmentStorePath }),
+          ...(studentStoreDir === undefined ? {} : { studentStorePath: effectiveStudentStorePath }),
           ...(sourceStoreDir === undefined ? {} : { sourceStorePath: effectiveSourceStorePath }),
           ...(paymentStoreDir === undefined ? {} : { paymentStorePath: effectivePaymentStorePath }),
         };
