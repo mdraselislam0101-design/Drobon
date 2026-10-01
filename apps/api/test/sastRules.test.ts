@@ -13,14 +13,14 @@ import {
  * false positives on known-safe forms are treated as failures.
  */
 describe('SAST rule registry', () => {
-  test('ships the 47 documented rules with stable, ordered ids', () => {
+  test('ships the 50 documented rules with stable, ordered ids', () => {
     expect(SAST_RULES.map((rule) => rule.id)).toEqual(
       SAST_RULES.map((rule) => rule.id).sort((a, b) => Number(a.slice(8)) - Number(b.slice(8))),
     );
     expect(new Set(SAST_RULES.map((rule) => rule.id)).size).toBe(SAST_RULES.length);
-    expect(SAST_RULES.length).toBe(47);
+    expect(SAST_RULES.length).toBe(50);
     expect(SAST_RULES[0]?.id).toBe('DG-SAST-001');
-    expect(SAST_RULES[SAST_RULES.length - 1]?.id).toBe('DG-SAST-047');
+    expect(SAST_RULES[SAST_RULES.length - 1]?.id).toBe('DG-SAST-050');
   });
 
   test('CWE mappings are defensible and documented per rule', () => {
@@ -68,6 +68,9 @@ describe('SAST rule registry', () => {
       'DG-SAST-043': 'CWE-250',
       'DG-SAST-044': 'CWE-494',
       'DG-SAST-045': 'CWE-284',
+      'DG-SAST-048': 'CWE-78',
+      'DG-SAST-049': 'CWE-89',
+      'DG-SAST-050': 'CWE-79',
       // DG-SAST-033/037/046/047 deliberately omit CWE (mixed or uncertain class — documented).
     };
     for (const rule of SAST_RULES) {

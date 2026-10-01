@@ -1296,3 +1296,48 @@ This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry
   `GHSA-xxxx-yyyy-zzzz` test fixture); `VULN_INTEL_PROVIDER=none` fatal
   lock unchanged; SCA stays NO_DATA_LOADED→NOT_ASSESSED; Exploit Database
   stays RESERVED; zero seeds/dumps; zero `.data` in the tree after the run.
+
+## Deep semantic SAST expansion — P0/P1 language depth (semantic pump)
+
+- Date: 2026-10-01. Added a BOUNDED SEMANTIC LAYER to the single existing
+  SAST engine — no second engine, no parser dependency, no schema/quota/
+  authz change, no dataset. New module `apps/api/src/scans/sast/semantic.ts`
+  (genuine analyzer boundary, pure functions): (1) length-preserving
+  literal masking (comments + string contents become spaces — a
+  false-positive class the line matcher cannot avoid); (2) bounded
+  single-pass intra-file taint flow: explicit per-language source/sink/
+  sanitizer tables over 11 families (JS/TS/JSX/TSX, Python, PHP, Ruby,
+  Go, Java, Kotlin, C#; HTML sinks on JS-family + Python) with hard
+  bounds — 512 tainted vars, 64 tokens/snippet, 3 findings per rule per
+  file, 300-char sink window, linear time, no recursion, no fixpoint,
+  no cross-file resolution. Use-before-def ordering and loop-carried
+  flows are documented NOT-tracked; sanitizer knowledge is an explicit
+  allowlist (outside it = unsanitized, conservative).
+- Three new STABLE rules in the ONE registry: **DG-SAST-048** (taint →
+  command execution, CWE-78), **DG-SAST-049** (taint → SQL execution,
+  CWE-89), **DG-SAST-050** (taint → HTML rendering, CWE-79) — all HIGH,
+  intentionally `patterns: []` (never line-matched), driven by the flow
+  analyzer, landing at the SINK line/column with the SAME finding model,
+  fingerprint identity, lifecycle, report/SARIF/compare/retest behavior.
+  Registry now 50 rules (`DG-SAST-001…050`); next id = 051.
+- Honest maturity: **every family stays PARTIAL; FULL stays 0** — the
+  layer is bounded flow reasoning, not parser/AST/dataflow depth.
+  docs/SAST.md documents the capability, bounds, sanitizer allowlist and
+  limitations verbatim.
+- Tests (all green): NEW `apps/api/test/sastSemantic.test.ts` (masking
+  incl. python triple-quotes and rust lifetimes, positive flows at the
+  sink line for command/sql/html, sanitized/reassigned/parameterized/
+  textContent boundaries, comment/string/similar-name noise, per-file
+  and per-var bounds, malformed garbage, determinism, engine integration
+  incl. vulnerable-vs-sanitized twins and line+flow coexistence with
+  distinct identities, 16k-line generated project bounded completion);
+  `sastRules.test.ts` updated to the 50-rule registry (+3 CWE entries).
+  Full regression: `npm ci` + `npm run verify` = **PASS 11/11**
+  (typecheck, lint, tests, production builds, both secret scans, npm
+  audit 0 vulnerabilities).
+- Static-safety guards preserved: the new module contains NO forbidden
+  execution-primitive text (all sink names live in escaped regex
+  sources), no runtime state, no I/O; staticSafety suite green.
+- Dataset/production locks: 0 violations (no CVE/NVD/GHSA/OSV/KEV/EPSS
+  data; only synthetic fixtures; `VULN_INTEL_PROVIDER=none` unchanged;
+  SCA NO_DATA_LOADED→NOT_ASSESSED unchanged; no `.data` committed).

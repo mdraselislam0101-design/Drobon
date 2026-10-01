@@ -9,8 +9,9 @@ import {
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
-import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
+import { matchRuleLine, sastRuleById, SAST_RULES, type SastRule } from './rules.js';
 import { detectLanguageFamily, isAnalyzedMaturity } from './languages.js';
+import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
 import { findingFingerprint } from '../findingIdentity.js';
 
 /**
@@ -276,6 +277,10 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       const findings: Finding[] = [];
       const findingsBySeverity = emptySeverityCounts();
       let truncated = false;
+      // Flow-rule lookup is family-keyed and computed once per scan
+      // (the registry is a compile-time constant; this is a cache, not
+      // state that can change).
+      const flowRulesByFamily = new Map<string, ReturnType<typeof flowRulesForFamily>>();
 
       outer: for (const file of discovery.files) {
         // Deadline checkpoints: between files…
@@ -338,6 +343,59 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               break outer;
             }
             // One finding per rule per line (first pattern wins).
+          }
+        }
+
+        // BOUNDED SEMANTIC PASS (deep-semantic pump): literal masking
+        // + single-forward-pass source→sink flow analysis for the
+        // flow-tagged rules of this family. Same finding model, same
+        // identity, same caps; the deadline is honored here too.
+        let flowRules = flowRulesByFamily.get(file.family);
+        if (flowRules === undefined) {
+          flowRules = flowRulesForFamily(file.family, SAST_RULES);
+          flowRulesByFamily.set(file.family, flowRules);
+        }
+        if (flowRules.length > 0) {
+          if (now() > deadline || ctx.signal.aborted) {
+            return {
+              kind: 'failed',
+              failureCode: 'SAST_SCAN_TIMEOUT',
+              failureMessage: 'The SAST engine exceeded its processing deadline.',
+            };
+          }
+          const maskedLines = maskLiterals(file.content, file.family).split('\n');
+          const flowCandidates = analyzeFileFlows(file.family, maskedLines, flowRules, lines);
+          for (const candidate of flowCandidates) {
+            const rule = sastRuleById(candidate.ruleId);
+            const originalLine = lines[candidate.lineIndex] ?? '';
+            if (rule === undefined) continue;
+            const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+            const fingerprint = findingFingerprint({
+              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+              location: file.path, line: candidate.lineIndex + 1, evidence,
+            });
+            findings.push({
+              id: `fnd_${fingerprint.slice(0, 24)}`,
+              scanId: record.id,
+              ruleId: rule.id,
+              scanner: 'SAST',
+              projectId: record.projectId,
+              severity: rule.severity,
+              title: rule.title,
+              description: rule.description,
+              ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
+              file: file.path,
+              line: candidate.lineIndex + 1,
+              column: candidate.column,
+              evidence,
+              remediation: rule.remediation,
+              fingerprint,
+            });
+            findingsBySeverity[rule.severity] += 1;
+            if (findings.length >= limits.maxFindings) {
+              truncated = true;
+              break outer;
+            }
           }
         }
       }

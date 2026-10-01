@@ -76,6 +76,15 @@ export interface SastRule {
    * match, return the evidence with sensitive parts removed.
    */
   readonly redactEvidence?: (line: string, match: SastRuleMatch) => string;
+  /**
+   * Flow-participation tag (deep-semantic pump): rules tagged here have
+   * an INTENTIONALLY EMPTY `patterns` list (the line matcher never
+   * fires) and are instead driven by the bounded flow analyzer in
+   * `semantic.ts` (source → assignment → sink within one file, explicit
+   * sanitizer allowlist, hard bounds). One registry, one finding model —
+   * flow findings are normal SAST findings with the same identity rules.
+   */
+  readonly flow?: 'command' | 'sql' | 'html';
 }
 
 /**
@@ -708,8 +717,53 @@ const RULE_ANDROID_EXPORTED = rule({
 });
 
 /**
+ * Flow rules (deep-semantic pump) — DG-SAST-048…050. Intentionally
+ * pattern-less (`patterns: []`): they never fire from the line matcher
+ * and are driven exclusively by the bounded flow analyzer
+ * (`semantic.ts`) with per-language source/sink/sanitizer tables and
+ * hard propagation bounds. Findings land at the SINK line with the
+ * sink column; identity/lifecycle/report/SARIF behavior is identical
+ * to every other rule. Maturity stays PARTIAL — this is bounded
+ * intra-file reasoning, not a parser/AST/dataflow engine.
+ */
+
+const FLOW_LANGUAGES: readonly string[] = [
+  'javascript', 'typescript', 'jsx', 'tsx', 'python', 'php', 'ruby', 'go', 'java', 'kotlin', 'csharp',
+];
+
+const RULE_FLOW_COMMAND = rule({
+  id: 'DG-SAST-048', languages: FLOW_LANGUAGES,
+  title: 'Untrusted input flows into command execution (bounded taint flow)',
+  description: 'A value originating from a request/argv source reaches a command-execution call through assignments in the same file. Unlike the single-line shapes (DG-SAST-001/008/013/…), source and sink may sit on different lines.',
+  severity: 'HIGH', cwe: 'CWE-78', category: 'taint-flow', flow: 'command',
+  remediation: 'Do not build command strings from request input. Use argument-vector APIs with fixed command names, or allowlist-validate the exact values before use.',
+  limitation: 'Bounded intra-file, single-pass flow: use-before-assignment, loop-carried values, cross-file/helper flows and sanitizers outside the explicit allowlist are not tracked; at most 3 findings per file.',
+  patterns: [],
+});
+
+const RULE_FLOW_SQL = rule({
+  id: 'DG-SAST-049', languages: FLOW_LANGUAGES,
+  title: 'Untrusted input flows into SQL execution (bounded taint flow)',
+  description: 'A value originating from a request/argv source reaches a SQL-execution call through assignments in the same file — the multi-line form of the SQL-concat shapes.',
+  severity: 'HIGH', cwe: 'CWE-89', category: 'taint-flow', flow: 'sql',
+  remediation: 'Use parameterized statements (placeholders + bound parameters) for every query that involves request-derived values.',
+  limitation: 'Bounded intra-file, single-pass flow; parameterized (`?`/`%s`/bound) forms are treated as sanitized, other sanitizers only from the explicit allowlist; at most 3 findings per file.',
+  patterns: [],
+});
+
+const RULE_FLOW_HTML = rule({
+  id: 'DG-SAST-050', languages: ['javascript', 'typescript', 'jsx', 'tsx', 'python'],
+  title: 'Untrusted input flows into HTML rendering (bounded taint flow, XSS)',
+  description: 'A value originating from a request/argv source reaches an HTML sink (innerHTML/document.write/dangerouslySetInnerHTML/render_template_string) through assignments in the same file.',
+  severity: 'HIGH', cwe: 'CWE-79', category: 'taint-flow', flow: 'html',
+  remediation: 'Render text via textContent/template auto-escaping; if HTML must be rendered, sanitize server-side with an allowlist-based sanitizer before assignment.',
+  limitation: 'Bounded intra-file, single-pass flow; sanitizer knowledge is an explicit allowlist (DOMPurify/escapeHtml/textContent/html.escape/bleach); at most 3 findings per file.',
+  patterns: [],
+});
+
+/**
  * The closed rule registry, ordered by id. Adding a rule = appending
- * here with the next stable id (DG-SAST-048…) and documenting it in
+ * here with the next stable id (DG-SAST-051…) and documenting it in
  * docs/SAST.md. Rules are never mutated at runtime — nothing
  * client-facing can add, remove or alter a rule.
  */
@@ -761,6 +815,9 @@ export const SAST_RULES: readonly SastRule[] = [
   RULE_TF_OPEN_INGRESS,
   RULE_ELECTRON_NODE_INTEGRATION,
   RULE_ANDROID_EXPORTED,
+  RULE_FLOW_COMMAND,
+  RULE_FLOW_SQL,
+  RULE_FLOW_HTML,
 ];
 
 export function sastRuleById(id: string): SastRule | undefined {

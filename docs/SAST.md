@@ -41,7 +41,7 @@ decision below follows from that:
   findings injected into non-terminal records all refuse to start or
   fail the scan — never a silent repair, never a fabricated result.
 
-## The rule set (47 rules, one shared engine)
+## The rule set (50 rules, one shared engine)
 
 Rules live in `apps/api/src/scans/sast/rules.ts` — pure data (id,
 pattern, severity, CWE, title, description, remediation), no closures,
@@ -80,6 +80,14 @@ universal rule and runs on every analyzed file.
   privileged containers, GitHub Actions `permissions: write-all`,
   Dockerfile pipe-to-shell, Terraform open-world ingress, Electron
   `nodeIntegration`/`contextIsolation`, exported Android components.
+- **DG-SAST-048…050 (bounded taint flows, deep-semantic pump):** the
+  first flow-driven rules — untrusted input reaching command execution
+  (CWE-78), SQL execution (CWE-89) or HTML rendering (CWE-79) through
+  assignments in the SAME file. They are intentionally pattern-less
+  (`patterns: []`): the line matcher never fires them; they are driven
+  by the bounded semantic layer below and land at the SINK line with
+  the same finding identity/lifecycle/report/SARIF behavior as every
+  other rule.
 
 Every rule has at least one positive synthetic fixture and safe-form
 negative coverage in `apps/api/test/sastLanguages.test.ts` (per-rule
@@ -143,6 +151,54 @@ handlers → sinks) is NOT implemented and NOT claimed.
   Terraform/HCL, GitHub Actions, shell, PowerShell — the CONFIG_ANALYSIS
   families above.
 
+
+### The bounded semantic layer (deep-semantic pump)
+
+`apps/api/src/scans/sast/semantic.ts` adds two honest capabilities on
+top of the line matcher WITHOUT a parser dependency or a second engine:
+
+**1. Literal masking.** Before flow analysis, comments and string-literal
+contents are replaced with spaces (character offsets and line counts are
+preserved exactly). Text inside comments or strings can therefore never
+produce a flow finding — a false-positive class pure lexical matching
+cannot avoid. Rust single quotes are NOT treated as string delimiters
+(lifetimes) — a documented under-approximation.
+
+**2. Bounded intra-file taint flow (single forward pass).** Small,
+explicit, per-language tables drive `source → variable → sink` reasoning
+across lines of one file:
+
+- **Sources** (examples): `req.body/query/params`, `process.argv`
+  (JS/TS); `input()`, `request.args/form/json`, `sys.argv` (Python);
+  `$_GET/$_POST/$_REQUEST` (PHP); `params[]` (Ruby); `Query().Get()`,
+  `FormValue` (Go); `getParameter`, `getStringExtra` (JVM);
+  `Request[...]`, `ReadLine` (C#). Anything not listed is NOT a source.
+- **Sinks** (examples): `exec/spawn` family (JS), `os.system`,
+  `subprocess.*` (Python), `shell_exec/system/passthru` (PHP),
+  `system/spawn` (Ruby), `exec.Command` (Go), `Runtime.exec`,
+  `ProcessBuilder` (JVM), `Process.Start` (C#); `cursor.execute`,
+  `mysqli_query`, `executeQuery`, `SqlCommand`, `.Query/.Exec` (SQL);
+  `innerHTML=`, `document.write`, `dangerouslySetInnerHTML`,
+  `render_template_string` (HTML).
+- **Sanitizers** are an EXPLICIT bounded allowlist (`encodeURIComponent`,
+  `parseInt`, `Number`, DOMPurify, `textContent=`, `shlex.quote`,
+  `escapeshellarg`, `intval`, `Shellwords`, `strconv.Atoi`, `html.escape`,
+  `bleach.clean`, parameterized `?`/`%s` placeholders, bound parameters).
+  Anything outside the list is treated as unsanitized — conservative,
+  never silently suppressed.
+- **Hard bounds (tested):** at most 512 tainted variables, 64 identifier
+  tokens inspected per snippet, 3 findings per rule per file, a 300-char
+  sink-argument window; strictly single-pass, linear time, NO recursion,
+  NO fixpoint iteration, NO call graph, NO cross-file resolution.
+
+**Known limitations (honest):** use-before-assignment ordering, loop-
+carried values, flows through local helper functions, cross-file flows
+and branch-sensitive joins are NOT tracked; template-interpolated sink
+arguments are invisible to the flow layer (masked as string contents —
+the line rules still catch the same-line interpolated shapes); the
+source/sink/sanitizer tables under-approximate by design. **This is
+why every family stays PARTIAL and FULL stays 0** — the engine has
+bounded flow reasoning, not parser/AST/dataflow depth.
 
 ### Finding identity (deterministic)
 
