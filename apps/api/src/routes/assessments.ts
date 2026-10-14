@@ -1,4 +1,3 @@
-import type { IncomingMessage } from 'node:http';
 import {
   ASSESSMENT_HOSTS_MAX_COUNT,
   ASSESSMENT_ID_PATTERN,
@@ -16,10 +15,13 @@ import {
   type AssessmentResponse,
   type AssessmentStatus,
   type AssessmentScanSummary,
+  type AssessmentSummaryResponse,
+  type AssessmentSummaryScanLine,
   type AssessmentsResponse,
+  type FindingSeverity,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { badRequest, conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
+import { conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
 import type { Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
@@ -35,14 +37,6 @@ export interface AssessmentRouteDeps {
   assessments: AssessmentStore;
   scans: ScanStore;
   now?: () => number;
-}
-
-function rejectUnknownQuery(req: IncomingMessage): void {
-  const raw = req.url ?? '/';
-  let url: URL;
-  try { url = new URL(raw, 'http://drobon.invalid'); }
-  catch { throw badRequest('Assessment request URL is invalid.'); }
-  if ([...url.searchParams.keys()].length > 0) throw badRequest('Assessment routes do not accept query parameters.');
 }
 
 function normalizeText(value: string): string { return value.normalize('NFC'); }
@@ -127,7 +121,7 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'GET', path: '/api/v1/projects/:projectId/assessments', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnknownQuery(req);
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
@@ -138,11 +132,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 16_384) });
         const parsed = parseDetails(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -155,7 +149,7 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnknownQuery(req);
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
@@ -173,13 +167,75 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
       },
     },
     {
+      // Engagement summary (Phase 22 Pump 3): a bounded computed aggregate
+      // over this assessment's OWN linked scans — per-scan severity lines
+      // plus honest totals (partial sweeps surfaced; SCA stays
+      // NO_DATA_LOADED/NOT_ASSESSED; no verdicts, no scores). Read-only,
+      // owner-scoped, no query surface.
+      method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId/summary', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
+        const records = await scans.listByProject(project.id);
+        const summary = progressFor(records, actor.id, project.id, assessment.id);
+        const lines: AssessmentSummaryScanLine[] = await Promise.all(summary.scans.map(async (scan) => ({
+          scanId: scan.id, scanType: scan.scanType, status: scan.status, createdAt: scan.createdAt,
+          ...(scan.completedAt === undefined ? {} : { completedAt: scan.completedAt }),
+          ...(scan.resultSummary === undefined ? {} : { findingsTotal: scan.resultSummary.findingsTotal }),
+          ...(scan.resultSummary?.findingsBySeverity === undefined ? {} : { findingsBySeverity: scan.resultSummary.findingsBySeverity }),
+          ...(scan.resultSummary?.partial === undefined ? {} : { partial: scan.resultSummary.partial }),
+          reportAvailable: scan.status === 'COMPLETED' && await scans.findReportByProjectAndScan(project.id, scan.id) !== undefined,
+        })));
+        // Aggregate severities ONLY over completed scans that actually
+        // carry engine-produced severity buckets; omit the map entirely
+        // when no linked completed scan classified findings.
+        let severityData = false;
+        const bySeverity: Record<FindingSeverity, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+        for (const line of lines) {
+          if (line.status === 'COMPLETED' && line.findingsBySeverity !== undefined) {
+            severityData = true;
+            for (const severity of Object.keys(bySeverity) as FindingSeverity[]) {
+              bySeverity[severity] += line.findingsBySeverity[severity] ?? 0;
+            }
+          }
+        }
+        const response: AssessmentSummaryResponse = {
+          assessment: {
+            id: assessment.id,
+            title: assessment.title,
+            status: assessment.status,
+            createdAt: assessment.createdAt,
+            ...(assessment.startedAt === undefined ? {} : { startedAt: assessment.startedAt }),
+            ...(assessment.completedAt === undefined ? {} : { completedAt: assessment.completedAt }),
+            ...(assessment.cancelledAt === undefined ? {} : { cancelledAt: assessment.cancelledAt }),
+          },
+          objectivesTotal: assessment.objectives.length,
+          scope: { inScopeHosts: assessment.scope.inScopeHosts, outOfScopeHosts: assessment.scope.outOfScopeHosts },
+          totals: {
+            scansLinked: summary.progress.totalScans,
+            scansCompleted: summary.progress.completedScans,
+            scansFailed: summary.progress.failedScans,
+            scansActive: summary.progress.activeScans,
+            findingsTotal: summary.progress.findingsTotal,
+            ...(severityData ? { findingsBySeverity: bySeverity } : {}),
+            partialScans: lines.filter((line) => line.partial === true).length,
+          },
+          scans: lines,
+          generatedAt: at(),
+        };
+        sendSuccess(res, ctx, response);
+      },
+    },
+    {
       method: 'PATCH', path: '/api/v1/projects/:projectId/assessments/:assessmentId', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 16_384) });
         const parsed = parseDetails(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -195,11 +251,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/status', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const parsed = statusSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) }));
         if (!parsed.ok) throw validationError(parsed.issues);
         if (!isAssessmentStatus(parsed.value.status) || parsed.value.status === 'PLANNED') throw validationError([{ path: 'status', message: 'Choose ACTIVE, COMPLETED, or CANCELLED.' }]);
@@ -238,11 +294,11 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
     {
       method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/authorization-declarations', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
         if (project.status === 'ARCHIVED') throw projectArchived();
-        rejectUnknownQuery(req);
         const parsed = authorizationSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) }));
         if (!parsed.ok) throw validationError(parsed.issues);
         if (parsed.value.confirm !== true || (parsed.value.action !== 'DECLARE' && parsed.value.action !== 'WITHDRAW')) throw validationError([{ path: 'action', message: 'Provide action DECLARE or WITHDRAW and confirm true.' }]);

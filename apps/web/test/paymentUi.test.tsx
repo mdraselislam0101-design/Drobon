@@ -16,7 +16,8 @@ const config: PaymentConfigResponse = {
   currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
   manualPaymentMethods: ['MANUAL_TRANSFER'],
   manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
-  onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED',
+  manualPaymentDestinations: [],
+  onlineGateway: 'UNAVAILABLE', coupons: 'SUPPORTED',
 };
 function signedInClient(overrides: Partial<ApiClient> = {}): ApiClient {
   return stubClient({ getMe: vi.fn(async () => ({ user: { ...TEST_USER, role: 'ADMIN' as const } })), ...overrides });

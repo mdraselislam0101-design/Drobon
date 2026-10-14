@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { isAssessment, isAssessmentDetailResponse, isAssessmentHostname, isAssessmentScope } from '../src/assessments.js';
+import { isAssessment, isAssessmentDetailResponse, isAssessmentHostname, isAssessmentScope, isAssessmentSummaryResponse } from '../src/assessments.js';
 
 const assessment = {
   id: 'asm_00000000-0000-4000-8000-000000000001',
@@ -47,5 +47,28 @@ describe('structured assessment contracts', () => {
     };
     expect(isAssessmentDetailResponse(value)).toBe(true);
     expect(isAssessmentDetailResponse({ ...value, progress: { ...value.progress, activeScans: 1 } })).toBe(false);
+  });
+});
+
+describe('assessment summary guard (Phase 22 Pump 3)', () => {
+  const summary = {
+    assessment: { id: 'asm_00000000-0000-4000-8000-000000000001', title: 'Quarterly review', status: 'ACTIVE', createdAt: '2026-09-30T09:00:00.000Z', startedAt: '2026-09-30T09:05:00.000Z' },
+    objectivesTotal: 2,
+    scope: { inScopeHosts: ['app.example.test'], outOfScopeHosts: [] },
+    totals: { scansLinked: 2, scansCompleted: 2, scansFailed: 0, scansActive: 0, findingsTotal: 3, findingsBySeverity: { CRITICAL: 0, HIGH: 2, MEDIUM: 1, LOW: 0, INFO: 0 }, partialScans: 0 },
+    scans: [
+      { scanId: 'scan_00000000-0000-4000-8000-000000000001', scanType: 'SAST', status: 'COMPLETED', createdAt: '2026-09-30T09:10:00.000Z', completedAt: '2026-09-30T09:11:00.000Z', findingsTotal: 2, findingsBySeverity: { CRITICAL: 0, HIGH: 2, MEDIUM: 0, LOW: 0, INFO: 0 }, reportAvailable: true },
+      { scanId: 'scan_00000000-0000-4000-8000-000000000002', scanType: 'SAST', status: 'QUEUED', createdAt: '2026-09-30T09:12:00.000Z', reportAvailable: false },
+    ],
+    generatedAt: '2026-09-30T09:20:00.000Z',
+  };
+  test('accepts the honest bounded aggregate', () => {
+    expect(isAssessmentSummaryResponse(summary)).toBe(true);
+  });
+  test('rejects broken shapes', () => {
+    expect(isAssessmentSummaryResponse({ ...summary, totals: { ...summary.totals, findingsTotal: -1 } })).toBe(false);
+    expect(isAssessmentSummaryResponse({ ...summary, totals: { ...summary.totals, findingsBySeverity: { CRITICAL: 0, HIGH: 2 } } })).toBe(false);
+    expect(isAssessmentSummaryResponse({ ...summary, scans: [...summary.scans, { ...summary.scans[1], scanId: 'bogus' }] })).toBe(false);
+    expect(isAssessmentSummaryResponse({ ...summary, extra: 1 })).toBe(false);
   });
 });

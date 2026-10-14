@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { AuthzCapability, Permission, SubscriptionResponse, UsageResponse } from '@drobon/shared';
-import { hasPermission } from '@drobon/shared';
+import type { AuthUser, AuthzCapability, Permission, SubscriptionResponse, UsageResponse, UserType } from '@drobon/shared';
+import { hasPermission, USER_TYPES } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 import { useAuth } from '../auth/context.js';
@@ -235,6 +235,8 @@ export function AccountPage(): React.JSX.Element {
         ))}
       </dl>
 
+      <UserTypePanel client={client} currentUser={user} onChanged={() => setReloadToken((token) => token + 1)} />
+
       <h2>Plan &amp; subscription</h2>
       <p className="muted">
         Your plan is assigned and managed by the server — it cannot be
@@ -308,6 +310,105 @@ export function AccountPage(): React.JSX.Element {
   );
 }
 
+const USER_TYPE_LABELS: Record<UserType, { label: string; description: string }> = {
+  DEVELOPER: { label: 'Developer', description: 'Secure-coding workflow: SAST, SCA/SBOM, secrets and remediation guidance on your own projects.' },
+  STUDENT: { label: 'Student', description: 'Learning-first view over the same scan, finding and report engines — progress, not grades.' },
+  SECURITY_PROFESSIONAL: { label: 'Security Professional', description: 'Assessment workflow across your own projects: engines, findings lifecycle, verification and reports.' },
+  PENTESTER: { label: 'Pentester', description: 'Bounded passive DAST observations on owner-configured targets, findings, retest state and reports.' },
+};
+
+/**
+ * Phase 20 classification switch. Honest by construction: the panel spells
+ * out that the tag changes presentation/workflow only — the server mutation
+ * cannot touch role, plan, quota or ownership (proven by the API suite).
+ */
+function UserTypePanel({
+  client,
+  currentUser,
+  onChanged,
+}: {
+  client: ReturnType<typeof useApiClient>;
+  currentUser: AuthUser;
+  onChanged: () => void;
+}): React.JSX.Element {
+  const [selected, setSelected] = useState<UserType | null>(currentUser.userType);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ kind: 'idle' } | { kind: 'saved' } | { kind: 'error'; message: string }>({ kind: 'idle' });
+
+  useEffect(() => {
+    setSelected(currentUser.userType);
+  }, [currentUser.userType]);
+
+  const save = async (): Promise<void> => {
+    if (selected === null || selected === currentUser.userType) return;
+    setBusy(true);
+    setOutcome({ kind: 'idle' });
+    try {
+      await client.updateUserType(selected);
+      setOutcome({ kind: 'saved' });
+      onChanged();
+    } catch (error: unknown) {
+      setOutcome({
+        kind: 'error',
+        message: error instanceof ApiClientError ? error.message : 'Could not update your workspace classification. Please try again.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="usertype-panel" data-testid="usertype-panel">
+      <h2>Workspace classification</h2>
+      <p className="muted">
+        Your classification chooses which dashboard and workflow you see. It is
+        not a permission: it never changes your role, plan, monthly allowance,
+        anti-abuse state or project ownership — the server enforces all of
+        those independently.
+      </p>
+      <fieldset disabled={busy}>
+        <legend>Choose one</legend>
+        {USER_TYPES.map((type) => (
+          <label className="usertype-option" key={type} data-testid={`usertype-option-${type}`}>
+            <input
+              type="radio"
+              name="userType"
+              value={type}
+              checked={selected === type}
+              onChange={() => setSelected(type)}
+            />
+            <span>
+              <strong>{USER_TYPE_LABELS[type].label}</strong>
+              <span className="muted"> — {USER_TYPE_LABELS[type].description}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <div className="hero-actions">
+        <button
+          type="button"
+          className="button button-secondary"
+          onClick={() => void save()}
+          disabled={busy || selected === null || selected === currentUser.userType}
+          aria-busy={busy}
+          data-testid="usertype-save"
+        >
+          {busy ? 'Saving…' : 'Save classification'}
+        </button>
+        {currentUser.userType === null && <span className="muted">No classification set yet.</span>}
+      </div>
+      {outcome.kind === 'saved' && (
+        <p className="notice" role="status" data-testid="usertype-saved">Saved. Your dashboard and navigation now follow this classification.</p>
+      )}
+      {outcome.kind === 'error' && (
+        <div className="form-alert" role="alert" data-testid="usertype-error">
+          <p>{outcome.message}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CapabilityVerdict({ check }: { check: CheckState }): React.JSX.Element {
   if (check === undefined || check.status === 'checking') {
     return (
@@ -375,7 +476,7 @@ function PlanPanel({
       </div>
     );
   }
-  const { subscription, entitlements } = planState.data;
+  const { subscription, entitlements, proEntitlementSource } = planState.data;
   // The verdict is the SERVER's entitlement list — the page never derives
   // it from the plan name (a plan string alone must not unlock UI).
   const proEnabled = entitlements.includes('feature:pro');
@@ -388,6 +489,16 @@ function PlanPanel({
         <span className="pill" data-testid="subscription-status-badge">
           Status: {subscription.status}
         </span>
+        {proEntitlementSource === 'ADMIN_GRANT' && (
+          <span className="pill" data-testid="pro-source-badge">
+            Complimentary PRO (admin-granted — not a payment)
+          </span>
+        )}
+        {proEntitlementSource === 'PAID' && (
+          <span className="pill" data-testid="pro-source-badge">
+            PRO source: paid subscription
+          </span>
+        )}
       </p>
       <ul className="access-checks" aria-label="Plan entitlements">
         <li data-testid="pro-entitlement">

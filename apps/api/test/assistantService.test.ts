@@ -49,7 +49,7 @@ const scanStore = {
     findings: {
       currentObserved: 1, unresolved: 1,
       unresolvedBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
-      byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+      byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, FALSE_POSITIVE: 0, REOPENED: 0 },
       byVerificationState: { OBSERVED: 1, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
     },
   }),
@@ -89,7 +89,7 @@ describe('assistant deterministic service', () => {
         return { findings: {
           currentObserved: 2, unresolved: 1,
           unresolvedBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
-          byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 1, REOPENED: 0 },
+          byLifecycleState: { OPEN: 1, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 1, FALSE_POSITIVE: 0, REOPENED: 0 },
           byVerificationState: { OBSERVED: 1, NOT_OBSERVED_IN_LATEST_SCAN: 1 },
           recent: [{ findingId: finding.id, projectId: PROJECT_ID, scanId: SCAN_ID, scanner: 'SAST', ruleId: finding.ruleId, severity: 'HIGH', lifecycleState: 'OPEN', verificationState: 'NOT_OBSERVED_IN_LATEST_SCAN', observedAt: FIXED_TIME, workflowUpdatedAt: FIXED_TIME }],
         } };

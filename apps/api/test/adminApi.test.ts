@@ -57,6 +57,7 @@ describe('Pump 16 platform operations routes', () => {
       findByEmail: async (email) => liveRecord(await base.findByEmail(email)),
       findById: async (id) => liveRecord(await base.findById(id)),
       activatePro: base.activatePro,
+      setUserType: base.setUserType,
       adminPage: base.adminPage,
       adminCounts: base.adminCounts,
     };

@@ -245,7 +245,7 @@ describe('server state is the only path to PRO', () => {
 });
 
 describe('self-only reads (no IDOR)', () => {
-  test('query parameters cannot select another account or a plan', async () => {
+  test('query parameters fail closed (422) — they cannot select another account or a plan (Pump 5)', async () => {
     const users = createMemoryUserRepository();
     const proRecord = await seedUser(users, 'pro-target@example.test', {
       subscription: { plan: 'PRO', status: 'ACTIVE', createdAt: null, updatedAt: null },
@@ -255,7 +255,7 @@ describe('self-only reads (no IDOR)', () => {
     const attacker = await register(server, 'attacker@example.test', PW);
 
     // Every id-shaped parameter names the PRO account; every plan-shaped
-    // parameter claims PRO. All must return the ATTACKER's own FREE state.
+    // parameter claims PRO. All are rejected BEFORE the account is consulted.
     for (const query of [
       `?userId=${proRecord.id}`,
       `?accountId=${proRecord.id}`,
@@ -266,11 +266,16 @@ describe('self-only reads (no IDOR)', () => {
       `?subscription={"plan":"PRO","status":"ACTIVE"}`,
     ]) {
       const res = await get(server, attacker, query);
-      expect(res.status).toBe(200);
-      const body = (await readJson(res)) as { data: { subscription: Subscription; entitlements: string[] } };
-      expect(body.data.subscription.plan).toBe('FREE');
-      expect(body.data.subscription.status).toBe('ACTIVE');
+      expect(res.status).toBe(422);
+      const body = (await readJson(res)) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
     }
+    // A clean request still returns the ATTACKER's own FREE state.
+    const cleanRes = await get(server, attacker);
+    expect(cleanRes.status).toBe(200);
+    const cleanBody = (await readJson(cleanRes)) as { data: { subscription: Subscription } };
+    expect(cleanBody.data.subscription.plan).toBe('FREE');
+    expect(cleanBody.data.subscription.status).toBe('ACTIVE');
     // The PRO account's own cookie still reads its own PRO state.
     const proCookie = await cookieFor(server, 'pro-target@example.test');
     const own = (await (await get(server, proCookie)).json()) as {

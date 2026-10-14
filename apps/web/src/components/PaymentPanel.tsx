@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PaymentConfigResponse, PaymentHistoryResponse, PaymentSummary } from '@drobon/shared';
+import type { PaymentConfigResponse, PaymentHistoryResponse, PaymentQuoteResponse, PaymentSummary } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 
@@ -10,6 +10,9 @@ export function PaymentPanel(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reference, setReference] = useState('');
+  const [couponCode, setCouponCode] = useState('');
+  const [quote, setQuote] = useState<PaymentQuoteResponse | null>(null);
+  const [couponNotice, setCouponNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -46,6 +49,26 @@ export function PaymentPanel(): React.JSX.Element {
     }
   };
 
+  const clearCoupon = (): void => {
+    setQuote(null);
+    setCouponNotice(null);
+  };
+
+  const applyCoupon = async (): Promise<void> => {
+    setError(null);
+    setCouponNotice(null);
+    const code = couponCode.trim();
+    try {
+      const result = await client.getPaymentQuote(code === '' ? undefined : code);
+      setQuote(result);
+      if (result.coupon === null) setCouponNotice(code === '' ? null : 'No coupon applied — the server will charge the full PRO price.');
+      else setCouponNotice(`Coupon ${result.coupon.code} accepted: ${result.coupon.discountPercent}% discount. Final amount is set by the server.`);
+    } catch (cause: unknown) {
+      setQuote(null);
+      setCouponNotice(cause instanceof ApiClientError ? cause.message : 'The coupon could not be verified.');
+    }
+  };
+
   const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (config === null || config.currentPlan !== 'FREE' || config.manualPaymentMethods.length === 0) return;
@@ -53,14 +76,23 @@ export function PaymentPanel(): React.JSX.Element {
     setError(null);
     setNotice(null);
     try {
+      const appliedCode = couponCode.trim();
+      // The amount sent is exactly what the server quoted (full price or the
+      // server-computed discounted total); the client never computes pricing.
+      const amountMinorUnits = quote !== null && quote.coupon !== null
+        ? quote.coupon.finalAmountMinorUnits
+        : config.proPriceMinorUnits;
       const response = await client.createPayment({
         plan: 'PRO',
-        amountMinorUnits: config.proPriceMinorUnits,
+        amountMinorUnits,
         currency: 'BDT',
         paymentMethod: config.manualPaymentMethods[0] ?? 'MANUAL_TRANSFER',
         reference: reference.trim(),
+        ...(appliedCode === '' ? {} : { couponCode: appliedCode }),
       });
       setReference('');
+      setCouponCode('');
+      clearCoupon();
       setNotice('Payment reference submitted for manual review. It has not been verified.');
       setPayments((current) => [response.payment, ...current.filter((entry) => entry.paymentId !== response.payment.paymentId)]);
     } catch (cause: unknown) {
@@ -78,9 +110,23 @@ export function PaymentPanel(): React.JSX.Element {
       {!loading && config !== null && (
         <>
           <p data-testid="payment-current-plan">Server-reported current plan: <strong>{config.currentPlan}</strong></p>
-          <p className="muted">PRO price: <strong>BDT {(config.proPriceMinorUnits / 100).toFixed(2)}</strong>. The server sets the amount and currency.</p>
+          <p className="muted">
+            PRO price: <strong>BDT {(config.proPriceMinorUnits / 100).toFixed(2)}</strong>.
+            {quote !== null && quote.coupon !== null && <> After coupon <strong>{quote.coupon.code}</strong> ({quote.coupon.discountPercent}% off, −BDT {(quote.coupon.discountAmountMinorUnits / 100).toFixed(2)}): <strong data-testid="payment-final-amount">BDT {(quote.coupon.finalAmountMinorUnits / 100).toFixed(2)}</strong>.</>}
+            {' '}The server sets the amount and currency.
+          </p>
           <p className="form-alert" role="note">Online payment processing is currently unavailable. This page supports a manual request only; no payment is automatically verified.</p>
           <p className="muted">{config.manualPaymentInstructions}</p>
+          {config.manualPaymentDestinations.length > 0 && (
+            <ul className="payment-destinations" aria-label="Current transfer destinations" data-testid="payment-destinations">
+              {config.manualPaymentDestinations.map((destination) => (
+                <li key={destination.methodId} data-testid={`payment-destination-${destination.methodId}`}>
+                  <strong>{destination.displayName}</strong> — account <code>{destination.accountNumber}</code>
+                  {destination.instructions !== '' && <span className="muted"> · {destination.instructions}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
           {config.currentPlan === 'FREE' && config.manualPaymentMethods.length > 0 && (
             <form className="payment-request-form" onSubmit={(event) => void submit(event)}>
               <label htmlFor="payment-method">Payment method</label>
@@ -100,6 +146,24 @@ export function PaymentPanel(): React.JSX.Element {
                 onChange={(event) => setReference(event.target.value)}
                 aria-describedby="payment-reference-hint"
               />
+              <label htmlFor="payment-coupon">Partner coupon code (optional)</label>
+              <div className="coupon-row">
+                <input
+                  id="payment-coupon"
+                  name="couponCode"
+                  autoComplete="off"
+                  minLength={3}
+                  maxLength={40}
+                  pattern="[A-Za-z0-9][A-Za-z0-9-]{2,39}"
+                  placeholder="e.g. AEGIS-A"
+                  value={couponCode}
+                  onChange={(event) => { setCouponCode(event.target.value); clearCoupon(); }}
+                  aria-describedby="payment-coupon-hint"
+                />
+                <button type="button" className="button button-ghost" disabled={busy} onClick={() => void applyCoupon()}>Check coupon</button>
+              </div>
+              <p id="payment-coupon-hint" className="muted">A valid partner coupon applies a server-verified discount. Invalid, inactive or expired coupons are rejected by the server.</p>
+              {couponNotice !== null && <p role="status" data-testid="coupon-notice">{couponNotice}</p>}
               <p id="payment-reference-hint" className="muted">A reference is information you submit; it is not proof of successful payment. Contact support for transfer instructions before sending funds.</p>
               <button className="button button-primary" type="submit" disabled={busy || config.manualPaymentMethods.length === 0} aria-busy={busy}>
                 {busy ? 'Submitting…' : 'Submit for manual review'}
@@ -126,7 +190,7 @@ export function PaymentPanel(): React.JSX.Element {
           )}
         </>
       )}
-      <p className="muted">Coupons and discounts are not implemented.</p>
+      <p className="muted">Coupons are validated server-side only; discounts, commission and partner attribution are never client-controlled.</p>
     </section>
   );
 }

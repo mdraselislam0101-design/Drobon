@@ -56,6 +56,17 @@ const registerSchema = v.object({
   userType: v.optional(v.string({ maxLength: 64, trim: true })),
 });
 
+/**
+ * Classification switch (Phase 20): exactly ONE field. Unknown keys are
+ * rejected by the schema (mass-assignment defense) — role, plan, quota and
+ * ownership can never ride along on a user-type switch.
+ */
+const updateUserTypeSchema = v.object({
+  userType: v.string({ maxLength: 64, trim: true }),
+});
+
+const emptySchema = v.object({});
+
 type Credentials = { email: string; password: string };
 
 /** Shared policy pass: structural issues already validated by the schema. */
@@ -92,6 +103,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/register',
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = registerSchema.parse(raw);
         if (!parsed.ok) {
@@ -137,6 +149,10 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
         if (!created) {
           throw conflict('An account with this email already exists.');
         }
+        const priorToken = readSessionToken(req.headers.cookie);
+        if (priorToken !== undefined) {
+          sessions.revoke(priorToken);
+        }
         const { token } = sessions.issue(record.id);
         ctx.logger.info('Account registered', { requestId: ctx.id, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
@@ -158,6 +174,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/login',
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
         const parsed = credentialsSchema.parse(raw);
         if (!parsed.ok) {
@@ -182,6 +199,10 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'bad_password' });
           throw invalidCredentials();
         }
+        const priorToken = readSessionToken(req.headers.cookie);
+        if (priorToken !== undefined) {
+          sessions.revoke(priorToken);
+        }
         const { token } = sessions.issue(record.id);
         ctx.logger.info('Login succeeded', { requestId: ctx.id, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
@@ -197,6 +218,14 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'POST',
       path: '/api/v1/auth/logout',
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        if (req.headers['content-type'] !== undefined) {
+          const raw = await readJsonBody(req, { maxBytes: config.bodyMaxBytes });
+          const parsed = emptySchema.parse(raw);
+          if (!parsed.ok) {
+            throw validationError(parsed.issues);
+          }
+        }
         // Idempotent by contract: repeated logouts, logouts without a
         // session, and logouts with garbage cookies all answer 200.
         const token = readSessionToken(req.headers.cookie);
@@ -214,13 +243,40 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/me',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const user: AuthUser | undefined = ctx.user;
         if (user === undefined) {
           // Defensive: requireAuth should have rejected already.
           throw unauthorized();
         }
         const body: CurrentUserResponse = { user };
+        sendSuccess(res, ctx, body);
+      },
+    },
+    {
+      // Classification-only switch (Phase 20). The repository mutation
+      // rewrites `userType` and nothing else: role, subscription, quota,
+      // device anti-abuse state and ownership are structurally untouched.
+      // The pipeline's origin guard + SameSite=Strict cookies provide the
+      // CSRF defense; the global limiter covers bursts.
+      method: 'PATCH',
+      path: '/api/v1/me/user-type',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = updateUserTypeSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        if (!isUserType(parsed.value.userType)) {
+          throw validationError([{ path: 'userType', message: 'Unsupported user type.' }]);
+        }
+        const updated = await users.setUserType(actor.id, parsed.value.userType);
+        if (updated === undefined) throw unauthorized();
+        ctx.logger.info('User type updated', { requestId: ctx.id, userId: updated.id });
+        const body: CurrentUserResponse = { user: toAuthUser(updated) };
         sendSuccess(res, ctx, body);
       },
     },

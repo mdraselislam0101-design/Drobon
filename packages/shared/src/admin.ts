@@ -6,6 +6,7 @@ import { ACCOUNT_ROLES, isAccountRole, isUserType, USER_TYPES, type AccountRole,
 import { PAYMENT_AUDIT_ACTIONS, PAYMENT_STATUSES, isPaymentAuditAction, isPaymentStatus, type PaymentAuditAction, type PaymentStatus } from './payments.js';
 import { SCAN_STATUSES, SCAN_TYPES, isScanStatus, isScanType, type ScanStatus, type ScanType } from './scans.js';
 import { isPlan, isSubscriptionStatus, SUBSCRIPTION_STATUSES, type Plan, type SubscriptionStatus } from './plans.js';
+import { isProEntitlementSource } from './entitlements.js';
 
 export const ADMIN_ACCOUNT_PAGE_SIZE_MAX = 50;
 export const ADMIN_ACCOUNT_PAGE_MAX = 1_000;
@@ -52,8 +53,22 @@ export interface AdminAccountSummary {
   email: string;
   role: AccountRole;
   userType: UserType | null;
+  /** The account's OWN persisted (paid) subscription plan. */
   plan: Plan;
   subscriptionStatus: SubscriptionStatus;
+  /**
+   * The server-derived EFFECTIVE plan: PRO when either the persisted
+   * subscription is PRO+ACTIVE or an active admin complimentary PRO
+   * grant exists; otherwise FREE. Kept beside `plan` so the admin can
+   * always distinguish paid state from granted state.
+   */
+  effectivePlan: Plan;
+  /**
+   * Where the effective PRO comes from: `'PAID'` (subscription),
+   * `'ADMIN_GRANT'` (active complimentary grant), or `null` when the
+   * effective plan is FREE.
+   */
+  proEntitlementSource: 'PAID' | 'ADMIN_GRANT' | null;
   createdAt: string;
   accountStatus: 'UNAVAILABLE';
   paymentRequestCount: number;
@@ -203,7 +218,7 @@ export function isAdminDashboardResponse(value: unknown): value is AdminDashboar
 }
 
 export function isAdminAccountSummary(value: unknown): value is AdminAccountSummary {
-  return isRecord(value) && hasExactKeys(value, ['accountId', 'email', 'role', 'userType', 'plan', 'subscriptionStatus', 'createdAt', 'accountStatus', 'paymentRequestCount', 'latestPaymentStatus']) && typeof value['accountId'] === 'string' && value['accountId'].length > 0 && typeof value['email'] === 'string' && value['email'].length <= 320 && isAccountRole(value['role']) && (value['userType'] === null || isUserType(value['userType'])) && isPlan(value['plan']) && isSubscriptionStatus(value['subscriptionStatus']) && isoTime(value['createdAt']) && value['accountStatus'] === 'UNAVAILABLE' && nonnegativeInteger(value['paymentRequestCount']) && (value['latestPaymentStatus'] === null || isPaymentStatus(value['latestPaymentStatus']));
+  return isRecord(value) && hasExactKeys(value, ['accountId', 'email', 'role', 'userType', 'plan', 'subscriptionStatus', 'effectivePlan', 'proEntitlementSource', 'createdAt', 'accountStatus', 'paymentRequestCount', 'latestPaymentStatus']) && typeof value['accountId'] === 'string' && value['accountId'].length > 0 && typeof value['email'] === 'string' && value['email'].length <= 320 && isAccountRole(value['role']) && (value['userType'] === null || isUserType(value['userType'])) && isPlan(value['plan']) && isSubscriptionStatus(value['subscriptionStatus']) && isPlan(value['effectivePlan']) && (value['proEntitlementSource'] === null || isProEntitlementSource(value['proEntitlementSource'])) && isoTime(value['createdAt']) && value['accountStatus'] === 'UNAVAILABLE' && nonnegativeInteger(value['paymentRequestCount']) && (value['latestPaymentStatus'] === null || isPaymentStatus(value['latestPaymentStatus']));
 }
 
 export function isAdminAccountsResponse(value: unknown): value is AdminAccountsResponse {

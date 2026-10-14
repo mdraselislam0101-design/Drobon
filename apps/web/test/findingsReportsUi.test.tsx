@@ -18,7 +18,7 @@ import type {
   ScanType,
   SecurityReportResponse,
 } from '@drobon/shared';
-import type { ApiClient } from '../src/api/client.js';
+import type { ApiClient, ReportDownload } from '../src/api/client.js';
 import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
 const project: Project = {
@@ -194,6 +194,12 @@ describe('completed scan findings and report UI', () => {
     expect(await within(await screen.findByTestId('finding-workflow')).findByTestId('finding-lifecycle-state')).toHaveTextContent('ACKNOWLEDGED');
     expect(setFindingLifecycle).toHaveBeenCalledWith(project.id, scan.id, finding.id, 'ACKNOWLEDGED');
 
+    // Phase 22: FALSE_POSITIVE triage is offered from ACKNOWLEDGED and is terminal in the UI.
+    await userEvent.selectOptions(within(panel).getByLabelText('Change lifecycle state'), 'FALSE_POSITIVE');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Update status' }));
+    expect(await within(await screen.findByTestId('finding-workflow')).findByTestId('finding-lifecycle-state')).toHaveTextContent('FALSE_POSITIVE');
+    expect(setFindingLifecycle).toHaveBeenCalledWith(project.id, scan.id, finding.id, 'FALSE_POSITIVE');
+
     await userEvent.type(screen.getByLabelText('Remediation note (plain text; secrets are redacted)'), 'Reviewed safely.');
     await userEvent.click(screen.getByRole('button', { name: 'Add note' }));
     expect(await screen.findByTestId('finding-notes')).toHaveTextContent('Reviewed safely.');
@@ -203,15 +209,19 @@ describe('completed scan findings and report UI', () => {
     expect(getFindingHistory).toHaveBeenCalledWith(project.id, scan.id, finding.id, 1, 20);
   });
 
-  test('generates/retrieves honest saved reports and offers only JSON/Markdown exports', async () => {
+  test('generates/retrieves honest saved reports and offers JSON/Markdown/SARIF/standalone-SBOM exports', async () => {
     const createReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
     const getReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
+    const downloadReport = vi.fn(async (): Promise<ReportDownload> => ({ blob: new Blob(['{}']), filename: `drobon-${report.report.reportId}.sarif`, contentType: 'application/sarif+json' }));
+    const downloadSbom = vi.fn(async (): Promise<ReportDownload> => ({ blob: new Blob(['{"bomFormat":"CycloneDX"}']), filename: `drobon-${report.report.reportId}.cdx.json`, contentType: 'application/json' }));
     const client = stubClient({
       getMe: vi.fn(async () => ({ user: TEST_USER })),
       getProject: vi.fn(async () => projectResponse),
       getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [scan] })),
       createReport,
       getReport,
+      downloadReport,
+      downloadSbom,
     });
     await renderProject(client);
     await userEvent.click(await screen.findByTestId('generate-report'));
@@ -226,7 +236,15 @@ describe('completed scan findings and report UI', () => {
     expect(createReport).toHaveBeenCalledWith(project.id, scan.id);
     expect(screen.getByTestId('download-report-json')).toBeInTheDocument();
     expect(screen.getByTestId('download-report-markdown')).toBeInTheDocument();
+    expect(screen.getByTestId('download-report-sarif')).toBeInTheDocument();
+    expect(screen.getByTestId('download-report-sbom')).toBeInTheDocument();
     expect(screen.queryByText(/PDF/i)).toBeNull();
+    URL.createObjectURL = (): string => 'blob:fixture';
+    URL.revokeObjectURL = (): void => undefined;
+    await userEvent.click(screen.getByTestId('download-report-sarif'));
+    await waitFor(() => expect(downloadReport).toHaveBeenCalledWith(project.id, scan.id, 'sarif'));
+    await userEvent.click(screen.getByTestId('download-report-sbom'));
+    await waitFor(() => expect(downloadSbom).toHaveBeenCalledWith(project.id, scan.id));
     await userEvent.click(screen.getByTestId('refresh-report'));
     expect(getReport).toHaveBeenCalledWith(project.id, scan.id);
     await userEvent.click(screen.getByTestId('refresh-report-snapshot'));

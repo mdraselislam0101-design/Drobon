@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { isAllowedOrigin, isValidRequestId, normalizeOrigin } from '../src/lib/security.js';
+import {
+  extractRefererOrigin,
+  isAllowedOrigin,
+  isValidRequestId,
+  normalizeOrigin,
+} from '../src/lib/security.js';
 
 describe('isValidRequestId', () => {
   test.each([
@@ -73,5 +78,24 @@ describe('isAllowedOrigin', () => {
 
   test('rejects everything when the allowlist is empty', () => {
     expect(isAllowedOrigin('https://app.example.test', [])).toBe(false);
+  });
+});
+
+describe('extractRefererOrigin', () => {
+  test.each([
+    ['https://app.example.test/account?tab=security#top', 'https://app.example.test'],
+    ['http://127.0.0.1:5173/projects/prj_1', 'http://127.0.0.1:5173'],
+  ])('extractRefererOrigin(%j) === %j', (value, expected) => {
+    expect(extractRefererOrigin(value)).toBe(expected);
+  });
+
+  test.each([
+    [''],
+    ['not-a-url'],
+    ['ftp://app.example.test/page'],
+    ['https://user:pass@app.example.test/page'],
+    ['https://app.example.test/page extra'],
+  ])('extractRefererOrigin(%j) is rejected', (value) => {
+    expect(extractRefererOrigin(value)).toBeUndefined();
   });
 });

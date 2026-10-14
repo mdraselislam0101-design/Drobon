@@ -21,7 +21,8 @@ export interface UsageRouteDeps {
  * user-facing feature):
  * - authentication required (anonymous → 401) via the existing router
  *   choke point; self-only by construction — there is no id parameter,
- *   so no cross-account reads exist (query/headers are never consulted);
+ *   so no cross-account reads exist, and ANY query string is rejected
+ *   fail-closed (422) before the account is even looked up;
  * - returns the caller's OWN usage view: plan, UTC period, used, limit,
  *   remaining, quota status. No device identifiers, no storage details,
  *   no other accounts' counts.
@@ -58,7 +59,8 @@ export function createUsageRoutes(deps: UsageRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/usage',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
@@ -86,6 +88,7 @@ export function createUsageRoutes(deps: UsageRouteDeps): Route[] {
       path: '/api/v1/usage/consume',
       requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.

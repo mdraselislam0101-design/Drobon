@@ -5,12 +5,22 @@ import type { PaymentAuditAction, PaymentAuditEvent, PaymentMethod, PaymentStatu
 import { isPaymentAuditAction, isPaymentMethod, isPaymentStatus } from '@drobon/shared';
 
 /** Private payment record. Idempotency data is never projected to HTTP. */
+/** Coupon attribution snapshot (Pump 7). Frozen at creation; totals derive from it. */
+export interface PaymentAttribution {
+  couponCode: string;
+  partnerId: string;
+  baseAmountMinorUnits: number;
+  discountAmountMinorUnits: number;
+  commissionPercent: number;
+}
+
 export interface PaymentRecord {
   paymentId: string;
   accountId: string;
   submittedByUserId: string;
   plan: 'PRO';
   amountMinorUnits: number;
+  attribution?: PaymentAttribution;
   currency: 'BDT';
   paymentMethod: 'MANUAL_TRANSFER';
   reference: string;
@@ -120,7 +130,20 @@ function isPaymentRecord(value: unknown): value is PaymentRecord {
     isPaymentStatus(r['status']) && validTimestamp(r['createdAt']) && validTimestamp(r['submittedAt']) && validTimestamp(r['updatedAt']) &&
     isNullableTimestamp(r['reviewedAt']) && isNullableTimestamp(r['approvedAt']) && isNullableTimestamp(r['rejectedAt']) &&
     (r['reviewerId'] === null || (typeof r['reviewerId'] === 'string' && r['reviewerId'].length > 0)) &&
-    (r['rejectionReason'] === null || (typeof r['rejectionReason'] === 'string' && r['rejectionReason'].length <= 300))
+    (r['rejectionReason'] === null || (typeof r['rejectionReason'] === 'string' && r['rejectionReason'].length <= 300)) &&
+    (r['attribution'] === undefined || isAttribution(r['attribution']))
+  );
+}
+
+function isAttribution(value: unknown): value is PaymentAttribution {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  const int = (v: unknown): v is number => Number.isSafeInteger(v) && typeof v === 'number' && v >= 0;
+  return (
+    typeof r['couponCode'] === 'string' && /^[A-Z0-9][A-Z0-9-]{2,39}$/.test(r['couponCode']) &&
+    typeof r['partnerId'] === 'string' && /^ptr_[0-9a-f-]{36}$/i.test(r['partnerId']) &&
+    int(r['baseAmountMinorUnits']) && (r['baseAmountMinorUnits'] as number) > 0 &&
+    int(r['discountAmountMinorUnits']) && int(r['commissionPercent']) && (r['commissionPercent'] as number) <= 100
   );
 }
 

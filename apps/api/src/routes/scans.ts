@@ -1,7 +1,11 @@
 import type { ServerResponse } from 'node:http';
 import {
   ASSESSMENT_ID_PATTERN,
+  FINDING_SEVERITIES,
   IDEMPOTENCY_KEY_PATTERN,
+  type ScanComparisonEntry,
+  type ScanComparisonEntryState,
+  type ScanComparisonResponse,
   type ScanDetailResponse,
   type ScanResponse,
   type ScansResponse,
@@ -90,12 +94,16 @@ export interface ScanRouteDeps {
   usage: UsageService;
   processor: ScanProcessor;
   dastTargetPolicy?: DastTargetPolicy;
+  /** Injectable clock (tests); defaults to the system clock. */
+  now?: () => number;
 }
 
 export function createScanRoutes(deps: ScanRouteDeps): Route[] {
   const { config, users, projects, assessments, scans, sources, usage, processor } = deps;
   const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
+  const now = deps.now ?? Date.now;
+  const at = (): string => new Date(now()).toISOString();
 
   const createSchema = v.object({
     scanType: v.string({ maxLength: 16, trim: true }),
@@ -144,6 +152,13 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        // Query hardening (Pump 3): scan routes define no query
+        // parameters at all, so ANY query string is rejected before the
+        // project lookup, body parse, DAST preflight or quota
+        // consumption — a junk request never reaches side effects, and
+        // the response is the uniform 422 (no existence oracle added:
+        // the answer does not depend on project ownership).
+        v.rejectUnexpectedQuery(req);
         // Project ownership first — the uniform Pump 6 policy.
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // ACTIVE projects only: archived projects cannot START new
@@ -294,11 +309,12 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId/scans',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         const records = await scans.listByProject(project.id);
         const body: ScansResponse = {
@@ -311,11 +327,12 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/projects/:projectId/scans/:scanId',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
         const actor = ctx.user;
         if (actor === undefined) {
           throw unauthorized(); // Defensive: requireAuth rejects first.
         }
+        v.rejectUnexpectedQuery(req);
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
         // Scan lookup is scoped to the caller's OWN project. Unknown,
         // malformed (pattern-fail/oversized — can never exist) and
@@ -334,6 +351,108 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         // findings (bounded by MAX_FINDINGS_PER_SCAN by construction;
         // deterministically ordered). List responses stay lean.
         const body: ScanDetailResponse = { scan: toScanDetailResponse(record) };
+        sendSuccess(res, ctx, body);
+      },
+    },
+    {
+      // Regression visibility (Phase 22 Pump 3): compare two COMPLETED
+      // scans of the same type within the SAME owned project by finding
+      // fingerprint. Path-carried ids (no query surface), uniform 404
+      // for unknown/malformed/foreign ids, honest absence-based states.
+      method: 'GET',
+      path: '/api/v1/projects/:projectId/scans/:scanId/compare/:baselineScanId',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) {
+          throw unauthorized(); // Defensive: requireAuth rejects first.
+        }
+        v.rejectUnexpectedQuery(req);
+        const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
+        const rawCurrentId = ctx.params['scanId'];
+        const rawBaselineId = ctx.params['baselineScanId'];
+        if (typeof rawCurrentId !== 'string' || rawCurrentId.length > 64 || typeof rawBaselineId !== 'string' || rawBaselineId.length > 64) {
+          throw notFound('Scan not found.');
+        }
+        if (rawCurrentId === rawBaselineId) {
+          throw validationError([{ path: 'baselineScanId', message: 'Choose two different scans to compare.' }]);
+        }
+        // Same id-probing defense as the detail route: every failure
+        // shape outside this project answers the SAME 404.
+        const current = await scans.findByProjectAndId(project.id, rawCurrentId);
+        if (current === undefined) throw notFound('Scan not found.');
+        const baseline = await scans.findByProjectAndId(project.id, rawBaselineId);
+        if (baseline === undefined) throw notFound('Scan not found.');
+        if (current.status !== 'COMPLETED' || baseline.status !== 'COMPLETED') {
+          throw conflict('Only completed scans can be compared.');
+        }
+        if (current.scanType !== baseline.scanType) {
+          throw conflict('Only scans of the same type can be compared.');
+        }
+        const baselineByFingerprint = new Map((baseline.findings ?? []).map((finding) => [finding.fingerprint, finding]));
+        const currentByFingerprint = new Map((current.findings ?? []).map((finding) => [finding.fingerprint, finding]));
+        const fingerprints = [...new Set([...baselineByFingerprint.keys(), ...currentByFingerprint.keys()])];
+        const entries: ScanComparisonEntry[] = [];
+        for (const fingerprint of fingerprints) {
+          const inBaseline = baselineByFingerprint.get(fingerprint);
+          const inCurrent = currentByFingerprint.get(fingerprint);
+          const reference = inCurrent ?? inBaseline;
+          if (reference === undefined) continue; // Unreachable by construction.
+          let state: ScanComparisonEntryState;
+          if (inBaseline === undefined) {
+            state = 'NEW';
+          } else if (inCurrent === undefined) {
+            // Absence in the comparison scan — retest evidence, never
+            // proof of repair (same honesty as NOT_OBSERVED_IN_LATEST_SCAN).
+            state = 'RESOLVED';
+          } else {
+            const workflow = await scans.getFindingWorkflow(project.id, fingerprint);
+            if (workflow?.state === 'REOPENED') {
+              state = 'REOPENED';
+            } else {
+              state = inBaseline.severity === inCurrent.severity ? 'UNCHANGED' : 'CHANGED';
+            }
+          }
+          entries.push({
+            fingerprint,
+            findingId: reference.id,
+            ruleId: reference.ruleId,
+            location: reference.scanner === 'DAST' ? reference.endpoint : reference.file,
+            state,
+            ...(inBaseline === undefined ? {} : { baselineSeverity: inBaseline.severity }),
+            ...(inCurrent === undefined ? {} : { currentSeverity: inCurrent.severity }),
+          });
+        }
+        // Severity-then-location ordering, mirroring the report ordering.
+        entries.sort((a, b) => {
+          const rank = (entry: ScanComparisonEntry): number =>
+            FINDING_SEVERITIES.indexOf(entry.currentSeverity ?? entry.baselineSeverity ?? 'INFO');
+          const rankDiff = rank(a) - rank(b);
+          if (rankDiff !== 0) return rankDiff;
+          if (a.location !== b.location) return a.location < b.location ? -1 : 1;
+          if (a.ruleId !== b.ruleId) return a.ruleId < b.ruleId ? -1 : 1;
+          return a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0;
+        });
+        const countKeys: Record<ScanComparisonEntryState, 'new' | 'unchanged' | 'resolved' | 'reopened' | 'changed'> = {
+          NEW: 'new',
+          UNCHANGED: 'unchanged',
+          RESOLVED: 'resolved',
+          REOPENED: 'reopened',
+          CHANGED: 'changed',
+        };
+        const counts = { new: 0, unchanged: 0, resolved: 0, reopened: 0, changed: 0 };
+        for (const entry of entries) {
+          counts[countKeys[entry.state]] += 1;
+        }
+        const body: ScanComparisonResponse = {
+          projectId: project.id,
+          scanType: current.scanType,
+          baselineScanId: baseline.id,
+          currentScanId: current.id,
+          generatedAt: at(),
+          counts,
+          entries,
+        };
         sendSuccess(res, ctx, body);
       },
     },

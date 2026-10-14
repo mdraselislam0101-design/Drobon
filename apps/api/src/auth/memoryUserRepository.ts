@@ -47,6 +47,15 @@ export function createMemoryUserRepository(): UserRepository {
       byEmail.set(updated.email, updated);
       return 'ACTIVATED' as const;
     }),
+    setUserType: (id, userType) => runExclusive(() => {
+      const current = byId.get(id);
+      if (current === undefined) return undefined;
+      // Classification-only: every other field is carried over untouched.
+      const updated: UserRecord = { ...current, userType };
+      byId.set(id, updated);
+      byEmail.set(updated.email, updated);
+      return updated;
+    }),
     adminPage: (filters, page, pageSize) => Promise.resolve(buildAdminAccountPage(byId.values(), filters, page, pageSize)),
     adminCounts: () => Promise.resolve(buildAdminAccountCounts(byId.values())),
   };

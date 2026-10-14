@@ -224,15 +224,18 @@ See `docs/ASSISTANT.md`.
 
 **PLUS Pump 22 (Structured assessments):** owner/project-bound assessment records with bounded objectives and exact DNS hostname scope, explicit PLANNED/ACTIVE/COMPLETED/CANCELLED lifecycle, append-only history, and optional links to existing scans, findings/remediation workflow and reports. Assessment scope is metadata, never access or DAST permission; a timestamped `USER_DECLARED` target statement is not independently verified, and without it permission remains `UNVERIFIED`. The existing passive DAST policy and normal plan/quota checks are unchanged. See `docs/SECURITY_PROFESSIONAL.md` and `docs/DAST.md`.
 
+**PLUS Pump 7 (Partners, coupons and commissions):** admin-selected partners with a unique coupon code as the only attribution identity (no referral-code system), server-authoritative coupon discounts and quote endpoint, complimentary partner PRO as entitlement only (never revenue), idempotent commission lifecycle (`PENDING → AVAILABLE → PAID`) settled only from approved coupon-attributed payments, aggregate-only partner dashboard with an API-enforced privacy boundary, and platform-admin partner/coupon/commission oversight. Multiple paid accounts per person remain allowed; free-account anti-abuse (shared device allowance) is preserved. No online redemption or automated payout. See `docs/PARTNERS.md`, `docs/PAYMENTS.md` and `docs/ADMIN.md`.
+
 **NOT included:** browser/full DAST, vulnerability
 datasets, the broader database phase,
-online payment gateway/webhooks/automatic verification, coupons/discounts,
-partner/referral/commission; plan mutation outside the authorized payment
+online payment gateway/webhooks/automatic verification, recurring billing,
+receipt uploads, automatic refunds, self-service partner enrollment or a
+referral-code system; plan mutation outside the authorized payment
 approval workflow (`plan:manage` is granted to no plan), usage
 analytics/history, operator quota adjustments, device-management UI,
 any security dataset (CVE/NVD/GHSA/OSV/KEV/EPSS catalogs or feeds),
 role management console, email verification, password reset, MFA,
-external generative AI provider, durable assistant chat history, partner/referral workflows, or other
+external generative AI provider, durable assistant chat history, or other
 user-type-specific workflows outside the documented shared Developer/Student/Security Professional/Pentester presentations, UserType-based authorization or entitlements,
 multi-scan reports, PDF/signature workflows, and a database-backed report store. See the NOT_IMPLEMENTED sections in
 `docs/`.

@@ -1,6 +1,7 @@
 import {
   isAssessmentResponse,
   isAssessmentDetailResponse,
+  isAssessmentSummaryResponse,
   isAssessmentsResponse,
   isAssistantResponse,
   isAssistantStatusResponse,
@@ -21,9 +22,14 @@ import {
   isSourceSnapshotResponse,
   isSubscriptionResponse,
   isUsageResponse,
+  isAdminPaymentConfigResponse,
+  isAdminProGrantResponse,
+  isAdminProGrantsResponse,
+  isEntitlementAuditResponse,
   isPaymentConfigResponse,
   isPaymentHistoryResponse,
   isPaymentDetailResponse,
+  isPaymentMethodDestination,
   isAdminPaymentsResponse,
   isAdminDashboardResponse,
   isAdminAccountsResponse,
@@ -31,6 +37,14 @@ import {
   isAdminFindingsResponse,
   isAdminAuditResponse,
   isPaymentAuditResponse,
+  isPaymentQuoteResponse,
+  isPartnerDashboardResponse,
+  isAdminCommissionResponse,
+  isAdminCommissionsResponse,
+  isAdminPartnerDetailResponse,
+  isAdminPartnerPaymentsResponse,
+  isAdminPartnerResponse,
+  isAdminPartnersResponse,
   isWorkspaceSecurityOverviewResponse,
   parseApiResponse,
   type ApiErrorDetail,
@@ -51,7 +65,10 @@ import {
   type LogoutResponse,
   type ProjectResponse,
   type ProjectsResponse,
+  isScanComparisonResponse,
+  type ScanComparisonResponse,
   type ScanDetailResponse,
+  type AssessmentSummaryResponse,
   type ScanResponse,
   type FindingsPageResponse,
   type FindingDetailResponse,
@@ -60,6 +77,12 @@ import {
   type FindingWorkflowResponse,
   type FindingSeverity,
   type SecurityReportResponse,
+  isStudentLessonCatalogResponse,
+  isStudentProgressResponse,
+  isStudentQuizResultResponse,
+  type StudentLessonCatalogResponse,
+  type StudentProgressResponse,
+  type StudentQuizResultResponse,
   type ScansResponse,
   type ScanType,
   type SourceFileInput,
@@ -67,9 +90,15 @@ import {
   type StatusResponse,
   type SubscriptionResponse,
   type UsageResponse,
+  type AdminPaymentConfigResponse,
+  type AdminProGrantResponse,
+  type AdminProGrantsResponse,
+  type AdminProGrantStatus,
+  type EntitlementAuditResponse,
   type PaymentConfigResponse,
   type PaymentHistoryResponse,
   type PaymentDetailResponse,
+  type PaymentMethodDestination,
   type AdminPaymentsResponse,
   type AdminDashboardResponse,
   type AdminAccountsResponse,
@@ -80,11 +109,21 @@ import {
   type UserType,
   type Plan,
   type ScanStatus,
+  type PartnerStatus,
+  type CommissionStatus,
   type PaymentAuditAction,
   type PaymentAuditResponse,
   type WorkspaceSecurityOverviewResponse,
   type PaymentMethod,
   type PaymentStatus,
+  type AdminCommissionResponse,
+  type AdminCommissionsResponse,
+  type AdminPartnerDetailResponse,
+  type AdminPartnerPaymentsResponse,
+  type AdminPartnerResponse,
+  type AdminPartnersResponse,
+  type PartnerDashboardResponse,
+  type PaymentQuoteResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -185,9 +224,16 @@ export interface ApiClient {
    * client renders the server's verdict and never recomputes it.
    */
   getSubscription(signal?: AbortSignal): Promise<SubscriptionResponse>;
+  /**
+   * Phase 20: classification-only user-type switch. The server rewrites the
+   * `userType` tag and nothing else — never role, plan, quota or ownership.
+   */
+  updateUserType(userType: UserType, signal?: AbortSignal): Promise<CurrentUserResponse>;
   getPaymentConfig(signal?: AbortSignal): Promise<PaymentConfigResponse>;
   getPaymentHistory(page?: number, pageSize?: number, signal?: AbortSignal): Promise<PaymentHistoryResponse>;
-  createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  createPayment(input: { plan: 'PRO'; amountMinorUnits: number; currency: 'BDT'; paymentMethod: PaymentMethod; reference: string; couponCode?: string }, signal?: AbortSignal): Promise<PaymentDetailResponse>;
+  /** Server-authoritative quote; coupon (if any) resolves server-side only. */
+  getPaymentQuote(couponCode?: string, signal?: AbortSignal): Promise<PaymentQuoteResponse>;
   getPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   cancelPayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getAdminDashboard(signal?: AbortSignal): Promise<AdminDashboardResponse>;
@@ -200,6 +246,34 @@ export interface ApiClient {
   approvePayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   rejectPayment(paymentId: string, reason: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getPaymentAudit(paymentId: string, signal?: AbortSignal): Promise<PaymentAuditResponse>;
+  getAdminProGrants(query?: { page?: number; pageSize?: number; accountId?: string; status?: AdminProGrantStatus }, signal?: AbortSignal): Promise<AdminProGrantsResponse>;
+  grantAdminPro(input: { accountId: string; expiresAt?: string; reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse>;
+  revokeAdminProGrant(grantId: string, input?: { reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse>;
+  getAdminProGrantAudit(query?: { page?: number; pageSize?: number; accountId?: string; grantId?: string; action?: 'ADMIN_PRO_GRANT' | 'ADMIN_PRO_REVOKE' }, signal?: AbortSignal): Promise<EntitlementAuditResponse>;
+  /** Phase 20: platform-admin runtime payment configuration (dual-gated). */
+  getAdminPaymentConfig(signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
+  updateAdminPaymentPrice(proPriceMinorUnits: number, signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
+  addAdminPaymentMethod(
+    input: { displayName: string; accountNumber: string; instructions?: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ destination: PaymentMethodDestination }>;
+  updateAdminPaymentMethod(
+    methodId: string,
+    patch: { displayName?: string; accountNumber?: string; instructions?: string; enabled?: boolean },
+    signal?: AbortSignal,
+  ): Promise<AdminPaymentConfigResponse>;
+  /** Partner self dashboard — aggregate-only projection (Pump 7). */
+  getPartnerDashboard(signal?: AbortSignal): Promise<PartnerDashboardResponse>;
+  /** Platform partner/coupon/commission management (Pump 7; dual-gated admin). */
+  getAdminPartners(page?: number, pageSize?: number, status?: PartnerStatus, signal?: AbortSignal): Promise<AdminPartnersResponse>;
+  activatePartner(input: { userId: string; couponCode: string; discountPercent: number; commissionPercent: number }, signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  getAdminPartner(partnerId: string, signal?: AbortSignal): Promise<AdminPartnerDetailResponse>;
+  setPartnerStatus(partnerId: string, status: 'ACTIVE' | 'DEACTIVATED', signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  updatePartnerCoupon(partnerId: string, patch: { status?: 'ACTIVE' | 'INACTIVE'; discountPercent?: number; commissionPercent?: number; expiresAt?: string | null }, signal?: AbortSignal): Promise<AdminPartnerResponse>;
+  getAdminPartnerPayments(partnerId: string, page?: number, pageSize?: number, signal?: AbortSignal): Promise<AdminPartnerPaymentsResponse>;
+  getAdminCommissions(query?: { page?: number; pageSize?: number; partnerId?: string; status?: CommissionStatus }, signal?: AbortSignal): Promise<AdminCommissionsResponse>;
+  transitionCommission(commissionId: string, to: 'AVAILABLE' | 'PAID', signal?: AbortSignal): Promise<AdminCommissionResponse>;
   /**
    * The authenticated account's OWN usage view (Pump 5): plan, current
    * UTC period, used/limit/remaining and the quota status. Read-only and
@@ -287,6 +361,10 @@ export interface ApiClient {
     filters?: { severity?: FindingSeverity; scanner?: ScanType; page?: number; pageSize?: number },
     signal?: AbortSignal,
   ): Promise<FindingsPageResponse>;
+  /** Fingerprint-based regression comparison of two OWN completed same-type scans (Pump 3). */
+  compareScans(projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse>;
+  /** Bounded computed aggregate over an OWN assessment's linked scans (Pump 3). */
+  getAssessmentSummary(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentSummaryResponse>;
   /** Authorized detail for one finding nested under its project and scan. */
   getFinding(projectId: string, scanId: string, findingId: string, signal?: AbortSignal): Promise<FindingDetailResponse>;
   /** Server-enforced finding workflow transition; source evidence is never sent. */
@@ -300,7 +378,15 @@ export interface ApiClient {
   /** Retrieve an existing persisted report without regenerating it. */
   getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Authenticated, bounded JSON or Markdown export. */
-  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload>;
+  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload>;
+  downloadSbom(projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload>;
+  /** Internally authored Student lesson catalog; quiz answers stay server-side. */
+  getStudentLessons(signal?: AbortSignal): Promise<StudentLessonCatalogResponse>;
+  /** The caller's OWN server-authoritative learning progress. */
+  getStudentProgress(signal?: AbortSignal): Promise<StudentProgressResponse>;
+  acknowledgeLessonRead(lessonId: string, signal?: AbortSignal): Promise<StudentProgressResponse>;
+  submitLessonQuiz(lessonId: string, answers: Array<number | null>, signal?: AbortSignal): Promise<StudentQuizResultResponse>;
+  verifyLessonPractice(lessonId: string, stage: 'IDENTIFY' | 'FIX', signal?: AbortSignal): Promise<StudentProgressResponse>;
   /** Provider availability; currently reports the honest no-provider state. */
   getAssistantStatus(signal?: AbortSignal): Promise<AssistantStatusResponse>;
   /** Read-only deterministic question over one server-authorized project. */
@@ -461,7 +547,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   const requestReportDownload = async (
     path: string,
-    format: 'json' | 'markdown',
+    format: 'json' | 'markdown' | 'sarif' | 'cdx',
     signal?: AbortSignal,
   ): Promise<ReportDownload> => {
     const requestId = generateId();
@@ -489,9 +575,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
       const contentType = response.headers.get('content-type') ?? '';
       const contentDisposition = response.headers.get('content-disposition') ?? '';
-      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md))"$/.exec(contentDisposition);
-      const expectedType = format === 'json' ? /^application\/json(?:;\s*charset=utf-8)?$/i : /^text\/markdown(?:;\s*charset=utf-8)?$/i;
-      const expectedSuffix = format === 'json' ? '.json' : '.md';
+      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json))"$/.exec(contentDisposition);
+      const expectedType = format === 'markdown' ? /^text\/markdown(?:;\s*charset=utf-8)?$/i : format === 'sarif' ? /^application\/sarif\+json(?:;\s*charset=utf-8)?$/i : /^application\/json(?:;\s*charset=utf-8)?$/i;
+      const expectedSuffix = format === 'markdown' ? '.md' : format === 'sarif' ? '.sarif' : format === 'cdx' ? '.cdx.json' : '.json';
       const declaredLength = response.headers.get('content-length');
       if (!expectedType.test(contentType) || filenameMatch === null || !filenameMatch[1]?.endsWith(expectedSuffix) ||
           (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 1024 * 1024))) {
@@ -613,6 +699,13 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSubscriptionResponse,
       ),
+    updateUserType: (userType, signal?: AbortSignal): Promise<CurrentUserResponse> =>
+      authRequest<CurrentUserResponse>('/api/v1/me/user-type', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userType }),
+        ...(signal === undefined ? {} : { signal }),
+      }, isCurrentUserResponse),
     getPaymentConfig: (signal?: AbortSignal): Promise<PaymentConfigResponse> =>
       authRequest<PaymentConfigResponse>('/api/v1/payments/config', signal === undefined ? {} : { signal }, isPaymentConfigResponse),
     getPaymentHistory: (page = 1, pageSize = 20, signal?: AbortSignal): Promise<PaymentHistoryResponse> =>
@@ -654,6 +747,71 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }, isPaymentDetailResponse),
     getPaymentAudit: (paymentId, signal?: AbortSignal): Promise<PaymentAuditResponse> =>
       authRequest<PaymentAuditResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/audit`, signal === undefined ? {} : { signal }, isPaymentAuditResponse),
+    getAdminProGrants: (query: { page?: number; pageSize?: number; accountId?: string; status?: AdminProGrantStatus } = {}, signal?: AbortSignal): Promise<AdminProGrantsResponse> =>
+      authRequest<AdminProGrantsResponse>(`/api/v1/admin/entitlements/pro${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminProGrantsResponse),
+    grantAdminPro: (input: { accountId: string; expiresAt?: string; reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse> =>
+      authRequest<AdminProGrantResponse>('/api/v1/admin/entitlements/pro', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminProGrantResponse),
+    revokeAdminProGrant: (grantId: string, input: { reason?: string } = {}, signal?: AbortSignal): Promise<AdminProGrantResponse> =>
+      authRequest<AdminProGrantResponse>(`/api/v1/admin/entitlements/pro/${encodeURIComponent(grantId)}/revoke`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminProGrantResponse),
+    getAdminProGrantAudit: (query: { page?: number; pageSize?: number; accountId?: string; grantId?: string; action?: 'ADMIN_PRO_GRANT' | 'ADMIN_PRO_REVOKE' } = {}, signal?: AbortSignal): Promise<EntitlementAuditResponse> =>
+      authRequest<EntitlementAuditResponse>(`/api/v1/admin/entitlements/pro/audit${adminQuery(query)}`, signal === undefined ? {} : { signal }, isEntitlementAuditResponse),
+    getAdminPaymentConfig: (signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>('/api/v1/admin/payment-config', signal === undefined ? {} : { signal }, isAdminPaymentConfigResponse),
+    updateAdminPaymentPrice: (proPriceMinorUnits, signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>('/api/v1/admin/payment-config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proPriceMinorUnits }),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminPaymentConfigResponse),
+    addAdminPaymentMethod: (input, idempotencyKey, signal?: AbortSignal): Promise<{ destination: PaymentMethodDestination }> =>
+      authRequest<{ destination: PaymentMethodDestination }>('/api/v1/admin/payment-config/methods', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+        body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, (value): value is { destination: PaymentMethodDestination } =>
+        typeof value === 'object' && value !== null && isPaymentMethodDestination((value as { destination?: unknown }).destination)),
+    updateAdminPaymentMethod: (methodId, patch, signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
+      authRequest<AdminPaymentConfigResponse>(`/api/v1/admin/payment-config/methods/${encodeURIComponent(methodId)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminPaymentConfigResponse),
+    getPaymentQuote: (couponCode, signal?: AbortSignal): Promise<PaymentQuoteResponse> =>
+      authRequest<PaymentQuoteResponse>(`/api/v1/payments/quote${couponCode === undefined || couponCode.trim() === '' ? '' : `?couponCode=${encodeURIComponent(couponCode.trim())}`}`, signal === undefined ? {} : { signal }, isPaymentQuoteResponse),
+    getPartnerDashboard: (signal?: AbortSignal): Promise<PartnerDashboardResponse> =>
+      authRequest<PartnerDashboardResponse>('/api/v1/partners/me/dashboard', signal === undefined ? {} : { signal }, isPartnerDashboardResponse),
+    getAdminPartners: (page = 1, pageSize = 20, status, signal?: AbortSignal): Promise<AdminPartnersResponse> => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (status !== undefined) params.set('status', status);
+      return authRequest<AdminPartnersResponse>(`/api/v1/admin/partners?${params.toString()}`, signal === undefined ? {} : { signal }, isAdminPartnersResponse);
+    },
+    activatePartner: (input, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>('/api/v1/admin/partners', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    getAdminPartner: (partnerId, signal?: AbortSignal): Promise<AdminPartnerDetailResponse> =>
+      authRequest<AdminPartnerDetailResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}`, signal === undefined ? {} : { signal }, isAdminPartnerDetailResponse),
+    setPartnerStatus: (partnerId, status, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/${status === 'DEACTIVATED' ? 'deactivate' : 'reactivate'}`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    updatePartnerCoupon: (partnerId, patch, signal?: AbortSignal): Promise<AdminPartnerResponse> =>
+      authRequest<AdminPartnerResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/coupon`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) }, isAdminPartnerResponse),
+    getAdminPartnerPayments: (partnerId, page = 1, pageSize = 50, signal?: AbortSignal): Promise<AdminPartnerPaymentsResponse> =>
+      authRequest<AdminPartnerPaymentsResponse>(`/api/v1/admin/partners/${encodeURIComponent(partnerId)}/payments?page=${page}&pageSize=${pageSize}`, signal === undefined ? {} : { signal }, isAdminPartnerPaymentsResponse),
+    getAdminCommissions: (query = {}, signal?: AbortSignal): Promise<AdminCommissionsResponse> => {
+      const params = new URLSearchParams({ page: String(query.page ?? 1), pageSize: String(query.pageSize ?? 50) });
+      if (query.partnerId !== undefined) params.set('partnerId', query.partnerId);
+      if (query.status !== undefined) params.set('status', query.status);
+      return authRequest<AdminCommissionsResponse>(`/api/v1/admin/commissions?${params.toString()}`, signal === undefined ? {} : { signal }, isAdminCommissionsResponse);
+    },
+    transitionCommission: (commissionId, to, signal?: AbortSignal): Promise<AdminCommissionResponse> =>
+      authRequest<AdminCommissionResponse>(`/api/v1/admin/commissions/${encodeURIComponent(commissionId)}/${to.toLowerCase()}`, { method: 'POST', ...(signal === undefined ? {} : { signal }) }, isAdminCommissionResponse),
     getUsage: (signal?: AbortSignal): Promise<UsageResponse> =>
       authRequest<UsageResponse>(
         '/api/v1/usage',
@@ -728,6 +886,14 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
     getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
       authRequest<AssessmentDetailResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}`, signal === undefined ? {} : { signal }, isAssessmentDetailResponse),
+    compareScans: (projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse> =>
+      authRequest<ScanComparisonResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(currentScanId)}/compare/${encodeURIComponent(baselineScanId)}`,
+        signal === undefined ? {} : { signal },
+        isScanComparisonResponse,
+      ),
+    getAssessmentSummary: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentSummaryResponse> =>
+      authRequest<AssessmentSummaryResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/summary`, signal === undefined ? {} : { signal }, isAssessmentSummaryResponse),
     createAssessment: (projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>
       authRequest<AssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isAssessmentResponse),
     updateAssessment: (projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse> =>
@@ -845,11 +1011,47 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSecurityReportResponse,
       ),
-    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown', signal?: AbortSignal): Promise<ReportDownload> =>
+    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload> =>
       requestReportDownload(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
         format,
         signal,
+      ),
+    downloadSbom: (projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload> =>
+      requestReportDownload(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/sbom`,
+        'cdx',
+        signal,
+      ),
+    getStudentLessons: (signal?: AbortSignal): Promise<StudentLessonCatalogResponse> =>
+      authRequest<StudentLessonCatalogResponse>(
+        '/api/v1/student/lessons',
+        signal === undefined ? {} : { signal },
+        isStudentLessonCatalogResponse,
+      ),
+    getStudentProgress: (signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        '/api/v1/student/progress',
+        signal === undefined ? {} : { signal },
+        isStudentProgressResponse,
+      ),
+    acknowledgeLessonRead: (lessonId: string, signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/read`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', ...(signal === undefined ? {} : { signal }) },
+        isStudentProgressResponse,
+      ),
+    submitLessonQuiz: (lessonId: string, answers: Array<number | null>, signal?: AbortSignal): Promise<StudentQuizResultResponse> =>
+      authRequest<StudentQuizResultResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/quiz`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers }), ...(signal === undefined ? {} : { signal }) },
+        isStudentQuizResultResponse,
+      ),
+    verifyLessonPractice: (lessonId: string, stage: 'IDENTIFY' | 'FIX', signal?: AbortSignal): Promise<StudentProgressResponse> =>
+      authRequest<StudentProgressResponse>(
+        `/api/v1/student/lessons/${encodeURIComponent(lessonId)}/practice/${stage}`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', ...(signal === undefined ? {} : { signal }) },
+        isStudentProgressResponse,
       ),
     getAssistantStatus: (signal?: AbortSignal): Promise<AssistantStatusResponse> =>
       authRequest<AssistantStatusResponse>(

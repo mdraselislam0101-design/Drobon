@@ -448,6 +448,88 @@ describe('scan creation: strict input validation', () => {
   });
 });
 
+describe('scan routes: strict query rejection (Pump 3)', () => {
+  test('unexpected query parameters are rejected (422) before any side effect', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      const url = `${server.baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/scans`;
+      const headers = { 'content-type': 'application/json', cookie: cookieHeader(owner) };
+      // POST + junk query: no scan creation, no quota consumption,
+      // even for polluting or repeated (HPP) parameters.
+      for (const query of ['?status=COMPLETED', '?scanType=SCA', '?role=ADMIN', '?a=1&a=2']) {
+        const res = await fetch(`${url}${query}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ scanType: 'DAST' }),
+        });
+        expect(res.status, query).toBe(422);
+        const json = (await readJson(res)) as {
+          error: { code: string; details: Array<{ path: string }> };
+        };
+        expect(json.error.code).toBe('VALIDATION_ERROR');
+        expect(json.error.details.length).toBeGreaterThan(0);
+      }
+      expect(await getUsage(server, owner)).toEqual({ used: 0 });
+      expect(await listScans(server, owner, projectId)).toHaveLength(0);
+      // GET list + junk query.
+      const list = await fetch(`${url}?order=asc`, { headers: { cookie: cookieHeader(owner) } });
+      expect(list.status).toBe(422);
+      // GET detail + junk query on a real scan id.
+      const created = await requestScan(server, owner, projectId);
+      expect(created.res.status).toBe(201);
+      const scanId = scanOf(created.body).id;
+      const detail = await fetch(`${url}/${scanId}?reveal=true`, {
+        headers: { cookie: cookieHeader(owner) },
+      });
+      expect(detail.status).toBe(422);
+      // The clean request still works (the hardening is opt-out of junk,
+      // not a blanket rejection).
+      const detailOk = await fetch(`${url}/${scanId}`, {
+        headers: { cookie: cookieHeader(owner) },
+      });
+      expect(detailOk.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('query rejection is uniform across ownership — no existence oracle is added', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    await seedUser(users, 'attacker@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const attacker = await login(server, 'attacker@example.test');
+      const projectId = await createProject(server, owner);
+      const unknownId = 'prj_00000000-0000-4000-8000-000000000000';
+      // With a query string the answer is 422 for a foreign AND an
+      // unknown project alike — identical, independent of existence.
+      for (const target of [projectId, unknownId]) {
+        const res = await fetch(
+          `${server.baseUrl}/api/v1/projects/${encodeURIComponent(target)}/scans?status=COMPLETED`,
+          { headers: { cookie: cookieHeader(attacker) } },
+        );
+        expect(res.status, target).toBe(422);
+      }
+      // Without a query string the uniform 403 policy still holds.
+      for (const target of [projectId, unknownId]) {
+        const res = await fetch(
+          `${server.baseUrl}/api/v1/projects/${encodeURIComponent(target)}/scans`,
+          { headers: { cookie: cookieHeader(attacker) } },
+        );
+        expect(res.status, target).toBe(403);
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
 describe('scan creation: quota consumed exactly once (atomicity)', () => {
   test('FREE account: 10 simultaneous requests → exactly 3 grants, 7 uniform 429s', async () => {
     const users = createMemoryUserRepository();
@@ -1153,6 +1235,127 @@ describe('scan processor lifecycle', () => {
     } finally {
       await second.stop();
       cleanupTempStoreDir(dir);
+    }
+  });
+
+  test('a DAST engine timeout outcome lands in the TIMED_OUT terminal state (Pump 3)', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const engine: ScanEngine = {
+      scanType: 'DAST',
+      execute: async () => ({
+        kind: 'timed-out' as const,
+        failureCode: 'DAST_SCAN_TIMEOUT' as const,
+        failureMessage: 'The DAST scan exceeded its execution deadline.',
+      }),
+    };
+    const server = await startTestServer({ users, scanEngines: [engine] });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      const created = await requestScan(server, owner, projectId);
+      expect(created.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const scan = (await listScans(server, owner, projectId))[0];
+      expect(scan).toBeDefined();
+      expect(scan?.status).toBe('TIMED_OUT');
+      expect(scan?.failureCode).toBe('DAST_SCAN_TIMEOUT');
+      expect(scan?.failureMessage).toContain('deadline');
+      expect(scan?.startedAt).toBeDefined();
+      expect(scan?.completedAt).toBeDefined();
+      expect(scan?.resultSummary).toBeUndefined(); // NEVER fabricated.
+      // Terminal: never claimable again and never re-finalizable.
+      expect(await server.scans.claimNextQueued()).toBeUndefined();
+      expect(await server.scans.completeScan(scan?.id ?? '', { findingsTotal: 0 })).toBeUndefined();
+      expect(await server.scans.failScan(scan?.id ?? '', 'SCAN_ENGINE_ERROR', 'late')).toBeUndefined();
+      const after = (await listScans(server, owner, projectId))[0];
+      expect(after?.status).toBe('TIMED_OUT');
+      expect(after?.failureCode).toBe('DAST_SCAN_TIMEOUT');
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('an engine completion rejected by the closed-shape guards never strands a scan RUNNING (Pump 3)', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    // A BUGGY/forged engine: SCA-type but its payload violates the
+    // shared closed-shape guard, so the durable store MUST refuse it.
+    // Before the Pump 3 fix this left the scan RUNNING until restart.
+    const engine: ScanEngine = {
+      scanType: 'SCA',
+      execute: async () => ({
+        kind: 'completed' as const,
+        resultSummary: { findingsTotal: 0 },
+        sca: {
+          summary: {},
+          dependencies: [],
+          manifests: [],
+          sbom: {},
+          advisories: [],
+        } as never,
+      }),
+    };
+    const server = await startTestServer({ users, scanEngines: [engine] });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      await uploadSources(server, owner, projectId, [
+        { path: 'package.json', content: '{"name":"x","version":"1.0.0"}\n' },
+      ]);
+      const created = await requestScan(server, owner, projectId, { scanType: 'SCA' });
+      expect(created.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const scan = (await listScans(server, owner, projectId))[0];
+      expect(scan).toBeDefined();
+      // Deterministic terminal state — never stranded in RUNNING.
+      expect(scan?.status).toBe('FAILED');
+      expect(scan?.failureCode).toBe('SCAN_ENGINE_ERROR');
+      expect(scan?.failureMessage).toBe('The scan result could not be recorded safely.');
+      expect(scan?.completedAt).toBeDefined();
+      expect(scan?.resultSummary).toBeUndefined(); // NEVER persisted/fabricated.
+      // Idempotent: the drain of a terminal scan changes nothing.
+      await server.scanProcessor.drain();
+      const after = (await listScans(server, owner, projectId))[0];
+      expect(after?.updatedAt).toBe(scan?.updatedAt);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('a timed-out outcome rejected for the scan type never strands a scan RUNNING either (Pump 3)', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    // A buggy SAST engine claims a DAST-only timeout code — the store's
+    // state machine refuses that pairing; the processor must still land
+    // the scan in a terminal FAILED state.
+    const engine: ScanEngine = {
+      scanType: 'SAST',
+      execute: async () => ({
+        kind: 'timed-out' as const,
+        failureCode: 'DAST_SCAN_TIMEOUT' as const,
+        failureMessage: 'The DAST scan exceeded its execution deadline.',
+      }),
+    };
+    const server = await startTestServer({ users, scanEngines: [engine] });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      await uploadSources(server, owner, projectId, [
+        { path: 'src/index.ts', content: 'console.log(1);\n' },
+      ]);
+      const created = await requestScan(server, owner, projectId, { scanType: 'SAST' });
+      expect(created.res.status).toBe(201);
+      await server.scanProcessor.drain();
+      const scan = (await listScans(server, owner, projectId))[0];
+      expect(scan).toBeDefined();
+      expect(scan?.status).toBe('FAILED');
+      expect(scan?.failureCode).toBe('SCAN_ENGINE_ERROR');
+      expect(scan?.failureMessage).toBe('The scan timeout could not be recorded safely.');
+      expect(scan?.completedAt).toBeDefined();
+      expect(scan?.resultSummary).toBeUndefined();
+    } finally {
+      await server.stop();
     }
   });
 });

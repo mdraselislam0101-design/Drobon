@@ -17,7 +17,7 @@ import { isProject, PROJECT_ID_PATTERN, type Project } from './projects.js';
 /** Server-side findings pages remain bounded by the existing per-scan cap. */
 export const FINDINGS_PAGE_SIZE_MAX = 100;
 export const FINDINGS_PAGE_MAX = 10_000;
-export const FINDING_LIFECYCLE_STATES = ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'REOPENED'] as const;
+export const FINDING_LIFECYCLE_STATES = ['OPEN', 'ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE', 'REOPENED'] as const;
 export type FindingLifecycleState = (typeof FINDING_LIFECYCLE_STATES)[number];
 export const FINDING_NOTE_MAX_LENGTH = 1_000;
 export const FINDING_NOTES_MAX_COUNT = 20;

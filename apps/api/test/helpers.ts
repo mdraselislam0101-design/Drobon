@@ -30,6 +30,7 @@ import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
+import type { EntitlementStore } from '../src/entitlements/store.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from '../src/assessments/store.js';
 
 export interface TestServer {
@@ -97,6 +98,7 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   scanStore?: ScanStore;
   /** Use a real JSON assessment store at a temp path for restart proofs. */
   assessmentStoreDir?: string;
+  studentStoreDir?: string;
   /** Inject an assessment store directly (defaults: memory or assessmentStoreDir). */
   assessmentStore?: AssessmentStore;
   /** Use a real JSON source store at a temp path instead of memory (Pump 8). */
@@ -107,8 +109,11 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   paymentStoreDir?: string;
   /** Inject a payment store directly (defaults: memory or paymentStoreDir). */
   paymentStore?: PaymentStore;
+  /** Inject the admin PRO entitlement store directly (restart proofs). */
+  entitlementStore?: EntitlementStore;
   /** Deterministic payment timestamps. */
   paymentNow?: () => number;
+  partnerNow?: () => number;
   /**
    * Inject scanner engines (Pump 8 default: the REAL SAST engine —
    * SAST scans analyze the project's uploaded source snapshot and
@@ -170,11 +175,14 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStore,
     assessmentStoreDir,
     assessmentStore,
+    studentStoreDir,
     sourceStoreDir,
     sourceStore,
     paymentStoreDir,
     paymentStore,
+    entitlementStore,
     paymentNow,
+    partnerNow,
     scanEngines,
     dastTargetPolicy,
     dastTransport,
@@ -204,9 +212,13 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     projectStorePath: ':memory:',
     scanStorePath: ':memory:',
     assessmentStorePath: ':memory:',
+    studentStorePath: ':memory:',
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
+    entitlementStorePath: ':memory:',
+    partnerStorePath: ':memory:',
+    paymentConfigStorePath: ':memory:',
     proPriceMinorUnits: 100_000,
     paymentReviewerIds: [],
     manualPaymentMethods: ['MANUAL_TRANSFER'],
@@ -228,6 +240,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStoreDir === undefined ? config.scanStorePath : join(scanStoreDir, 'scans.json');
   const effectiveAssessmentStorePath =
     assessmentStoreDir === undefined ? config.assessmentStorePath : join(assessmentStoreDir, 'assessments.json');
+  const effectiveStudentStorePath =
+    studentStoreDir === undefined ? config.studentStorePath : join(studentStoreDir, 'student-progress.json');
   const effectiveSourceStorePath =
     sourceStoreDir === undefined ? config.sourceStorePath : join(sourceStoreDir, 'sources.json');
   const effectivePaymentStorePath =
@@ -239,7 +253,8 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStoreDir === undefined &&
     assessmentStoreDir === undefined &&
     sourceStoreDir === undefined &&
-    paymentStoreDir === undefined
+    paymentStoreDir === undefined &&
+    studentStoreDir === undefined
       ? config
       : {
           ...config,
@@ -248,6 +263,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
           ...(projectStoreDir === undefined ? {} : { projectStorePath: effectiveProjectStorePath }),
           ...(scanStoreDir === undefined ? {} : { scanStorePath: effectiveScanStorePath }),
           ...(assessmentStoreDir === undefined ? {} : { assessmentStorePath: effectiveAssessmentStorePath }),
+          ...(studentStoreDir === undefined ? {} : { studentStorePath: effectiveStudentStorePath }),
           ...(sourceStoreDir === undefined ? {} : { sourceStorePath: effectiveSourceStorePath }),
           ...(paymentStoreDir === undefined ? {} : { paymentStorePath: effectivePaymentStorePath }),
         };
@@ -307,6 +323,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sessions: resolvedSessions,
     paymentStore: resolvedPaymentStore,
     ...(paymentNow === undefined ? {} : { paymentNow }),
+    ...(partnerNow === undefined ? {} : { partnerNow }),
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
@@ -314,6 +331,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
     ...(scanEngines === undefined ? {} : { scanEngines }),
+    ...(entitlementStore === undefined ? {} : { entitlementStore }),
     dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
     dastTransport: dastTransport ?? FIXTURE_DAST_TRANSPORT,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),

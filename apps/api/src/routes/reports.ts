@@ -32,7 +32,7 @@ import { createOwnProjectResolver, type OwnProjectResolver } from '../projects/a
 import type { ScanRecord, ScanStore } from '../scans/store.js';
 import { toScanResponse } from '../scans/store.js';
 import { sendSuccess } from '../respond.js';
-import { buildSecurityReport, canonicalJson, renderSecurityReportMarkdown } from '../reports/build.js';
+import { buildSecurityReport, canonicalJson, renderSbomExport, renderSecurityReportMarkdown, renderSecurityReportSarif } from '../reports/build.js';
 import { prepareFindingNote } from '../scans/findingWorkflow.js';
 import { remediationGuidanceForFinding } from '../scans/remediationGuidance.js';
 import * as v from '../lib/validate.js';
@@ -350,7 +350,23 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
           sendAttachment(res, renderSecurityReportMarkdown(report), 'text/markdown; charset=utf-8', `${stem}.md`);
           return;
         }
-        throw validationError([{ path: 'format', message: 'Must be json or markdown.' }]);
+        if (format === 'sarif') {
+          sendAttachment(res, renderSecurityReportSarif(report), 'application/sarif+json; charset=utf-8', `${stem}.sarif`);
+          return;
+        }
+        throw validationError([{ path: 'format', message: 'Must be json, markdown, or sarif.' }]);
+      },
+    },
+    {
+      method: 'GET',
+      path: '/api/v1/projects/:projectId/scans/:scanId/report/sbom',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        rejectUnknownQueryParameters(req);
+        const report = await reportForScan(ctx);
+        const sbom = renderSbomExport(report);
+        if (sbom === undefined) throw validationError([{ path: 'sbom', message: 'This scan has no dependency inventory; a standalone SBOM export is unavailable.' }]);
+        sendAttachment(res, sbom, 'application/json; charset=utf-8', `drobon-${report.reportId}.cdx.json`);
       },
     },
   ];

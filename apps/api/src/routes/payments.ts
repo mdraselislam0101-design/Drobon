@@ -9,9 +9,17 @@ import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import { sendSuccess } from '../respond.js';
 import type { PaymentService } from '../payments/service.js';
+import type { EntitlementService } from '../entitlements/service.js';
 import type { PaymentAdminFilters } from '../payments/store.js';
 
 export interface PaymentRouteDeps {
+  /**
+   * Active admin complimentary PRO grants extend the EFFECTIVE plan: a
+   * granted-PRO account is not a FREE account and cannot create a paid
+   * upgrade request (it already holds PRO). After a revoke/expiry the
+   * account is FREE again and a genuine payment works exactly as before.
+   */
+  entitlements?: EntitlementService;
   config: ApiConfig;
   users: UserRepository;
   payments: PaymentService;
@@ -23,6 +31,7 @@ const createSchema = v.object({
   currency: v.literal('BDT'),
   paymentMethod: v.literal('MANUAL_TRANSFER'),
   reference: v.string({ minLength: 6, maxLength: 64, trim: true, pattern: /^[A-Za-z0-9][A-Za-z0-9._-]{5,63}$/ }),
+  couponCode: v.optional(v.string({ minLength: 3, maxLength: 40, trim: true, pattern: /^[A-Za-z0-9][A-Za-z0-9-]{2,39}$/ })),
 });
 const emptySchema = v.object({});
 const rejectSchema = v.object({ reason: v.string({ minLength: 3, maxLength: 300, trim: true }) });
@@ -103,16 +112,44 @@ function rejectBodyFields(body: unknown): void {
   if (!parsed.ok) throw validationError(parsed.issues);
 }
 
+function requirePaymentId(raw: string | undefined): string {
+  if (typeof raw !== 'string' || raw.length > 64 || !/^pay_[0-9a-f-]{36}$/i.test(raw)) {
+    throw notFound();
+  }
+  return raw;
+}
+
 export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
-  const { config, users, payments } = deps;
+  const { config, users, payments, entitlements } = deps;
+  /** Effective plan: an active admin grant lifts PRO above the persisted subscription. */
+  const effectivePlanOf = (record: import('../auth/repositories.js').UserRecord): 'FREE' | 'PRO' =>
+    entitlements?.hasActivePro(record.id) === true ? 'PRO' : resolveSubscription(record).plan;
   return [
     {
       method: 'GET', path: '/api/v1/payments/config', requireAuth: true,
-      handler: async (_req, res, ctx) => {
+      handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
+        v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
-        sendSuccess(res, ctx, payments.config(resolveSubscription(record).plan));
+        sendSuccess(res, ctx, payments.config(effectivePlanOf(record)));
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/payments/quote', requireAuth: true,
+      handler: async (req, res, ctx) => {
+        actorFrom(ctx);
+        const url = new URL(req.url ?? '/', 'http://drobon.invalid');
+        for (const key of url.searchParams.keys()) {
+          if (key !== 'couponCode' || url.searchParams.getAll(key).length !== 1) {
+            throw validationError([{ path: key, message: 'Unexpected or repeated query parameter.' }]);
+          }
+        }
+        const raw = url.searchParams.get('couponCode');
+        if (raw !== null && !/^[A-Za-z0-9][A-Za-z0-9-]{2,39}$/.test(raw)) {
+          throw validationError([{ path: 'couponCode', message: 'Coupon codes are 3–40 characters of A–Z, 0–9 and dashes.' }]);
+        }
+        sendSuccess(res, ctx, payments.quote(raw));
       },
     },
     {
@@ -127,31 +164,32 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/payments', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
+        v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
-        const subscription = resolveSubscription(record);
         const input = await parseBody(req, config, createSchema);
         const idempotencyKey = requireIdempotencyKey(req.headers['idempotency-key']);
         const result = await payments.create({
           accountId: record.id,
           userId: actor.id,
-          currentPlan: subscription.plan,
+          currentPlan: effectivePlanOf(record),
           plan: input.plan,
           amountMinorUnits: input.amountMinorUnits,
           currency: input.currency,
           paymentMethod: input.paymentMethod as PaymentMethod,
           reference: input.reference,
           idempotencyKey,
+          ...(input.couponCode === undefined ? {} : { couponCode: input.couponCode }),
         });
         sendSuccess(res, ctx, { payment: result.payment }, result.created ? 201 : 200);
       },
     },
     {
       method: 'GET', path: '/api/v1/payments/:paymentId', requireAuth: true,
-      handler: async (_req, res, ctx) => {
+      handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         sendSuccess(res, ctx, payments.getForAccount(paymentId, actor.id));
       },
     },
@@ -159,8 +197,8 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/payments/:paymentId/cancel', requireAuth: true,
       handler: async (req, res, ctx) => {
         const actor = actorFrom(ctx);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         payments.getForAccount(paymentId, actor.id);
         if (req.headers['content-type'] !== undefined) rejectBodyFields(await parseBody(req, config, emptySchema));
         sendSuccess(res, ctx, { payment: await payments.cancel(paymentId, actor.id, actor.id) });
@@ -183,10 +221,10 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
     },
     {
       method: 'GET', path: '/api/v1/admin/payments/:paymentId/audit', requireAuth: true,
-      handler: async (_req, res, ctx) => {
+      handler: async (req, res, ctx) => {
         assertPaymentReviewer(ctx, config);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         sendSuccess(res, ctx, payments.audit(paymentId));
       },
     },
@@ -194,8 +232,8 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/review', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot review your own payment request.');
         if (req.headers['content-type'] !== undefined) rejectBodyFields(await parseBody(req, config, emptySchema));
@@ -206,8 +244,8 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/approve', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot approve your own payment request.');
         if (req.headers['content-type'] !== undefined) rejectBodyFields(await parseBody(req, config, emptySchema));
@@ -218,8 +256,8 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
       method: 'POST', path: '/api/v1/admin/payments/:paymentId/reject', requireAuth: true,
       handler: async (req, res, ctx) => {
         const reviewer = assertPaymentReviewer(ctx, config);
-        const paymentId = ctx.params['paymentId'];
-        if (paymentId === undefined) throw notFound();
+        v.rejectUnexpectedQuery(req);
+        const paymentId = requirePaymentId(ctx.params['paymentId']);
         const payment = payments.getForAdmin(paymentId);
         if (payment.submittedByUserId === reviewer.id) throw forbidden('You cannot reject your own payment request.');
         const input = await parseBody(req, config, rejectSchema);

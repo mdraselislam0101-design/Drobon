@@ -3,8 +3,23 @@
 import { spawn } from 'node:child_process';
 
 const TARGETS = [
-  { label: 'api', args: ['run', 'dev', '--workspace', '@drobon/api'] },
-  { label: 'web', args: ['run', 'dev', '--workspace', '@drobon/web'] },
+  {
+    label: 'api',
+    args: ['run', 'dev', '--workspace', '@drobon/api'],
+    env: {
+      ...process.env,
+      HOST: process.env.API_HOST ?? '127.0.0.1',
+    },
+  },
+  {
+    label: 'web',
+    args: ['run', 'dev', '--workspace', '@drobon/web'],
+    env: {
+      ...process.env,
+      HOST: process.env.HOST ?? '0.0.0.0',
+      ALLOWED_HOSTS: process.env.ALLOWED_HOSTS ?? '*',
+    },
+  },
 ];
 
 const children = [];
@@ -32,6 +47,7 @@ for (const target of TARGETS) {
   const child = spawn('npm', target.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: process.platform === 'win32',
+    env: target.env,
   });
   children.push(child);
   pipe(child, target.label, 'stdout', 'out');

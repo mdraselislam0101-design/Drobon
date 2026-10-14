@@ -55,6 +55,7 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
     expect(res.headers.get('access-control-allow-methods')).toContain('POST');
     expect(res.headers.get('access-control-allow-headers')).toContain('X-Request-Id');
+    expect(res.headers.get('access-control-allow-headers')).toContain('Idempotency-Key');
   });
 
   test('disallowed preflights fail closed with a bare 204', async () => {

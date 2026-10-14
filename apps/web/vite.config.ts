@@ -35,33 +35,35 @@ function parseAllowedHosts(raw: string | undefined): string[] | true {
 export default defineConfig(() => {
   const host = process.env['HOST'] ?? '127.0.0.1';
   const allowedHosts = parseAllowedHosts(process.env['ALLOWED_HOSTS']);
-  // Dev-only same-origin proxy to the API (local split-port development).
+  // Dev/preview same-origin proxy to the API (local split-port development).
   // Production has no such proxy: split hosting must bake VITE_API_BASE_URL
   // into the bundle and list the web origin in CORS_ALLOWED_ORIGINS.
   const apiTarget = `http://127.0.0.1:${parsePort(process.env['PORT'], 3001)}`;
+  const proxy = {
+    // changeOrigin must stay FALSE (the Pump 2 fix): the proxy must
+    // forward the browser's Host (e.g. 127.0.0.1:5173) so the API's
+    // CSRF origin guard sees the request as same-origin. Rewriting
+    // Host to the API target makes every proxied POST/DELETE fail
+    // the guard with 403.
+    '/api': { target: apiTarget },
+    '/livez': { target: apiTarget },
+    '/readyz': { target: apiTarget },
+  };
   return {
-    plugins: [react(), aegisSecurity()],
+    plugins: [react(), aegisSecurity({ allowFrameEmbedding: allowedHosts === true })],
     server: {
       host,
       port: parsePort(process.env['WEB_PORT'], 5173),
       allowedHosts,
       strictPort: true,
-      proxy: {
-        // changeOrigin must stay FALSE (the Pump 2 fix): the proxy must
-        // forward the browser's Host (e.g. 127.0.0.1:5173) so the API's
-        // CSRF origin guard sees the request as same-origin. Rewriting
-        // Host to the API target makes every proxied POST/DELETE fail
-        // the guard with 403.
-        '/api': { target: apiTarget },
-        '/livez': { target: apiTarget },
-        '/readyz': { target: apiTarget },
-      },
+      proxy,
     },
     preview: {
       host,
       port: parsePort(process.env['PREVIEW_PORT'], 4173),
       allowedHosts,
       strictPort: true,
+      proxy,
     },
     build: {
       outDir: 'dist',

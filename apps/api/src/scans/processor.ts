@@ -158,7 +158,22 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
           outcome.dast,
         );
         if (completed === undefined) {
+          // FAIL CLOSED (Pump 3): the durable store rejected the engine
+          // outcome (it failed the shared closed-shape/invariant
+          // guards). A scan must NEVER strand in RUNNING — claim the
+          // deterministic terminal FAILED state so the lifecycle always
+          // ends, whatever an engine produced.
           logger.error('Scan finalize failed after completion', { scanId: scan.id });
+          const recovered = await store.failScan(
+            scan.id,
+            'SCAN_ENGINE_ERROR',
+            'The scan result could not be recorded safely.',
+          );
+          if (recovered === undefined) {
+            logger.error('Scan recovery after rejected completion did not apply', {
+              scanId: scan.id,
+            });
+          }
           return true;
         }
         logger.info('Scan completed', {
@@ -171,7 +186,22 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       if (outcome.kind === 'timed-out') {
         const timedOut = await store.timeoutScan(scan.id, outcome.failureCode, outcome.failureMessage);
         if (timedOut === undefined) {
-          logger.error('Scan finalize failed after engine timeout outcome', { scanId: scan.id });
+          // FAIL CLOSED (Pump 3): the store refused the timeout
+          // transition (e.g. a non-DAST scan type claimed a DAST
+          // timeout code). Never leave the scan stranded in RUNNING.
+          logger.error('Scan finalize failed after engine timeout outcome', {
+            scanId: scan.id,
+          });
+          const recovered = await store.failScan(
+            scan.id,
+            'SCAN_ENGINE_ERROR',
+            'The scan timeout could not be recorded safely.',
+          );
+          if (recovered === undefined) {
+            logger.error('Scan recovery after rejected timeout did not apply', {
+              scanId: scan.id,
+            });
+          }
           return true;
         }
         logger.info('Scan timed out', {

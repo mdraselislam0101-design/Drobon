@@ -24,7 +24,7 @@ const STUDENT_OVERVIEW: WorkspaceSecurityOverviewResponse = { overview: {
   findings: {
     currentObserved: 1, unresolved: 1,
     unresolvedBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
-    byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 1, RESOLVED: 0, REOPENED: 0 },
+    byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 1, RESOLVED: 0, FALSE_POSITIVE: 0, REOPENED: 0 },
     byVerificationState: { OBSERVED: 1, NOT_OBSERVED_IN_LATEST_SCAN: 0 },
     recent: [{
       findingId: 'fnd_000000000000000000000001', projectId: 'prj_00000000-0000-4000-8000-000000000001',

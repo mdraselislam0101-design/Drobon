@@ -18,6 +18,7 @@ import {
   isScanStatus,
   isScanType,
   isScansResponse,
+  isScanComparisonResponse,
   type Finding,
   type Scan,
 } from '../src/scans.js';
@@ -474,5 +475,46 @@ describe('findings (Pump 8)', () => {
     expect(isScanDetailResponse({ scan: { ...detail, findings: [finding, { bad: 1 }] } })).toBe(false);
     // Extra envelope fields: rejected (closed shape).
     expect(isScanDetailResponse({ scan: detail, extra: true })).toBe(false);
+  });
+});
+
+describe('scan comparison guard (Phase 22 Pump 3)', () => {
+  const base = {
+    projectId: 'prj_00000000-0000-4000-8000-000000000001',
+    scanType: 'SAST',
+    baselineScanId: 'scan_00000000-0000-4000-8000-000000000001',
+    currentScanId: 'scan_00000000-0000-4000-8000-000000000002',
+    generatedAt: '2026-09-30T10:00:00.000Z',
+    counts: { new: 1, unchanged: 0, resolved: 1, reopened: 0, changed: 0 },
+    entries: [
+      {
+        fingerprint: 'a'.repeat(64),
+        findingId: 'fnd_' + 'a'.repeat(24),
+        ruleId: 'DG-SAST-002',
+        location: 'src/app.js',
+        state: 'NEW',
+        currentSeverity: 'HIGH',
+      },
+      {
+        fingerprint: 'b'.repeat(64),
+        findingId: 'fnd_' + 'b'.repeat(24),
+        ruleId: 'DG-SAST-004',
+        location: 'src/app.js',
+        state: 'RESOLVED',
+        baselineSeverity: 'MEDIUM',
+      },
+    ],
+  };
+  test('accepts an honest closed-shape comparison', () => {
+    expect(isScanComparisonResponse(base)).toBe(true);
+  });
+  test('rejects broken counts, leaky shapes, and impossible state/severity pairs', () => {
+    expect(isScanComparisonResponse({ ...base, counts: { ...base.counts, new: 2 } })).toBe(false); // sum mismatch
+    expect(isScanComparisonResponse({ ...base, counts: { ...base.counts, extra: 1 } })).toBe(false);
+    expect(isScanComparisonResponse({ ...base, entries: [...base.entries, { ...base.entries[0], state: 'RESOLVED', baselineSeverity: undefined }] })).toBe(false);
+    expect(isScanComparisonResponse({ ...base, entries: [{ ...base.entries[0], state: 'NEW', currentSeverity: undefined }] })).toBe(false);
+    expect(isScanComparisonResponse({ ...base, entries: [{ ...base.entries[0], fingerprint: 'short' }] })).toBe(false);
+    expect(isScanComparisonResponse({ ...base, extra: true })).toBe(false);
+    expect(isScanComparisonResponse(null)).toBe(false);
   });
 });

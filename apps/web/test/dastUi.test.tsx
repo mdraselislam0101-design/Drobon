@@ -134,4 +134,19 @@ describe('passive DAST project UI', () => {
     expect(getScan).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID);
     expect(getFinding).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID, finding.id);
   });
+
+  test('archived projects display configured target read-only and hide the DAST target form', async () => {
+    const client = signedInClient({
+      getProject: vi.fn(async () => ({
+        project: project({ status: 'ARCHIVED', dastTargetUrl: TARGET }),
+      })),
+    });
+    await renderAt(`/projects/${PROJECT_ID}`, client);
+
+    expect(await screen.findByTestId('archived-dast-target-note')).toHaveTextContent(
+      'Archived projects cannot change the DAST target.',
+    );
+    expect(screen.getByTestId('dast-configured-target')).toHaveTextContent(TARGET);
+    expect(screen.queryByTestId('dast-target-form')).toBeNull();
+  });
 });

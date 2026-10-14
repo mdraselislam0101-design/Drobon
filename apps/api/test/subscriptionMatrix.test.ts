@@ -258,6 +258,14 @@ describe('live server state (operator changes apply immediately)', () => {
         byEmail.set(current.email, next);
         return 'ACTIVATED';
       },
+      setUserType: async (id, userType) => {
+        const current = byId.get(id);
+        if (current === undefined) return undefined;
+        const next: UserRecord = { ...current, userType };
+        byId.set(id, next);
+        byEmail.set(current.email, next);
+        return next;
+      },
       setSubscription: (id, sub) => {
         const current = byId.get(id);
         if (current === undefined) {

@@ -57,6 +57,15 @@ export interface UsageServiceOptions {
    * month boundaries deterministically — production passes Date.now.
    */
   now?: () => number;
+  /**
+   * Effective-PRO override, injected at composition: `true` when the
+   * account holds at least one ACTIVE admin complimentary PRO grant
+   * (entitlements service). The exemption rule is unchanged — it simply
+   * applies to the EFFECTIVE plan. The grant store is read-only here:
+   * quota consumption can never create, extend or revoke a grant, and
+   * the account's persisted subscription is never touched.
+   */
+  activePro?: (accountId: string) => boolean;
 }
 
 /** `YYYY-MM` for a moment in time (UTC — the quota authority). */
@@ -87,13 +96,20 @@ export function secondsUntilNextPeriod(timeMs: number): number {
 export function createUsageService(options: UsageServiceOptions): UsageService {
   const store = options.store;
   const now = options.now ?? Date.now;
+  const activePro = options.activePro;
 
-  /** Active PRO entitlement per the Pump 4 decision table (server-side). */
+  /**
+   * Active PRO entitlement per the Pump 4 decision table (server-side),
+   * extended with the effective-PRO verdict for active admin grants.
+   */
   const isExempt = (record: UserRecord): boolean =>
-    hasEntitlement(deriveEntitlements(record), 'feature:pro');
+    hasEntitlement(deriveEntitlements(record), 'feature:pro') ||
+    (activePro?.(record.id) ?? false);
 
   const view = (record: UserRecord, deviceHash: string, timeMs: number): UsageResponse => {
-    const plan: Plan = resolveSubscription(record).plan;
+    const plan: Plan = activePro?.(record.id) === true
+      ? 'PRO'
+      : resolveSubscription(record).plan;
     const periodId = usagePeriodIdAt(timeMs);
     const used = store.getAccountUsed(record.id, periodId);
     if (isExempt(record)) {

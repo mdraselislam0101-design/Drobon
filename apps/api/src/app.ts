@@ -34,6 +34,8 @@ import { createSubscriptionRoutes } from './routes/subscription.js';
 import { createUsageRoutes } from './routes/usage.js';
 import { createProjectRoutes } from './routes/projects.js';
 import { createUsageService, type UsageService } from './usage/service.js';
+import { createEntitlementService, type EntitlementService } from './entitlements/service.js';
+import { createJsonFileEntitlementStore, createMemoryEntitlementStore, type EntitlementStore } from './entitlements/store.js';
 import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
 import {
   createJsonFileProjectStore,
@@ -61,9 +63,15 @@ import { createSourceRoutes } from './routes/sources.js';
 import { createReportsRoutes } from './routes/reports.js';
 import { createAssistantRoutes } from './routes/assistant.js';
 import { createPaymentRoutes } from './routes/payments.js';
+import { createPartnerRoutes } from './routes/partners.js';
 import { createAdminRoutes } from './routes/admin.js';
 import { createWorkspaceRoutes } from './routes/workspace.js';
+import { createStudentRoutes } from './routes/student.js';
+import { createJsonFileStudentStore, createMemoryStudentStore, type StudentStore } from './student/store.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from './payments/store.js';
+import { createJsonFilePartnerStore, createMemoryPartnerStore, type PartnerStore } from './partners/store.js';
+import { createJsonFilePaymentConfigStore, createMemoryPaymentConfigStore, type PaymentConfigStore } from './payments/configStore.js';
+import { createPartnerService, type PartnerService } from './partners/service.js';
 import { createPaymentService, type PaymentService } from './payments/service.js';
 import type { UsageStore } from './usage/store.js';
 import type { Logger } from './logger.js';
@@ -149,6 +157,12 @@ export interface AppDeps {
   scanProcessorAutoStart?: boolean;
   /** Durable payment + audit JSON store; tests may inject a local fixture. */
   paymentStore?: PaymentStore;
+  /** Durable admin PRO entitlement store; tests may inject a local fixture. */
+  entitlementStore?: EntitlementStore;
+  partnerStore?: PartnerStore;
+  paymentConfigStore?: PaymentConfigStore;
+  /** Clock for partner/coupon/commission timestamps (injectable for tests). */
+  partnerNow?: () => number;
   /** Payment-service clock (epoch ms), injectable for deterministic tests. */
   paymentNow?: () => number;
 }
@@ -231,6 +245,9 @@ export function createApp(deps: AppDeps): App {
     (config.assessmentStorePath === ':memory:'
       ? createMemoryAssessmentStore()
       : createJsonFileAssessmentStore(config.assessmentStorePath));
+  const studentStore: StudentStore = (config.studentStorePath === ':memory:'
+      ? createMemoryStudentStore()
+      : createJsonFileStudentStore(config.studentStorePath));
   // Source-snapshot store (Pump 8): durable by default (fail-fast on a
   // corrupt document — the process refuses to start). Tests inject
   // their own store; `:memory:` is the ephemeral dev opt-in.
@@ -246,13 +263,51 @@ export function createApp(deps: AppDeps): App {
     (config.paymentStorePath === ':memory:'
       ? createMemoryPaymentStore()
       : createJsonFilePaymentStore(config.paymentStorePath));
+  // Partner/coupon/commission share one atomic JSON document ( Pump 7 ). Durable
+  // outside explicitly ephemeral development; production forbids ':memory:'.
+  const partnerStore: PartnerStore =
+    deps.partnerStore ??
+    (config.partnerStorePath === ':memory:'
+      ? createMemoryPartnerStore()
+      : createJsonFilePartnerStore(config.partnerStorePath));
+  // Runtime admin-managed payment configuration (Phase 20): PRO price and
+  // manual-transfer destinations. Seeded from the boot-time environment until
+  // the first platform-admin change; durable outside ephemeral development.
+  const paymentConfig: PaymentConfigStore =
+    deps.paymentConfigStore ??
+    (config.paymentConfigStorePath === ':memory:'
+      ? createMemoryPaymentConfigStore(config.proPriceMinorUnits)
+      : createJsonFilePaymentConfigStore(config.paymentConfigStorePath, config.proPriceMinorUnits));
+  // Admin complimentary PRO entitlements (grants are NEVER payments).
+  // One atomic JSON document for grants + their append-only audit trail;
+  // durable outside explicitly ephemeral development.
+  const entitlementStore: EntitlementStore =
+    deps.entitlementStore ??
+    (config.entitlementStorePath === ':memory:'
+      ? createMemoryEntitlementStore()
+      : createJsonFileEntitlementStore(config.entitlementStorePath));
+  const entitlements: EntitlementService = createEntitlementService({
+    store: entitlementStore,
+    users,
+  });
+
+  const partners: PartnerService = createPartnerService({
+    store: partnerStore,
+    users,
+    payments: paymentStore,
+    ...(deps.partnerNow === undefined ? {} : { now: deps.partnerNow }),
+  });
   const payments: PaymentService = createPaymentService({
     config,
     store: paymentStore,
     users,
+    paymentConfig,
     ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
+    partners,
   });
-  const ready = payments.recoverInterruptedApprovals();
+  const ready = payments
+    .recoverInterruptedApprovals()
+    .then(() => partners.recoverUnsettledCommissions());
   // One policy instance is shared by configuration preflight, scan
   // preflight and engine execution. The engine re-resolves and pins
   // every request independently, so saved configuration is never
@@ -283,6 +338,7 @@ export function createApp(deps: AppDeps): App {
   });
   const usage: UsageService = createUsageService({
     store: usageStore,
+    activePro: (accountId) => entitlements.hasActivePro(accountId),
     ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
   });
 
@@ -292,11 +348,13 @@ export function createApp(deps: AppDeps): App {
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
-    ...createSubscriptionRoutes(),
-    ...createPaymentRoutes({ config, users, payments }),
-    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor }),
+    ...createSubscriptionRoutes({ grants: entitlements }),
+    ...createPaymentRoutes({ config, users, payments, entitlements }),
+    ...createPartnerRoutes({ config, partners }),
+    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig, entitlements }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
+    ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({
@@ -348,8 +406,11 @@ export function createApp(deps: AppDeps): App {
       : { maxRequests: config.paymentRateLimitMaxRequests, windowMs: config.paymentRateLimitWindowMs, now: deps.rateLimitNow },
   );
   const paymentMutationRateLimit: Middleware = async (req, res, ctx, next) => {
-    const paymentMutation = ctx.method === 'POST' &&
-      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') || ctx.pathname.startsWith('/api/v1/admin/payments/'));
+    const paymentMutation = (ctx.method === 'POST' || ctx.method === 'PATCH') &&
+      (ctx.pathname === '/api/v1/payments' || ctx.pathname.startsWith('/api/v1/payments/') ||
+        ctx.pathname.startsWith('/api/v1/admin/payments/') || ctx.pathname.startsWith('/api/v1/admin/partners/') ||
+        ctx.pathname === '/api/v1/admin/partners' || ctx.pathname.startsWith('/api/v1/admin/commissions/') ||
+        ctx.pathname === '/api/v1/admin/payment-config' || ctx.pathname.startsWith('/api/v1/admin/payment-config/'));
     if (paymentMutation) await paymentRateLimiter.middleware(req, res, ctx, next);
     else await next();
   };

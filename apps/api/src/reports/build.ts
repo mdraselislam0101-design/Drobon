@@ -277,3 +277,123 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
   }
   return markdown;
 }
+
+/** SARIF 2.1.0 severity mapping: rule-fixed DROBON severity to SARIF level. */
+function sarifLevel(severity: Finding['severity']): 'error' | 'warning' | 'note' {
+  if (severity === 'CRITICAL' || severity === 'HIGH') return 'error';
+  if (severity === 'MEDIUM') return 'warning';
+  return 'note';
+}
+
+interface SarifRule {
+  id: string;
+  name: string;
+  shortDescription: { text: string };
+  fullDescription: { text: string };
+  help: { text: string };
+  defaultConfiguration: { level: 'error' | 'warning' | 'note' };
+  properties: { tags: string[] };
+}
+
+interface SarifResult {
+  ruleId: string;
+  ruleIndex: number;
+  level: 'error' | 'warning' | 'note';
+  message: { text: string };
+  locations: SarifLocation[];
+  fingerprints: Record<string, string>;
+}
+
+type SarifLocation =
+  | { physicalLocation: { artifactLocation: { uri: string }; region: { startLine: number; startColumn?: number } } }
+  | { logicalLocations: Array<{ fullyQualifiedName: string }> };
+
+/**
+ * Machine-readable SARIF 2.1.0 rendering of a persisted security report
+ * (Phase 22). Pure transformation of already-persisted, already-authorized
+ * report data — no new trust surface: same route, same ownership checks.
+ * Rules are deduplicated by stable ruleId in first-occurrence order; DAST
+ * findings (no source location) use logical locations. Fingerprints carry
+ * the DROBON stable fingerprint so CI importers can correlate across runs.
+ */
+export function renderSecurityReportSarif(report: SecurityReport): string {
+  const rules: SarifRule[] = [];
+  const ruleIndexById = new Map<string, number>();
+  const results: SarifResult[] = [];
+  for (const finding of report.findings) {
+    let ruleIndex = ruleIndexById.get(finding.ruleId);
+    if (ruleIndex === undefined) {
+      ruleIndex = rules.length;
+      ruleIndexById.set(finding.ruleId, ruleIndex);
+      const tags = ['security', ...(finding.cwe === undefined ? [] : [finding.cwe])];
+      rules.push({
+        id: finding.ruleId,
+        name: finding.ruleId,
+        shortDescription: { text: finding.title },
+        fullDescription: { text: finding.description },
+        help: { text: finding.remediation },
+        defaultConfiguration: { level: sarifLevel(finding.severity) },
+        properties: { tags },
+      });
+    }
+    const location: SarifLocation = finding.scanner === 'DAST'
+      ? { logicalLocations: [{ fullyQualifiedName: `${finding.method} ${finding.endpoint} (HTTP ${finding.responseStatus})` }] }
+      : {
+          physicalLocation: {
+            artifactLocation: { uri: finding.file },
+            region: { startLine: Math.max(1, finding.line), ...(finding.column >= 1 ? { startColumn: finding.column } : {}) },
+          },
+        };
+    results.push({
+      ruleId: finding.ruleId,
+      ruleIndex,
+      level: sarifLevel(finding.severity),
+      message: { text: `${finding.title} — ${finding.description}` },
+      locations: [location],
+      fingerprints: { 'drobon/v1': finding.fingerprint },
+    });
+  }
+  const log = {
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+    version: '2.1.0',
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: 'DROBON AEGIS',
+            version: report.reportVersion,
+            semanticVersion: report.reportVersion,
+            rules,
+          },
+        },
+        results,
+        properties: {
+          'drobon/reportId': report.reportId,
+          'drobon/generatedAt': report.generatedAt,
+          'drobon/contentDigest': report.contentDigest,
+          'drobon/projectId': report.project.id,
+          'drobon/projectName': report.project.name,
+          'drobon/scanId': report.scan.id,
+          'drobon/scanType': report.scan.scanType,
+          'drobon/dependencyIntelligence': report.dependencyIntelligence.status,
+          'drobon/honesty': 'Findings reflect pattern-based analysis of this snapshot; dependency vulnerability intelligence status is carried verbatim and is not a verdict when NOT_ASSESSED.',
+        },
+      },
+    ],
+  };
+  const sarif = `${JSON.stringify(log, null, 2)}\n`;
+  if (Buffer.byteLength(sarif, 'utf8') > REPORT_MAX_BYTES * 2) {
+    throw new RangeError('The SARIF report exceeds the configured export size limit.');
+  }
+  return sarif;
+}
+
+/**
+ * Standalone CycloneDX SBOM export (Phase 22). The document is the exact
+ * persisted `inventory.sca.sbom` subset — re-serialized for delivery, not
+ * regenerated. Throws when the scan produced no dependency inventory.
+ */
+export function renderSbomExport(report: SecurityReport): string | undefined {
+  if (report.inventory.status !== 'INCLUDED') return undefined;
+  return `${JSON.stringify(report.inventory.sca.sbom, null, 2)}\n`;
+}

@@ -1,4 +1,3 @@
-import type { IncomingMessage } from 'node:http';
 import {
   ASSISTANT_QUESTION_MAX_LENGTH,
   FINDING_ID_PATTERN,
@@ -7,7 +6,7 @@ import {
   type AssistantStatusResponse,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { badRequest, unauthorized, validationError } from '../errors.js';
+import { unauthorized, validationError } from '../errors.js';
 import type { Route } from '../http.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
@@ -31,14 +30,6 @@ const questionSchema = v.object({
   compareScanId: v.optional(v.string({ pattern: SCAN_ID_PATTERN })),
 });
 
-function queryIsEmpty(req: IncomingMessage): boolean {
-  try {
-    return new URL(req.url ?? '/', 'http://localhost').search.length === 0;
-  } catch {
-    throw badRequest('Malformed request URL.');
-  }
-}
-
 export function createAssistantRoutes(deps: AssistantRouteDeps): Route[] {
   const { config, projects, scans } = deps;
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
@@ -49,7 +40,8 @@ export function createAssistantRoutes(deps: AssistantRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/assistant/status',
       requireAuth: true,
-      handler: async (_req, res, ctx): Promise<void> => {
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const result: AssistantStatusResponse = service.status();
         sendSuccess(res, ctx, result);
       },
@@ -59,10 +51,10 @@ export function createAssistantRoutes(deps: AssistantRouteDeps): Route[] {
       path: '/api/v1/projects/:projectId/assistant/ask',
       requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
-        if (!queryIsEmpty(req)) throw badRequest('Assistant requests do not accept query parameters.');
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 8_192) });
         const parsed = questionSchema.parse(raw);
         if (!parsed.ok) throw validationError(parsed.issues);

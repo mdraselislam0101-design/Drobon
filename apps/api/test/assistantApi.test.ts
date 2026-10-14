@@ -95,10 +95,15 @@ describe('Pump 14 assistant API authorization and honest behavior', () => {
     expect((await ask(server, owner, projectId, { question: '   ' })).status).toBe(422);
     expect((await ask(server, owner, projectId, { question: 'Explain', findingId: `fnd_${'a'.repeat(24)}` })).status).toBe(422);
     expect((await ask(server, owner, projectId, { question: 'Compare scans', compareScanId: 'scan_00000000-0000-4000-8000-000000000001' })).status).toBe(422);
+    // Stray query strings fail closed with the uniform 422 vocabulary before
+    // ownership or body parsing (Pump 5 — shared rejectUnexpectedQuery).
     expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/assistant/ask?provider=external`, {
       method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(owner) },
       body: JSON.stringify({ question: 'valid' }),
-    })).status).toBe(400);
+    })).status).toBe(422);
+    expect((await fetch(`${server.baseUrl}/api/v1/assistant/status?verbose=true`, {
+      headers: { cookie: cookieHeader(owner) },
+    })).status).toBe(422);
     expect((await ask(server, owner, projectId, { question: 'x'.repeat(9_000) })).status).toBe(413);
   });
 

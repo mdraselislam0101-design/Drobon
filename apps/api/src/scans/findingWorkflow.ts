@@ -30,11 +30,12 @@ export type PreparedFindingNote =
   | { ok: false; reason: 'EMPTY' | 'TOO_LONG' | 'CONTROL_CHARACTER' | 'HTML_NOT_ALLOWED' };
 
 const TRANSITIONS: Readonly<Record<FindingLifecycleState, readonly FindingLifecycleState[]>> = {
-  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
-  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED'],
-  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED'],
+  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED', 'FALSE_POSITIVE'],
   RESOLVED: [],
-  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
+  FALSE_POSITIVE: [],
+  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
 };
 
 function uuidFromSeed(seed: string): string {
@@ -138,7 +139,7 @@ export function observeFindingInScan(
   scan: WorkflowScanContext,
 ): FindingWorkflowRecord {
   const stateBefore = workflow.state;
-  const stateAfter: FindingLifecycleState = stateBefore === 'RESOLVED' ? 'REOPENED' : stateBefore;
+  const stateAfter: FindingLifecycleState = stateBefore === 'RESOLVED' || stateBefore === 'FALSE_POSITIVE' ? 'REOPENED' : stateBefore;
   const verificationChanged = workflow.verificationState !== 'OBSERVED';
   let updated: FindingWorkflowRecord = {
     ...workflow,

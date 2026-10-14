@@ -60,6 +60,102 @@ describe('auth security controls', () => {
       expect(JSON.stringify(meResult.body)).not.toContain(token);
       expect(JSON.stringify(meResult.body)).not.toContain('scrypt$');
     });
+
+    test('login and register rotate any attached session token and replace stale session cookies cleanly', async () => {
+      const first = await register(server, 'rotate-a@example.test', PW);
+      const firstCookie = sessionCookieFrom(first.res);
+      expect((await me(server, firstCookie)).res.status).toBe(200);
+
+      // Re-authenticating while carrying the old session cookie revokes the old session immediately.
+      const relogin = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: firstCookie },
+        body: JSON.stringify({ email: 'rotate-a@example.test', password: PW }),
+      });
+      expect(relogin.status).toBe(200);
+      const secondCookie = sessionCookieFrom(relogin);
+      expect(secondCookie).not.toBe(firstCookie);
+      expect((await me(server, firstCookie)).res.status).toBe(401);
+      expect((await me(server, secondCookie)).res.status).toBe(200);
+
+      // Registering a new account while carrying an active session revokes the prior session.
+      const switched = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: secondCookie },
+        body: JSON.stringify({ email: 'rotate-b@example.test', password: PW }),
+      });
+      expect(switched.status).toBe(201);
+      const thirdCookie = sessionCookieFrom(switched);
+      expect((await me(server, secondCookie)).res.status).toBe(401);
+      expect((await me(server, thirdCookie)).res.status).toBe(200);
+
+      // Logging in with a stale/expired session cookie emits only one authoritative drobon_session cookie.
+      const staleLogin = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: 'drobon_session=stale-expired-token' },
+        body: JSON.stringify({ email: 'rotate-b@example.test', password: PW }),
+      });
+      expect(staleLogin.status).toBe(200);
+      const sessionSetCookies = staleLogin.headers
+        .getSetCookie()
+        .filter((entry) => entry.startsWith('drobon_session='));
+      expect(sessionSetCookies).toHaveLength(1);
+      expect(sessionSetCookies[0]).not.toContain('Max-Age=0');
+    });
+
+    test('auth routes reject unexpected query parameters and non-empty logout bodies', async () => {
+      const { res } = await register(server, 'query-guard@example.test', PW);
+      const cookie = sessionCookieFrom(res);
+
+      expect(
+        (
+          await fetch(`${server.baseUrl}/api/v1/auth/register?role=ADMIN`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'q-reg@example.test', password: PW }),
+          })
+        ).status,
+      ).toBe(422);
+
+      expect(
+        (
+          await fetch(`${server.baseUrl}/api/v1/auth/login?role=ADMIN`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email: 'query-guard@example.test', password: PW }),
+          })
+        ).status,
+      ).toBe(422);
+
+      expect(
+        (
+          await fetch(`${server.baseUrl}/api/v1/me?userId=usr_other`, {
+            headers: { cookie },
+          })
+        ).status,
+      ).toBe(422);
+
+      expect(
+        (
+          await fetch(`${server.baseUrl}/api/v1/auth/logout?userId=usr_other`, {
+            method: 'POST',
+            headers: { cookie },
+          })
+        ).status,
+      ).toBe(422);
+
+      expect(
+        (
+          await fetch(`${server.baseUrl}/api/v1/auth/logout`, {
+            method: 'POST',
+            headers: { cookie, 'content-type': 'application/json' },
+            body: JSON.stringify({ userId: 'usr_other' }),
+          })
+        ).status,
+      ).toBe(422);
+
+      expect((await me(server, cookie)).res.status).toBe(200);
+    });
   });
 
   describe('CSRF origin guard', () => {
@@ -109,6 +205,52 @@ describe('auth security controls', () => {
         body: JSON.stringify({ message: 'same-host-test' }),
       });
       expect(sameHost.status).toBe(200);
+    });
+
+    test('non-HTTP(S) or un-normalized same-host Origin and foreign Referer are refused with 403', async () => {
+      const host = new URL(server.baseUrl).host;
+      for (const badOrigin of [
+        `ftp://${host}`,
+        `http://user:pass@${host}`,
+        `http://${host}/unexpected-path`,
+      ]) {
+        const res = await fetch(`${server.baseUrl}/api/v1/echo`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: badOrigin },
+          body: JSON.stringify({ message: 'bad-origin' }),
+        });
+        expect(res.status).toBe(403);
+      }
+
+      const foreignReferer = await fetch(`${server.baseUrl}/api/v1/echo`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          referer: 'https://evil.example.test/csrf-form.html',
+        },
+        body: JSON.stringify({ message: 'foreign-referer' }),
+      });
+      expect(foreignReferer.status).toBe(403);
+
+      const allowedReferer = await fetch(`${server.baseUrl}/api/v1/echo`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          referer: 'https://app.example.test/account?tab=1',
+        },
+        body: JSON.stringify({ message: 'allowed-referer' }),
+      });
+      expect(allowedReferer.status).toBe(200);
+
+      const sameHostReferer = await fetch(`${server.baseUrl}/api/v1/echo`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          referer: `${server.baseUrl}/projects`,
+        },
+        body: JSON.stringify({ message: 'same-host-referer' }),
+      });
+      expect(sameHostReferer.status).toBe(200);
     });
 
     test('requests without Origin (non-browser clients) pass the guard', async () => {
@@ -241,9 +383,13 @@ describe('auth security controls', () => {
             projectStorePath: `${dir}/projects.json`,
             scanStorePath: `${dir}/scans.json`,
             assessmentStorePath: `${dir}/assessments.json`,
+            studentStorePath: ':memory:',
             sourceStorePath: ':memory:',
             vulnIntelProvider: 'none' as const,
             paymentStorePath: `${dir}/payments.json`,
+            partnerStorePath: `${dir}/partners.json`,
+            paymentConfigStorePath: `${dir}/payment-config.json`,
+            entitlementStorePath: `${dir}/entitlements.json`,
             proPriceMinorUnits: 100_000,
             paymentReviewerIds: [],
             manualPaymentMethods: ['MANUAL_TRANSFER'],

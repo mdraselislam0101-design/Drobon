@@ -290,3 +290,47 @@ describe('structured Security Professional assessment API', () => {
     expect((await fetch(statusUrl, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(cookies) }, body: JSON.stringify({ status: 'COMPLETED' }) })).status).toBe(200);
   });
 });
+
+describe('strict query rejection on every assessment route (Pump 5)', () => {
+  test('any query string is a uniform fail-closed 422 before ownership or side effects', async () => {
+    const server = await startTestServer();
+    SERVERS.push(server);
+    const owner = await register(server, 'query-owner@example.test');
+    const attacker = await register(server, 'query-attacker@example.test');
+    const projectId = await createProject(server, owner, 'query-hardening');
+    const assessment = await createAssessment(server, owner, projectId);
+    const base = `${server.baseUrl}/api/v1/projects/${projectId}/assessments`;
+    const detail = `${base}/${assessment.id}`;
+
+    const ownerCases: Array<{ method: string; url: string; body?: unknown }> = [
+      { method: 'GET', url: `${base}?page=2` },
+      { method: 'POST', url: `${base}?title=override`, body: assessmentInput() },
+      { method: 'GET', url: `${detail}?include=all` },
+      { method: 'PATCH', url: `${detail}?title=override`, body: { title: 'should never be applied' } },
+      { method: 'POST', url: `${detail}/status?force=true`, body: { status: 'ACTIVE' } },
+      { method: 'POST', url: `${detail}/authorization-declarations?force=true`, body: { action: 'DECLARE', confirm: true } },
+      { method: 'GET', url: `${detail}?a=1&a=2` }, // repeated (HPP) key
+    ];
+    for (const entry of ownerCases) {
+      const res = await fetch(entry.url, {
+        method: entry.method,
+        headers: { 'content-type': 'application/json', cookie: cookieHeader(owner) },
+        ...(entry.body === undefined ? {} : { body: JSON.stringify(entry.body) }),
+      });
+      expect(res.status, `${entry.method} ${entry.url}`).toBe(422);
+      const body = (await readJson(res)) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    }
+
+    // Foreign account + stray query: the same uniform 422 answers BEFORE any
+    // ownership evaluation — no 403/404 ordering leak, no existence oracle.
+    const foreign = await fetch(`${detail}?include=all`, { headers: { cookie: cookieHeader(attacker) } });
+    expect(foreign.status).toBe(422);
+
+    // No side effects: assessment unchanged, exactly one assessment exists.
+    const list = await responseData<{ assessments: unknown[] }>(await fetch(base, { headers: { cookie: cookieHeader(owner) } }));
+    expect(list.assessments).toHaveLength(1);
+    const after = await responseData<{ assessment: { title: string } }>(await fetch(detail, { headers: { cookie: cookieHeader(owner) } }));
+    expect(after.assessment.title).toBe('Payment-flow assessment');
+  });
+});

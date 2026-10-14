@@ -80,6 +80,7 @@ export interface ApiConfig {
   scanStorePath: string;
   /** Durable project-scoped Security Professional assessment records. */
   assessmentStorePath: string;
+  studentStorePath: string;
   /**
    * Durable source-snapshot store path (Pump 8 — the SAST scan
    * target). `:memory:` is the explicitly ephemeral dev/test opt-in —
@@ -96,6 +97,12 @@ export interface ApiConfig {
   vulnIntelProvider: 'none';
   /** Durable Pump 15 payment + audit JSON document. */
   paymentStorePath: string;
+  /** Admin complimentary PRO entitlement store (persistent by default). */
+  entitlementStorePath: string;
+  /** Durable Pump 7 partner/coupon/commission JSON document. */
+  partnerStorePath: string;
+  /** Durable Phase 20 runtime payment-configuration JSON document. */
+  paymentConfigStorePath: string;
   /** Server-authoritative PRO price in BDT poisha (minor units). */
   proPriceMinorUnits: number;
   /** Explicit platform payment-reviewer user-id allowlist; account roles are insufficient. */
@@ -312,6 +319,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('ASSESSMENT_STORE_PATH=":memory:" is not allowed in production (assessment records would not persist)');
   }
 
+  // --- Student progress (Phase 22 Pump 2) -----------------------------------
+  const studentStorePath = (env['STUDENT_STORE_PATH'] ?? '.data/student-progress.json').trim();
+  const studentMemoryStore = studentStorePath === ':memory:';
+  if (studentStorePath.length === 0) {
+    issues.push('STUDENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (studentMemoryStore && environment === 'production') {
+    issues.push('STUDENT_STORE_PATH=":memory:" is not allowed in production (student progress would not persist)');
+  }
+
   // --- Sources (Pump 8) -----------------------------------------------------
   // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
   // only 'none' exists today, so any attempt to point the app at a
@@ -351,6 +367,25 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('PAYMENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
   } else if (paymentStorePath === ':memory:' && environment === 'production') {
     issues.push('PAYMENT_STORE_PATH=":memory:" is not allowed in production (payment records must persist)');
+  }
+  const partnerStorePath = (env['PARTNER_STORE_PATH'] ?? '.data/partners.json').trim();
+  if (partnerStorePath.length === 0) {
+    issues.push('PARTNER_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (partnerStorePath === ':memory:' && environment === 'production') {
+    issues.push('PARTNER_STORE_PATH=":memory:" is not allowed in production (partner/commission records must persist)');
+  }
+  const paymentConfigStorePath = (env['PAYMENT_CONFIG_STORE_PATH'] ?? '.data/payment-config.json').trim();
+  if (paymentConfigStorePath.length === 0) {
+    issues.push('PAYMENT_CONFIG_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (paymentConfigStorePath === ':memory:' && environment === 'production') {
+    issues.push('PAYMENT_CONFIG_STORE_PATH=":memory:" is not allowed in production (admin payment configuration must persist)');
+  }
+  // --- Admin complimentary PRO entitlements (persistent by default) -------
+  const entitlementStorePath = (env['ENTITLEMENT_STORE_PATH'] ?? '.data/entitlements.json').trim();
+  if (entitlementStorePath.length === 0) {
+    issues.push('ENTITLEMENT_STORE_PATH must be a non-empty filesystem path or ":memory:"');
+  } else if (entitlementStorePath === ':memory:' && environment === 'production') {
+    issues.push('ENTITLEMENT_STORE_PATH=":memory:" is not allowed in production (granted entitlements must persist)');
   }
   const proPriceMinorUnits = parseInteger(env['PRO_PRICE_MINOR_UNITS'], 'PRO_PRICE_MINOR_UNITS', issues) ?? 100_000;
   if (!Number.isSafeInteger(proPriceMinorUnits) || proPriceMinorUnits < 1 || proPriceMinorUnits > 100_000_000) {
@@ -439,9 +474,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     projectStorePath,
     scanStorePath,
     assessmentStorePath,
+    studentStorePath,
     sourceStorePath,
     vulnIntelProvider,
     paymentStorePath,
+    entitlementStorePath,
+    partnerStorePath,
+    paymentConfigStorePath,
     proPriceMinorUnits,
     paymentReviewerIds,
     manualPaymentMethods,

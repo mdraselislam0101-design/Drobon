@@ -2,6 +2,7 @@ import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type {
+  AdminPaymentConfigResponse,
   AssessmentResponse,
   AssessmentDetailResponse,
   AssessmentsResponse,
@@ -30,6 +31,7 @@ import type {
   PaymentConfigResponse,
   PaymentHistoryResponse,
   PaymentDetailResponse,
+  PaymentMethodDestination,
   AdminPaymentsResponse,
   AdminDashboardResponse,
   AdminAccountsResponse,
@@ -38,11 +40,34 @@ import type {
   AdminAuditResponse,
   PaymentAuditResponse,
   WorkspaceSecurityOverviewResponse,
+  AdminCommissionResponse,
+  AdminCommissionsResponse,
+  AdminPartnerDetailResponse,
+  AdminPartnerPaymentsResponse,
+  AdminPartnerResponse,
+  AdminPartnersResponse,
+  PartnerDashboardResponse,
+  PaymentQuoteResponse,
+  ScanComparisonResponse,
+  AssessmentSummaryResponse,
+  StudentLessonCatalogResponse,
+  StudentProgressResponse,
+  StudentQuizResultResponse,
 } from '@drobon/shared';
 import { ApiClientError, type ApiClient, type ReportDownload } from '../src/api/client.js';
 import { AppRoutes } from '../src/routes.js';
 
 /** A 401 ApiClientError, as the API returns for anonymous requests. */
+export function notFoundError(message = 'Not found.'): ApiClientError {
+  return new ApiClientError({
+    kind: 'http',
+    message,
+    status: 404,
+    code: 'NOT_FOUND',
+    requestId: 'req-test-404',
+  });
+}
+
 export function unauthorizedError(message = 'Authentication required.'): ApiClientError {
   return new ApiClientError({
     kind: 'http',
@@ -133,12 +158,20 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       currentPlan: 'FREE', proPriceMinorUnits: 100_000, currency: 'BDT',
       manualPaymentMethods: ['MANUAL_TRANSFER'],
       manualPaymentInstructions: 'Payment instructions are not configured. Contact support before sending funds.',
-      onlineGateway: 'UNAVAILABLE', coupons: 'NOT_IMPLEMENTED',
+      manualPaymentDestinations: [],
+      onlineGateway: 'UNAVAILABLE', coupons: 'SUPPORTED',
     })),
+    // Phase 20: classification switch — self-only, presentation layer.
+    updateUserType: vi.fn(async (userType): Promise<CurrentUserResponse> => ({ user: { ...TEST_USER, userType } })),
     getPaymentHistory: vi.fn(async (): Promise<PaymentHistoryResponse> => ({ payments: [], page: 1, pageSize: 20, total: 0 })),
     createPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     getPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     cancelPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
+    // Phase 20: platform-admin payment configuration (default: denied).
+    getAdminPaymentConfig: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
+    updateAdminPaymentPrice: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
+    addAdminPaymentMethod: vi.fn(async (): Promise<{ destination: PaymentMethodDestination }> => { throw forbiddenError(); }),
+    updateAdminPaymentMethod: vi.fn(async (): Promise<AdminPaymentConfigResponse> => { throw forbiddenError(); }),
     getAdminDashboard: vi.fn(async (): Promise<AdminDashboardResponse> => { throw forbiddenError(); }),
     getAdminAccounts: vi.fn(async (): Promise<AdminAccountsResponse> => ({ accounts: [], page: 1, pageSize: 25, total: 0 })),
     getAdminScans: vi.fn(async (): Promise<AdminScansResponse> => ({ scans: [], page: 1, pageSize: 25, total: 0 })),
@@ -149,6 +182,20 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     approvePayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     rejectPayment: vi.fn(async (): Promise<PaymentDetailResponse> => { throw new Error('not stubbed'); }),
     getPaymentAudit: vi.fn(async (): Promise<PaymentAuditResponse> => ({ events: [] })),
+    getAdminProGrants: vi.fn(async () => ({ grants: [], page: 1, pageSize: 50, total: 0 })),
+    grantAdminPro: vi.fn(async () => { throw forbiddenError(); }),
+    revokeAdminProGrant: vi.fn(async () => { throw forbiddenError(); }),
+    getAdminProGrantAudit: vi.fn(async () => ({ events: [], page: 1, pageSize: 50, total: 0, coverage: 'ENTITLEMENT_EVENTS_ONLY' as const })),
+    getPaymentQuote: vi.fn(async (): Promise<PaymentQuoteResponse> => ({ baseAmountMinorUnits: 100_000, currency: 'BDT', coupon: null })),
+    getPartnerDashboard: vi.fn(async (): Promise<PartnerDashboardResponse> => { throw notFoundError(); }),
+    getAdminPartners: vi.fn(async (): Promise<AdminPartnersResponse> => ({ partners: [], page: 1, pageSize: 20, total: 0 })),
+    activatePartner: vi.fn(async (): Promise<AdminPartnerResponse> => { throw new Error('not stubbed'); }),
+    getAdminPartner: vi.fn(async (): Promise<AdminPartnerDetailResponse> => { throw new Error('not stubbed'); }),
+    setPartnerStatus: vi.fn(async (): Promise<AdminPartnerResponse> => { throw new Error('not stubbed'); }),
+    updatePartnerCoupon: vi.fn(async (): Promise<AdminPartnerResponse> => { throw new Error('not stubbed'); }),
+    getAdminPartnerPayments: vi.fn(async (): Promise<AdminPartnerPaymentsResponse> => ({ payments: [], page: 1, pageSize: 50, total: 0 })),
+    getAdminCommissions: vi.fn(async (): Promise<AdminCommissionsResponse> => ({ commissions: [], page: 1, pageSize: 50, total: 0 })),
+    transitionCommission: vi.fn(async (): Promise<AdminCommissionResponse> => { throw new Error('not stubbed'); }),
     // Pump 5 default: a fresh FREE usage view (nothing consumed this
     // UTC month). Suites override it to model exhaustion or PRO.
     getUsage: vi.fn(async (): Promise<UsageResponse> => ({
@@ -170,7 +217,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
       findings: {
         currentObserved: 0, unresolved: 0,
         unresolvedBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
-        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, REOPENED: 0 },
+        byLifecycleState: { OPEN: 0, ACKNOWLEDGED: 0, IN_PROGRESS: 0, RESOLVED: 0, FALSE_POSITIVE: 0, REOPENED: 0 },
         byVerificationState: { OBSERVED: 0, NOT_OBSERVED_IN_LATEST_SCAN: 0 }, recent: [],
       },
       reports: { availableCount: 0, recent: [] },
@@ -208,6 +255,8 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // Pump 7 defaults: no scans yet (the honest empty world); scan
     // requests are not stubbed (suites that exercise them override).
     getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+    compareScans: vi.fn(async (): Promise<ScanComparisonResponse> => { throw new Error('not stubbed'); }),
+    getAssessmentSummary: vi.fn(async (): Promise<AssessmentSummaryResponse> => { throw new Error('not stubbed'); }),
     createScan: vi.fn(async (): Promise<ScanResponse> => {
       throw new Error('not stubbed');
     }),
@@ -229,6 +278,12 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
+    downloadSbom: (_projectId: string, _scanId: string, _signal?: AbortSignal): Promise<ReportDownload> => Promise.reject(new Error('downloadSbom not implemented in fixture')),
+    getStudentLessons: vi.fn(async (): Promise<StudentLessonCatalogResponse> => ({ lessons: [] })),
+    getStudentProgress: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
+    acknowledgeLessonRead: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
+    submitLessonQuiz: vi.fn(async (_lessonId: string, _answers: Array<number | null>): Promise<StudentQuizResultResponse> => { throw new Error('not stubbed'); }),
+    verifyLessonPractice: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),
     getAssistantStatus: vi.fn(async (): Promise<AssistantStatusResponse> => ({ providerState: 'NONE', providerId: null, deterministicQuestionsAvailable: true, conversationPersistence: 'NOT_IMPLEMENTED', toolsEnabled: false })),
     askAssistant: vi.fn(async (_projectId: string, _input: AssistantQuestionRequest): Promise<AssistantResponse> => { throw new Error('not stubbed'); }),
     getSources: vi.fn(async (): Promise<SourceSnapshotResponse> => {

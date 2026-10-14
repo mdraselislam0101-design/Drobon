@@ -18,6 +18,8 @@ import {
   type FindingLifecycleState,
   type FindingsPageResponse,
   type SecurityReportResponse,
+  type AssessmentSummaryResponse,
+  type ScanComparisonResponse,
   type ScanDetailResponse,
   type ScanType,
   type Scan,
@@ -83,6 +85,7 @@ export function ProjectDetailPage(): React.JSX.Element {
   const [reloadToken, setReloadToken] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [latestScans, setLatestScans] = useState<readonly Scan[] | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     if (projectId === undefined) {
@@ -245,6 +248,7 @@ export function ProjectDetailPage(): React.JSX.Element {
 
           <DastTargetSection
             projectId={project.project.id}
+            projectStatus={project.project.status}
             targetUrl={project.project.dastTargetUrl}
             onChanged={(updated) => setProject({ status: 'ready', project: updated })}
           />
@@ -257,15 +261,22 @@ export function ProjectDetailPage(): React.JSX.Element {
             projectStatus={project.project.status}
             dastTargetUrl={project.project.dastTargetUrl}
             showAssessmentTools={showAssessmentTools}
+            onScansLoaded={setLatestScans}
           />
-          <AssistantSection projectId={project.project.id} />
+          <AssistantSection projectId={project.project.id} externalScans={latestScans} />
         </>
       )}
     </section>
   );
 }
 
-function AssistantSection({ projectId }: { projectId: string }): React.JSX.Element {
+function AssistantSection({
+  projectId,
+  externalScans,
+}: {
+  projectId: string;
+  externalScans?: readonly Scan[] | null;
+}): React.JSX.Element {
   const client = useApiClient();
   const [providerStatus, setProviderStatus] = useState<AssistantStatusResponse | null>(null);
   const [scans, setScans] = useState<Scan[]>([]);
@@ -295,6 +306,12 @@ function AssistantSection({ projectId }: { projectId: string }): React.JSX.Eleme
       });
     return () => { active = false; };
   }, [client, projectId]);
+
+  useEffect(() => {
+    if (externalScans !== null && externalScans !== undefined) {
+      setScans(externalScans.filter((scan) => scan.status === 'COMPLETED'));
+    }
+  }, [externalScans]);
 
   useEffect(() => {
     let active = true;
@@ -412,10 +429,12 @@ function AssistantSection({ projectId }: { projectId: string }): React.JSX.Eleme
  */
 function DastTargetSection({
   projectId,
+  projectStatus,
   targetUrl,
   onChanged,
 }: {
   projectId: string;
+  projectStatus: string;
   targetUrl: string | undefined;
   onChanged: (updated: ProjectView) => void;
 }): React.JSX.Element {
@@ -468,36 +487,43 @@ function DastTargetSection({
       {targetUrl !== undefined && (
         <p data-testid="dast-configured-target">Configured target: <code>{targetUrl}</code></p>
       )}
-      <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
-        <div className="field">
-          <label htmlFor="dast-target-url">Project target URL</label>
-          <input
-            id="dast-target-url"
-            name="targetUrl"
-            type="url"
-            value={value}
-            maxLength={2048}
-            autoComplete="url"
-            onChange={(event) => setValue(event.target.value)}
-            placeholder="https://example.org/"
-            aria-describedby="dast-target-hint"
-          />
-          <p className="muted" id="dast-target-hint">
-            No credentials, query string, fragment, custom port, or non-public address. Only the project owner can change this setting.
-          </p>
-        </div>
-        {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
-        <div className="hero-actions">
-          <button type="submit" className="button button-secondary" disabled={busy || value.length === 0} aria-busy={busy}>
-            {busy ? 'Validating…' : 'Save target'}
-          </button>
-          {targetUrl !== undefined && (
-            <button type="button" className="button button-ghost" onClick={() => void clear()} disabled={busy}>
-              Remove target
+      {projectStatus !== 'ACTIVE' ? (
+        <p className="muted" data-testid="archived-dast-target-note">
+          Archived projects cannot change the DAST target. Unarchive the project
+          to configure or remove a target.
+        </p>
+      ) : (
+        <form className="auth-form" onSubmit={(event) => void save(event)} data-testid="dast-target-form">
+          <div className="field">
+            <label htmlFor="dast-target-url">Project target URL</label>
+            <input
+              id="dast-target-url"
+              name="targetUrl"
+              type="url"
+              value={value}
+              maxLength={2048}
+              autoComplete="url"
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="https://example.org/"
+              aria-describedby="dast-target-hint"
+            />
+            <p className="muted" id="dast-target-hint">
+              No credentials, query string, fragment, custom port, or non-public address. Only the project owner can change this setting.
+            </p>
+          </div>
+          {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
+          <div className="hero-actions">
+            <button type="submit" className="button button-secondary" disabled={busy || value.length === 0} aria-busy={busy}>
+              {busy ? 'Validating…' : 'Save target'}
             </button>
-          )}
-        </div>
-      </form>
+            {targetUrl !== undefined && (
+              <button type="button" className="button button-ghost" onClick={() => void clear()} disabled={busy}>
+                Remove target
+              </button>
+            )}
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -634,6 +660,7 @@ function AssessmentsSection({
           </form>
           {detail !== null && (
             <div className="assessment-detail" data-testid="assessment-detail">
+              <AssessmentSummaryView projectId={projectId} assessmentId={detail.assessment.id} />
               <h3>{detail.assessment.title}</h3>
               <p className="badges"><span className="pill">{detail.assessment.status}</span><span className="pill">{detail.progress.totalScans} linked scans</span><span className="pill">{detail.progress.findingsTotal} findings in completed linked scans</span></p>
               <div className="hero-actions">
@@ -674,11 +701,13 @@ function ScansSection({
   projectStatus,
   dastTargetUrl,
   showAssessmentTools,
+  onScansLoaded,
 }: {
   projectId: string;
   projectStatus: string;
   dastTargetUrl: string | undefined;
   showAssessmentTools: boolean;
+  onScansLoaded?: (scans: readonly Scan[]) => void;
 }): React.JSX.Element {
   const client = useApiClient();
   const [scans, setScans] = useState<Scan[] | null>(null);
@@ -701,6 +730,7 @@ function ScansSection({
       ]);
       setScans(scansData.scans);
       setUsage(usageData);
+      onScansLoaded?.(scansData.scans);
     } catch (error: unknown) {
       // Fail closed: no partial scan data — the honest error instead.
       setScans(null);
@@ -708,11 +738,26 @@ function ScansSection({
         error instanceof ApiClientError ? error.message : 'Could not load the scans.',
       );
     }
-  }, [client, projectId]);
+  }, [client, projectId, onScansLoaded]);
 
   useEffect(() => {
     void load();
   }, [load, reloadToken]);
+
+  const hasActiveScan =
+    scans?.some((scan) => scan.status === 'QUEUED' || scan.status === 'RUNNING') ?? false;
+
+  useEffect(() => {
+    if (!hasActiveScan) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void load();
+    }, 1500);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [hasActiveScan, scans, load]);
 
   useEffect(() => {
     let active = true;
@@ -931,6 +976,16 @@ function ScansSection({
               {scan.status === 'COMPLETED' && (
                 <FindingsView projectId={projectId} scanId={scan.id} scanType={scan.scanType} />
               )}
+              {scan.status === 'COMPLETED' && (
+                <ScanCompareView
+                  projectId={projectId}
+                  scanId={scan.id}
+                  scanType={scan.scanType}
+                  candidates={scans
+                    .filter((other) => other.status === 'COMPLETED' && other.scanType === scan.scanType && other.id !== scan.id)
+                    .map((other) => ({ id: other.id, ...(other.completedAt === undefined ? {} : { completedAt: other.completedAt }) }))}
+                />
+              )}
               {scan.status === 'COMPLETED' && scan.scanType === 'SCA' && (
                 <ScaView projectId={projectId} scanId={scan.id} />
               )}
@@ -982,6 +1037,8 @@ function SourcesSection({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [inlinePath, setInlinePath] = useState('');
+  const [inlineContent, setInlineContent] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -1043,6 +1100,29 @@ function SourcesSection({
     }
   };
 
+  const uploadInline = async (): Promise<void> => {
+    const trimmedPath = inlinePath.trim();
+    if (trimmedPath.length === 0) {
+      return;
+    }
+    setUploadError(null);
+    setUploading(true);
+    try {
+      await client.uploadSources(projectId, [{ path: trimmedPath, content: inlineContent }]);
+      setInlinePath('');
+      setInlineContent('');
+      setReloadToken((token) => token + 1);
+    } catch (error: unknown) {
+      setUploadError(
+        error instanceof ApiClientError
+          ? error.message
+          : 'Could not upload the source snapshot. Please try again.',
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <>
       <h2 id="source-snapshot">Source snapshot</h2>
@@ -1056,13 +1136,24 @@ function SourcesSection({
           SCA and SECRETS scans.
         </p>
       ) : snapshot !== null ? (
-        <p className="muted" data-testid="snapshot-meta">
-          {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
-          {snapshot.totalBytes} bytes — uploaded{' '}
-          <code>{snapshot.updatedAt}</code>. The latest upload replaces the
-          previous snapshot and is what SAST, SCA and SECRETS scans
-          analyze.
-        </p>
+        <>
+          <p className="muted" data-testid="snapshot-meta">
+            {snapshot.fileCount} {snapshot.fileCount === 1 ? 'file' : 'files'},{' '}
+            {snapshot.totalBytes} bytes — uploaded{' '}
+            <code>{snapshot.updatedAt}</code>. The latest upload replaces the
+            previous snapshot and is what SAST, SCA and SECRETS scans
+            analyze.
+          </p>
+          {snapshot.files.length > 0 && (
+            <ul className="scan-list" data-testid="snapshot-file-list">
+              {snapshot.files.map((file) => (
+                <li key={file.path} data-testid="snapshot-file-item">
+                  <code>{file.path}</code> · {file.bytes} bytes
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       ) : (
         <LoadingState label="Loading the source snapshot…" />
       )}
@@ -1076,6 +1167,7 @@ function SourcesSection({
           className="scan-form"
           onSubmit={(event) => {
             event.preventDefault();
+            void uploadInline();
           }}
           data-testid="source-form"
         >
@@ -1094,6 +1186,44 @@ function SourcesSection({
               At most 200 files, 256 KiB per file, 768 KiB total. Paths are
               file names; .env and key files are rejected by the server.
             </p>
+          </div>
+          <div className="field">
+            <label htmlFor="source-inline-path">Or paste a text file (relative path)</label>
+            <input
+              id="source-inline-path"
+              name="inlinePath"
+              type="text"
+              value={inlinePath}
+              onChange={(event) => setInlinePath(event.target.value)}
+              placeholder="src/app.ts"
+              maxLength={256}
+              disabled={uploading}
+              data-testid="source-inline-path"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="source-inline-content">Source file content</label>
+            <textarea
+              id="source-inline-content"
+              name="inlineContent"
+              rows={4}
+              value={inlineContent}
+              onChange={(event) => setInlineContent(event.target.value)}
+              placeholder="Paste source code or manifest text…"
+              disabled={uploading}
+              data-testid="source-inline-content"
+            />
+          </div>
+          <div className="hero-actions">
+            <button
+              type="submit"
+              className="button button-secondary"
+              disabled={uploading || inlinePath.trim().length === 0}
+              aria-busy={uploading}
+              data-testid="source-inline-submit"
+            >
+              {uploading ? 'Uploading…' : 'Upload text source'}
+            </button>
           </div>
           {uploading && (
             <p className="muted" data-testid="source-uploading">
@@ -1117,12 +1247,181 @@ function SourcesSection({
  * rendered only as escaped text.
  */
 const FINDING_TRANSITIONS: Readonly<Record<FindingLifecycleState, readonly FindingLifecycleState[]>> = {
-  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
-  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED'],
-  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED'],
+  OPEN: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  ACKNOWLEDGED: ['IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
+  IN_PROGRESS: ['ACKNOWLEDGED', 'RESOLVED', 'FALSE_POSITIVE'],
   RESOLVED: [],
-  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'],
+  FALSE_POSITIVE: [],
+  REOPENED: ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE'],
 };
+
+/**
+ * Regression visibility (Phase 22 Pump 3): compare this completed scan
+ * with another completed SAME-TYPE scan of the same owned project. The
+ * server computes the fingerprint-based diff; the UI only renders the
+ * honest states (NEW / UNCHANGED / RESOLVED / REOPENED / CHANGED).
+ * RESOLVED means "not observed in the comparison scan" — retest
+ * evidence, never proof of repair.
+ */
+function ScanCompareView({
+  projectId,
+  scanId,
+  scanType,
+  candidates,
+}: {
+  projectId: string;
+  scanId: string;
+  scanType: ScanType;
+  candidates: Array<{ id: string; completedAt?: string }>;
+}): React.JSX.Element {
+  const client = useApiClient();
+  const [open, setOpen] = useState(false);
+  const [baselineId, setBaselineId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<ScanComparisonResponse | null>(null);
+
+  if (candidates.length === 0 && !open) {
+    return (
+      <p className="muted" data-testid={`scan-compare-empty-${scanId}`}>
+        Regression compare needs a second completed {scanType} scan.
+      </p>
+    );
+  }
+
+  const run = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      setComparison(await client.compareScans(projectId, scanId, baselineId));
+    } catch (cause) {
+      setComparison(null);
+      setError(cause instanceof ApiClientError ? cause.message : 'Comparison is unavailable right now.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="scan-compare" data-testid={`scan-compare-${scanId}`}>
+      {!open ? (
+        <button type="button" className="button button-ghost" onClick={() => setOpen(true)} data-testid={`scan-compare-open-${scanId}`}>
+          Regression compare
+        </button>
+      ) : (
+        <>
+          <div className="field">
+            <label htmlFor={`scan-compare-baseline-${scanId}`}>Baseline scan (same type)</label>
+            <select
+              id={`scan-compare-baseline-${scanId}`}
+              value={baselineId}
+              onChange={(event) => setBaselineId(event.target.value)}
+              data-testid={`scan-compare-select-${scanId}`}
+            >
+              <option value="">Choose a completed baseline…</option>
+              {candidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.id}
+                  {candidate.completedAt === undefined ? '' : ` · ${candidate.completedAt}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={busy || baselineId.length === 0}
+            onClick={() => void run()}
+            data-testid={`scan-compare-run-${scanId}`}
+          >
+            {busy ? 'Comparing…' : 'Compare'}
+          </button>
+          {error !== null && <div className="form-alert" role="alert"><p data-testid={`scan-compare-error-${scanId}`}>{error}</p></div>}
+          {comparison !== null && (
+            <div data-testid={`scan-compare-result-${scanId}`}>
+              <p className="badges">
+                <span className="pill" data-testid={`scan-compare-new-${scanId}`}>NEW {comparison.counts.new}</span>
+                <span className="pill" data-testid={`scan-compare-unchanged-${scanId}`}>UNCHANGED {comparison.counts.unchanged}</span>
+                <span className="pill" data-testid={`scan-compare-resolved-${scanId}`}>RESOLVED {comparison.counts.resolved}</span>
+                <span className="pill" data-testid={`scan-compare-reopened-${scanId}`}>REOPENED {comparison.counts.reopened}</span>
+                <span className="pill" data-testid={`scan-compare-changed-${scanId}`}>CHANGED {comparison.counts.changed}</span>
+              </p>
+              <p className="muted">RESOLVED means the fingerprint was not observed in the comparison scan — retest evidence, never proof of repair. Entries: {comparison.entries.length}.</p>
+              {comparison.entries.length > 0 && (
+                <ul className="scan-compare-entries">
+                  {comparison.entries.map((entry) => (
+                    <li key={entry.fingerprint} data-testid={`scan-compare-entry-${entry.fingerprint}`}>
+                      <strong>{entry.state}</strong> · <code>{entry.ruleId}</code> · {entry.location} ·{' '}
+                      {entry.baselineSeverity ?? '—'} → {entry.currentSeverity ?? '—'}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Assessment engagement summary (Phase 22 Pump 3): a bounded computed
+ * aggregate over this assessment's OWN linked scans. Totals summarize
+ * real persisted records only; partial sweeps are surfaced and SCA
+ * status stays honestly NOT ASSESSED / NO DATA LOADED.
+ */
+function AssessmentSummaryView({ projectId, assessmentId }: { projectId: string; assessmentId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [summary, setSummary] = useState<AssessmentSummaryResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      setSummary(await client.getAssessmentSummary(projectId, assessmentId));
+    } catch (cause) {
+      setSummary(null);
+      setError(cause instanceof ApiClientError ? cause.message : 'Summary is unavailable right now.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="assessment-summary" data-testid="assessment-summary">
+      <button type="button" className="button button-secondary" disabled={busy} onClick={() => void load()} data-testid="assessment-summary-load">
+        {busy ? 'Building summary…' : 'Load engagement summary'}
+      </button>
+      {error !== null && <div className="form-alert" role="alert"><p data-testid="assessment-summary-error">{error}</p></div>}
+      {summary !== null && (
+        <div data-testid="assessment-summary-content">
+          <dl className="facts">
+            <div className="fact"><dt>Linked scans</dt><dd data-testid="assessment-summary-scans">{summary.totals.scansLinked} ({summary.totals.scansCompleted} completed{summary.totals.scansFailed > 0 ? `, ${summary.totals.scansFailed} failed` : ''}{summary.totals.scansActive > 0 ? `, ${summary.totals.scansActive} active` : ''})</dd></div>
+            <div className="fact"><dt>Findings (completed scans)</dt><dd data-testid="assessment-summary-findings">{summary.totals.findingsTotal}</dd></div>
+            {summary.totals.findingsBySeverity !== undefined && (
+              <div className="fact"><dt>By severity</dt><dd>{(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const).map((severity) => `${severity} ${summary.totals.findingsBySeverity?.[severity] ?? 0}`).join(' · ')}</dd></div>
+            )}
+            <div className="fact"><dt>Partial sweeps</dt><dd data-testid="assessment-summary-partial">{summary.totals.partialScans}</dd></div>
+            <div className="fact"><dt>Objectives</dt><dd>{summary.objectivesTotal}</dd></div>
+          </dl>
+          <p className="muted">Summarizes persisted records only — no security score, no deduplication across scans, and partial sweeps mean totals may undercount. Dependency intelligence status remains NOT ASSESSED / NO DATA LOADED.</p>
+          {summary.scans.length > 0 && (
+            <ul className="assessment-summary-scans">
+              {summary.scans.map((line) => (
+                <li key={line.scanId} data-testid={`assessment-summary-scan-${line.scanId}`}>
+                  <strong>{line.scanType} · {line.status}</strong> · {line.findingsTotal ?? 0} findings{line.partial === true ? ' · partial' : ''}{line.reportAvailable ? ' · report saved' : ''}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function FindingsView({
   projectId,
@@ -1466,7 +1765,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
     catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not retrieve the report.'); }
     finally { setBusy(false); }
   };
-  const download = async (format: 'json' | 'markdown'): Promise<void> => {
+  const download = async (format: 'json' | 'markdown' | 'sarif'): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
@@ -1480,6 +1779,22 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
       window.setTimeout(() => URL.revokeObjectURL(href), 0);
     } catch (caught: unknown) {
       setError(caught instanceof ApiClientError ? caught.message : 'Could not download the report.');
+    } finally { setBusy(false); }
+  };
+  const downloadSbom = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const file = await client.downloadSbom(projectId, scanId);
+      const href = URL.createObjectURL(file.blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = file.filename;
+      anchor.rel = 'noopener';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (caught: unknown) {
+      setError(caught instanceof ApiClientError ? caught.message : 'This scan has no dependency inventory; a standalone SBOM export is unavailable.');
     } finally { setBusy(false); }
   };
 
@@ -1528,6 +1843,8 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
           <div className="hero-actions">
             <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
             <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>
+            <button type="button" className="button button-ghost" onClick={() => void download('sarif')} disabled={busy} data-testid="download-report-sarif">Download SARIF</button>
+            <button type="button" className="button button-ghost" onClick={() => void downloadSbom()} disabled={busy} data-testid="download-report-sbom">Download SBOM (CycloneDX)</button>
             <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="refresh-report">Retrieve saved report</button>
             <button type="button" className="button button-secondary" onClick={() => void generate()} disabled={busy} data-testid="refresh-report-snapshot">Regenerate current snapshot</button>
           </div>

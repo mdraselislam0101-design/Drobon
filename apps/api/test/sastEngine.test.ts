@@ -6,10 +6,10 @@ import {
   createSastEngine,
   DEFAULT_SAST_LIMITS,
   SAST_IGNORED_DIR_SEGMENTS,
-  SAST_SUPPORTED_EXTENSIONS,
   type SastLimits,
   type SourceSnapshotProvider,
 } from '../src/scans/sast/engine.js';
+import { SAST_LANGUAGE_CATALOG, sastMaturityCounts, detectLanguageFamily } from '../src/scans/sast/languages.js';
 
 /**
  * SAST engine unit tests (Pump 8) — the engine's security boundaries
@@ -159,7 +159,7 @@ describe('SAST engine: happy paths', () => {
 });
 
 describe('SAST engine: discovery', () => {
-  test('unsupported languages are skipped and counted, never claimed as scanned', async () => {
+  test('SAST v2: python/csharp are analyzed; syntax-only and unknown files are skipped and counted', async () => {
     const engine = createSastEngine({
       sources: providerFor(
         snapshot([
@@ -174,9 +174,9 @@ describe('SAST engine: discovery', () => {
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome.kind).toBe('completed');
     if (outcome.kind !== 'completed') return;
-    expect(outcome.resultSummary.filesScanned).toBe(1); // only the .ts file
-    expect(outcome.resultSummary.filesSkipped).toBe(4);
-    expect(outcome.resultSummary.findingsTotal).toBe(0); // no unsupported-language guessing
+    expect(outcome.resultSummary.filesScanned).toBe(3); // .ts + .py + .cs (pass-through calls, no rule shape)
+    expect(outcome.resultSummary.filesSkipped).toBe(2); // README.md (unknown) + style.css (SYNTAX_ONLY)
+    expect(outcome.resultSummary.findingsTotal).toBe(0); // conservative rules: pass-through shapes do NOT fire
   });
 
   test('dependency/build directories are ignored deterministically', async () => {
@@ -201,8 +201,16 @@ describe('SAST engine: discovery', () => {
     expect(SAST_IGNORED_DIR_SEGMENTS).toContain('node_modules');
   });
 
-  test('supported extensions are the documented TypeScript/JavaScript set', () => {
-    expect([...SAST_SUPPORTED_EXTENSIONS]).toEqual(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+  test('the v2 catalog covers the legacy JavaScript/TypeScript extensions and 40+ families', () => {
+    const legacy = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+    for (const extension of legacy) {
+      const family = SAST_LANGUAGE_CATALOG.find((entry) => entry.extensions?.includes(extension));
+      expect(family, `legacy extension ${extension} must remain catalogued`).toBeDefined();
+    }
+    const counts = sastMaturityCounts();
+    expect(counts.total).toBeGreaterThanOrEqual(40);
+    expect(SAST_LANGUAGE_CATALOG.find((entry) => entry.id === 'python')?.maturity).toBe('PARTIAL');
+    expect(detectLanguageFamily('main.rs')?.family).toBe('rust');
   });
 
   test('oversize files are skipped (per-file bound, defense in depth)', async () => {

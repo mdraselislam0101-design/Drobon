@@ -949,4 +949,113 @@ describe('findings and reports production API', () => {
       cleanupTempStoreDir(dataDir);
     }
   });
+  test('Developer E2E (Phase 22): SARIF export, standalone CycloneDX SBOM export, FALSE_POSITIVE lifecycle with reobservation reopen, and export authorization', async () => {
+    const dataDir = makeTempStoreDir('dev22-reports');
+    try {
+      await seedProUser(dataDir, 'DEVELOPER');
+      const server = await startPersistentServer(dataDir);
+      const dev = await login(server, 'pro@example.test');
+      const projectId = await createProject(server, dev, 'Developer gap audit project');
+      await uploadSources(server, dev, projectId);
+      const sast = await runScan(server, dev, projectId, 'SAST', 'dev22-sast-001');
+      const secrets = await runScan(server, dev, projectId, 'SECRETS', 'dev22-secrets-001');
+      const findingsList = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings`, { headers: { cookie: cookieHeader(dev) } });
+      expect(findingsList.status).toBe(200);
+      const findingsPage = await responseData<FindingsPageResponse>(findingsList);
+      expect(findingsPage.findings.length).toBeGreaterThan(0);
+      const firstFinding = findingsPage.findings[0]!;
+
+      const sastReport = (await generateReport(server, dev, projectId, sast.id)).body.report;
+      const secretsReport = (await generateReport(server, dev, projectId, secrets.id)).body.report;
+
+      // SARIF 2.1.0 export over a SAST report.
+      const sarifResponse = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif`, { headers: { cookie: cookieHeader(dev) } });
+      expect(sarifResponse.status).toBe(200);
+      expect(sarifResponse.headers.get('content-type')).toContain('application/sarif+json');
+      expect(sarifResponse.headers.get('content-disposition')).toMatch(/^attachment; filename="drobon-rpt_[a-f0-9]{24}\.sarif"$/);
+      const sarif = JSON.parse(await sarifResponse.text()) as {
+        version: string;
+        runs: Array<{
+          tool: { driver: { name: string; rules: Array<{ id: string; defaultConfiguration: { level: string }; properties: { tags: string[] } }> } };
+          results: Array<{ ruleId: string; ruleIndex: number; level: string; fingerprints: Record<string, string>; locations: Array<Record<string, unknown>> }>;
+          properties: Record<string, string>;
+        }>;
+      };
+      expect(sarif.version).toBe('2.1.0');
+      expect(sarif.runs).toHaveLength(1);
+      const run = sarif.runs[0]!;
+      expect(run.tool.driver.name).toBe('DROBON AEGIS');
+      expect(run.results).toHaveLength(sastReport.findings.length);
+      expect(run.tool.driver.rules.length).toBeGreaterThan(0);
+      expect(run.tool.driver.rules.length).toBeLessThanOrEqual(run.results.length);
+      const ruleIds = new Set(run.tool.driver.rules.map((rule) => rule.id));
+      for (const result of run.results) {
+        expect(ruleIds.has(result.ruleId)).toBe(true);
+        expect(['error', 'warning', 'note']).toContain(result.level);
+        expect(Object.keys(result.fingerprints)).toContain('drobon/v1');
+        expect(result.locations.length).toBe(1);
+      }
+      expect(run.properties['drobon/dependencyIntelligence']).toBe(sastReport.dependencyIntelligence.status);
+      expect(run.properties['drobon/honesty']).toContain('not a verdict');
+      // Rule dedup: rules carry each rule only once.
+      expect(new Set(run.tool.driver.rules.map((rule) => rule.id)).size).toBe(run.tool.driver.rules.length);
+      // SARIF export must not bypass report persistence: an ungenerated report has nothing to export.
+      const secretsSarif = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${secrets.id}/report/download?format=sarif`, { headers: { cookie: cookieHeader(dev) } });
+      expect(secretsSarif.status).toBe(200);
+      const secretsSarifJson = JSON.parse(await secretsSarif.text()) as { runs: Array<{ results: Array<{ level: string; properties?: Record<string, string> }> }> };
+      expect(secretsSarifJson.runs[0]!.results.length).toBe(secretsReport.findings.length);
+      expect(JSON.stringify(secretsSarifJson)).not.toContain('AKIAP10QZ9WM7XK2BR4J');
+
+      // SARIF negative paths: invalid format, duplicate format parameter, unauthenticated caller.
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=pdf`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(422);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif&format=sarif`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(400);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif`)).status).toBe(401);
+
+      // Standalone SBOM export: SAST-only scan has no dependency inventory.
+      const sastSbom = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/sbom`, { headers: { cookie: cookieHeader(dev) } });
+      expect(sastSbom.status).toBe(422);
+      const sastSbomError = await readJson(sastSbom) as { error: { message: string; details?: Array<{ path: string; message: string }> } };
+      expect(JSON.stringify(sastSbomError.error)).toContain('no dependency inventory');
+      const sca = await runScan(server, dev, projectId, 'SCA', 'dev22-sca-001');
+      await generateReport(server, dev, projectId, sca.id);
+      const sbomResponse = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sca.id}/report/sbom`, { headers: { cookie: cookieHeader(dev) } });
+      expect(sbomResponse.status).toBe(200);
+      expect(sbomResponse.headers.get('content-disposition')).toMatch(/^attachment; filename="drobon-rpt_[a-f0-9]{24}\.cdx\.json"$/);
+      const sbom = JSON.parse(await sbomResponse.text()) as { bomFormat: string; specVersion: string; components: Array<{ name: string }> };
+      expect(sbom.bomFormat).toBe('CycloneDX');
+      expect(sbom.components.length).toBeGreaterThan(0);
+      // SBOM export is exact persisted content, no dataset invented.
+      expect(JSON.stringify(sbom)).not.toContain('"vulnerabilities"');
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sca.id}/report/sbom?format=json`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(400);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sca.id}/report/sbom`)).status).toBe(401);
+
+      // FALSE_POSITIVE lifecycle: triage, dead-end state, reobservation reopen.
+      const fpPatch = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${firstFinding.id}/lifecycle`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json', cookie: cookieHeader(dev) }, body: JSON.stringify({ state: 'FALSE_POSITIVE' }),
+      });
+      expect(fpPatch.status).toBe(200);
+      expect((await responseData<{ workflow: { state: string } }>(fpPatch)).workflow.state).toBe('FALSE_POSITIVE');
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/findings/${firstFinding.id}/lifecycle`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json', cookie: cookieHeader(dev) }, body: JSON.stringify({ state: 'RESOLVED' }),
+      })).status).toBe(409);
+      const rescan = await runScan(server, dev, projectId, 'SAST', 'dev22-sast-002');
+      const refound = await responseData<FindingDetailResponse>(await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${rescan.id}/findings/${firstFinding.id}`, { headers: { cookie: cookieHeader(dev) } }));
+      expect(refound.finding.fingerprint).toBe(firstFinding.fingerprint);
+      expect(refound.workflow?.state).toBe('REOPENED');
+
+      // Export authorization: another account cannot read this project's exports.
+      const outsiderRegistration = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'other@example.test', password: FIXTURE_LOGIN_PHRASE, userType: 'DEVELOPER' }),
+      });
+      expect(outsiderRegistration.status).toBe(201);
+      const outsider = await login(server, 'other@example.test');
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif`, { headers: { cookie: cookieHeader(outsider) } })).status).toBe(403);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sca.id}/report/sbom`, { headers: { cookie: cookieHeader(outsider) } })).status).toBe(403);
+      expect(server.logs.join('\n')).not.toContain('AKIAP10QZ9WM7XK2BR4J');
+    } finally {
+      cleanupTempStoreDir(dataDir);
+    }
+  });
+
 });

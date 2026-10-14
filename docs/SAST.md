@@ -1,4 +1,4 @@
-# SAST (Pump 8 — the real static-analysis engine)
+# SAST (Pump 8 engine; v2 — the universal language & platform catalog)
 
 Pump 8 delivers the first REAL scanner engine: **static analysis of an
 uploaded source snapshot**. SAST scans complete with genuine findings —
@@ -41,34 +41,164 @@ decision below follows from that:
   findings injected into non-terminal records all refuse to start or
   fail the scan — never a silent repair, never a fabricated result.
 
-## The rule set (6 rules, deliberately small)
+## The rule set (50 rules, one shared engine)
 
 Rules live in `apps/api/src/scans/sast/rules.ts` — pure data (id,
-pattern, severity, CWE, title, description, remediation), no closures.
-Rule ids are stable (`DG-SAST-###`), documented here, never reused.
-Severities are rule-fixed — never client-influenced.
+pattern, severity, CWE, title, description, remediation), no closures,
+no runtime imports (guarded by `staticSafety.test.ts`). Rule ids are
+stable (`DG-SAST-###`), never reused. Severities are rule-fixed — never
+client-influenced. Each rule declares the language families it applies
+to (`languages`); the engine gates per file, so a Python rule never
+runs on a Kotlin file. `DG-SAST-005` (hardcoded credentials) is the one
+universal rule and runs on every analyzed file.
 
-| Rule | Severity | CWE | Detects |
-| ---- | -------- | --- | ------- |
-| `DG-SAST-001` | HIGH | CWE-78 | Shell commands built from untrusted/interpolated input (`exec`, `spawn` with template literals or concatenation). |
-| `DG-SAST-002` | HIGH | CWE-89 | SQL queries built by string concatenation/interpolation instead of parameterized statements. |
-| `DG-SAST-003` | MEDIUM | CWE-79 | `dangerouslySetInnerHTML` (or equivalent raw-HTML sinks) fed with dynamic values. |
-| `DG-SAST-004` | HIGH | CWE-95 | `eval` / `new Function` on anything other than a literal string. |
-| `DG-SAST-005` | HIGH | CWE-798 | Hardcoded credentials (literal assigned to a credential-named variable/property), with a placeholder denylist to keep guidance text out of findings. |
-| `DG-SAST-006` | LOW | CWE-327 | Weak hashes (`md5`, `sha1`) used for anything that looks security-relevant. |
+- **DG-SAST-001…006 (v1, JavaScript/TypeScript family):** command
+  injection (`exec`), code evaluation (`eval`/`new Function`), SQL
+  construction, raw-HTML sinks (incl. React `__html`), hardcoded
+  credentials (universal), weak hash (`createHash`).
+- **DG-SAST-007…012 (Python):** dynamic `eval`/`exec`, `os.system`/
+  `os.popen`, unsafe deserialization (pickle/marshal/`yaml.load`), weak
+  hash, Django raw SQL, Flask debug mode.
+- **DG-SAST-013…017 (JVM + Android):** `Runtime.exec`/`ProcessBuilder`
+  concat, JDBC concat, weak `MessageDigest`, `MODE_WORLD_*` storage,
+  risky WebView settings.
+- **DG-SAST-018 (C/C++/Objective-C):** dangerous memory functions
+  (`gets`/`strcpy`/`strcat`/`sprintf`/`vsprintf`).
+- **DG-SAST-019…022 (C#/VB.NET):** `Process.Start` concat, `SqlCommand`
+  concat, weak MD5/SHA-1 providers, VB `Shell()` concat.
+- **DG-SAST-023…028 (PHP/Go/Ruby/Rust):** shell execution
+  (`shell_exec`/backticks), SQL concat, `exec.Command`+`fmt.Sprintf`,
+  weak hashes, Ruby `system`/backticks with `#{…}`, `Command::new`
+  with `format!`.
+- **DG-SAST-029…039 (more languages):** Swift weak crypto, Dart
+  `Process` concat, Lua `os.execute`/`io.popen`, Perl interpolation,
+  Solidity `delegatecall`/`selfdestruct`, shell `eval`, PowerShell
+  `Invoke-Expression`, Apex SOQL concat, Elixir `Code.eval_*`/Erlang
+  `os:cmd`, R `system(paste(…))`, Julia `run(`…`)`.
+- **DG-SAST-040…047 (configuration/infrastructure/platform):** dynamic
+  SQL (`EXEC(@…)`/`EXECUTE IMMEDIATE … ||`), XXE external entities,
+  privileged containers, GitHub Actions `permissions: write-all`,
+  Dockerfile pipe-to-shell, Terraform open-world ingress, Electron
+  `nodeIntegration`/`contextIsolation`, exported Android components.
+- **DG-SAST-048…050 (bounded taint flows, deep-semantic pump):** the
+  first flow-driven rules — untrusted input reaching command execution
+  (CWE-78), SQL execution (CWE-89) or HTML rendering (CWE-79) through
+  assignments in the SAME file. They are intentionally pattern-less
+  (`patterns: []`): the line matcher never fires them; they are driven
+  by the bounded semantic layer below and land at the SINK line with
+  the same finding identity/lifecycle/report/SARIF behavior as every
+  other rule.
 
-Honest limitations (documented, not hidden):
+Every rule has at least one positive synthetic fixture and safe-form
+negative coverage in `apps/api/test/sastLanguages.test.ts` (per-rule
+unit tests for the v1 six live in `sastRules.test.ts`).
 
-- Analysis is **line-oriented and pattern-based** — a finding is a
-  *review pointer*, not a proof. Multi-line taint flows, framework
-  auto-escaping and SCREAMING_SNAKE credential names beyond the
-  covered shapes are not fully modeled.
-- Only text files are scanned; binary-looking files (NUL byte in the
-  first 8 KiB) are skipped and counted, as are files over 256 KiB and
-  well-known non-source directories (`node_modules`, `dist`, `build`,
-  `coverage`, `.git`, vendor trees).
-- A scan of a snapshot with **zero analyzable files** completes
-  honestly with `filesScanned: 0` — it does not pretend work happened.
+### Honest maturity model (v2 — never faked)
+
+The engine is **lexical, line-based pattern analysis (analysis depth
+LEVEL 1–2)**: no parser, no AST, no dataflow, no cross-file analysis.
+Therefore **no language family is labelled FULL** — that would be a
+fabrication. The catalog (`apps/api/src/scans/sast/languages.ts`)
+states the truthful maturity of every family:
+
+| Maturity | Meaning | Families |
+| -------- | ------- | -------- |
+| `FULL` | parser + AST + semantic/dataflow depth | **0** (reached by none) |
+| `PARTIAL` | real deterministic security rules + evidence + fingerprint + remediation + retest + report/SARIF + tests (pattern depth) | 32: JavaScript, TypeScript, JSX, TSX, Python, Java, Kotlin, Groovy, Scala, C, C++, Objective-C, Objective-C++, C#, VB.NET, PHP, Go, Rust, Ruby, Swift, Dart, Lua, Perl, Solidity, Bash, POSIX Shell, PowerShell, Apex, Elixir, Erlang, R, Julia |
+| `CONFIG_ANALYSIS` | configuration security analysis in the same pipeline | 8: SQL, XML, YAML, JSON, Dockerfile, Terraform/HCL, GitHub Actions YAML, AndroidManifest.xml |
+| `SYNTAX_ONLY` | detected and catalogued; no rules; skipped and counted | 2: HTML, CSS |
+| `UNSUPPORTED` | honest refusal; skipped and counted, never guessed | 11: Clojure, Haskell, OCaml, Assembly, MATLAB, Fortran, COBOL, Crystal, Zig, Nim, V |
+
+**Total: 53 language/configuration families across web / backend /
+mobile / desktop / native / config / infra / data platforms.** Counts
+are DERIVED from the catalog (`sastMaturityCounts()`), never
+hand-written.
+
+**Detection** uses extension, exact filename (`Dockerfile`,
+`AndroidManifest.xml`, `Gemfile`), shebang (`#!/usr/bin/env python3`)
+and two documented content tie-breaks: `.m` (Objective-C vs MATLAB —
+deterministic markers) and YAML vs GitHub Actions workflow
+(`runs-on:` + `jobs:`/`on:` markers — snapshot paths cannot contain
+dotfile segments, so workflows are recognized by content shape). A
+polyglot repository (e.g. Kotlin + Java + XML + Gradle + C/C++) is
+analyzed as ONE snapshot with ONE unified result; unknown files are
+skipped and counted, never claimed as scanned.
+
+**Framework support (honest scope):** deterministic framework
+DETECTION over manifest/build files (`detectFrameworks`: package.json →
+React/Next.js/Angular/Vue/Express/Fastify/NestJS/Koa/Electron/React
+Native; requirements.txt → Django/Flask/FastAPI/Tornado/aiohttp;
+pom.xml/build.gradle → Spring Boot/Android; composer.json →
+Laravel/Symfony; go.mod → Gin/Echo/Fiber; Gemfile → Rails; .csproj →
+ASP.NET Core; pubspec.yaml → Flutter) is unit-tested. Framework-AWARE
+RULES are self-contained file-level shapes (Electron `nodeIntegration`,
+Django `.raw()`, Flask `debug=True`, React `__html` sink) — also
+unit-tested and live-tested. Cross-file framework dataflow (routes →
+handlers → sinks) is NOT implemented and NOT claimed.
+
+### Android / desktop / native / configuration coverage (honest)
+
+- **Android:** AndroidManifest.xml exported-component detection,
+  `MODE_WORLD_READABLE/WRITABLE` insecure storage, risky WebView
+  settings (Java/Kotlin). No runtime mobile testing is performed or
+  claimed; no APK/IPA binary analysis.
+- **Desktop:** C#/VB.NET/VoltBrowser(Electron)/JVM/C-family process and
+  crypto shapes covered by the rules above; update-mechanism and
+  IPC-boundary analysis is NOT implemented.
+- **Native/system:** C/C++/Objective-C dangerous memory functions.
+  No binary exploitability claims are made from source SAST.
+- **Configuration/infrastructure:** SQL, XML, YAML, JSON, Dockerfile,
+  Terraform/HCL, GitHub Actions, shell, PowerShell — the CONFIG_ANALYSIS
+  families above.
+
+
+### The bounded semantic layer (deep-semantic pump)
+
+`apps/api/src/scans/sast/semantic.ts` adds two honest capabilities on
+top of the line matcher WITHOUT a parser dependency or a second engine:
+
+**1. Literal masking.** Before flow analysis, comments and string-literal
+contents are replaced with spaces (character offsets and line counts are
+preserved exactly). Text inside comments or strings can therefore never
+produce a flow finding — a false-positive class pure lexical matching
+cannot avoid. Rust single quotes are NOT treated as string delimiters
+(lifetimes) — a documented under-approximation.
+
+**2. Bounded intra-file taint flow (single forward pass).** Small,
+explicit, per-language tables drive `source → variable → sink` reasoning
+across lines of one file:
+
+- **Sources** (examples): `req.body/query/params`, `process.argv`
+  (JS/TS); `input()`, `request.args/form/json`, `sys.argv` (Python);
+  `$_GET/$_POST/$_REQUEST` (PHP); `params[]` (Ruby); `Query().Get()`,
+  `FormValue` (Go); `getParameter`, `getStringExtra` (JVM);
+  `Request[...]`, `ReadLine` (C#). Anything not listed is NOT a source.
+- **Sinks** (examples): `exec/spawn` family (JS), `os.system`,
+  `subprocess.*` (Python), `shell_exec/system/passthru` (PHP),
+  `system/spawn` (Ruby), `exec.Command` (Go), `Runtime.exec`,
+  `ProcessBuilder` (JVM), `Process.Start` (C#); `cursor.execute`,
+  `mysqli_query`, `executeQuery`, `SqlCommand`, `.Query/.Exec` (SQL);
+  `innerHTML=`, `document.write`, `dangerouslySetInnerHTML`,
+  `render_template_string` (HTML).
+- **Sanitizers** are an EXPLICIT bounded allowlist (`encodeURIComponent`,
+  `parseInt`, `Number`, DOMPurify, `textContent=`, `shlex.quote`,
+  `escapeshellarg`, `intval`, `Shellwords`, `strconv.Atoi`, `html.escape`,
+  `bleach.clean`, parameterized `?`/`%s` placeholders, bound parameters).
+  Anything outside the list is treated as unsanitized — conservative,
+  never silently suppressed.
+- **Hard bounds (tested):** at most 512 tainted variables, 64 identifier
+  tokens inspected per snippet, 3 findings per rule per file, a 300-char
+  sink-argument window; strictly single-pass, linear time, NO recursion,
+  NO fixpoint iteration, NO call graph, NO cross-file resolution.
+
+**Known limitations (honest):** use-before-assignment ordering, loop-
+carried values, flows through local helper functions, cross-file flows
+and branch-sensitive joins are NOT tracked; template-interpolated sink
+arguments are invisible to the flow layer (masked as string contents —
+the line rules still catch the same-line interpolated shapes); the
+source/sink/sanitizer tables under-approximate by design. **This is
+why every family stays PARTIAL and FULL stays 0** — the engine has
+bounded flow reasoning, not parser/AST/dataflow depth.
 
 ### Finding identity (deterministic)
 
@@ -162,3 +292,10 @@ records remain distinct from the common Finding contract.
 - SAST's DG-SAST-005 remains a lexical hardcoded-credential heuristic;
   the separate SECRETS engine is implemented with its own rules and
   mandatory redaction (see `docs/SECRETS.md`).
+- **No language support is FULL.** The engine is pattern-based
+  (LEVEL 1–2): a finding is a review pointer, never a proven exploit,
+  and no family is advertised as fully analyzed. SYNTAX_ONLY and
+  UNSUPPORTED families are reported as skipped, never "scanned".
+- **No build/dependency execution:** build-aware analysis would require
+  an execution sandbox that does not exist; the engine never runs
+  compilers, package managers or project scripts.

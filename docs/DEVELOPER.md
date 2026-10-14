@@ -140,3 +140,33 @@ missing result summaries remain unavailable rather than becoming zero.
 ## Pump 19 shared Professional surface
 
 Security Professionals use the same owner-scoped overview and shared project workflows as Developers and Students. The Professional route and API journey are documented in `SECURITY_PROFESSIONAL.md`; no Developer-specific server authority or alternate engine was added.
+
+## Phase 22 developer gap expansion
+
+A Phase 22 capability audit confirmed the Developer task chain
+(create/import project → scan → SAST/SCA/secrets/DAST → findings → triage →
+remediation → verify/rescan → report/SBOM) and closed two genuine gaps by
+extending existing modules — no new engines, no datasets, no external
+integrations:
+
+- **SARIF 2.1.0 export** (`renderSecurityReportSarif` in the report builder,
+  `GET …/report/download?format=sarif`): machine-readable rendering of the
+  already-persisted, integrity-checked report for CI/code-scanning importers.
+  Rule-fixed severities map to SARIF levels (CRITICAL/HIGH→error,
+  MEDIUM→warning, LOW/INFO→note); DROBON stable fingerprints are carried as
+  `drobon/v1` fingerprints for cross-run correlation; DAST observations use
+  logical locations. Dependency-intelligence status is carried verbatim —
+  a `NOT_ASSESSED` SARIF result is not a clean bill of health.
+- **Standalone CycloneDX SBOM export** (`GET …/report/sbom`): re-serializes
+  the exact persisted `inventory.sca.sbom` subset for supply-chain tooling;
+  never regenerated, never enriched with external data, and `422` with an
+  explicit message when the scan produced no dependency inventory.
+- **FALSE_POSITIVE triage state** in the finding lifecycle: reachable from
+  OPEN/ACKNOWLEDGED/IN_PROGRESS/REOPENED, terminal by user action, and
+  automatically reopened (with an audited event) when a later completed
+  same-scanner scan reobserves the fingerprint. This keeps triage honest:
+  reclassification by evidence is reversible, unlike RESOLVED.
+
+Entitlement boundaries are unchanged: exports reuse the report route's
+authentication, project ownership, plan/quota behavior and bounded sizes;
+UserType remains presentation/organization only.

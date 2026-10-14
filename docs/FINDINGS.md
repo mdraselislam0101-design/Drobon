@@ -15,19 +15,20 @@ The server derives the project, finding, actor, role and account from existing a
 
 ## Lifecycle and verification semantics
 
-States are `OPEN`, `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED`, and `REOPENED`. Only these transitions are accepted:
+States are `OPEN`, `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED`, `FALSE_POSITIVE`, and `REOPENED`. Only these transitions are accepted:
 
 | Current | Allowed next state |
 | --- | --- |
-| `OPEN` | `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED` |
-| `ACKNOWLEDGED` | `IN_PROGRESS`, `RESOLVED` |
-| `IN_PROGRESS` | `ACKNOWLEDGED`, `RESOLVED` |
+| `OPEN` | `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED`, `FALSE_POSITIVE` |
+| `ACKNOWLEDGED` | `IN_PROGRESS`, `RESOLVED`, `FALSE_POSITIVE` |
+| `IN_PROGRESS` | `ACKNOWLEDGED`, `RESOLVED`, `FALSE_POSITIVE` |
 | `RESOLVED` | none manually |
-| `REOPENED` | `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED` |
+| `FALSE_POSITIVE` | none manually |
+| `REOPENED` | `ACKNOWLEDGED`, `IN_PROGRESS`, `RESOLVED`, `FALSE_POSITIVE` |
 
 Transitions are checked and recorded by the server. The original scanner finding—including scanner identity, rule, deterministic fingerprint, scan context, location, evidence and remediation—is immutable. A user selecting `RESOLVED` is a workflow decision, **not** a claim that the scanner verified a fix.
 
-The existing deterministic project/fingerprint identity connects later completed findings. A matching finding in a completed same-scanner scan whose persisted finding count matches its summary updates the observation snapshot; a previously `RESOLVED` finding becomes `REOPENED`. An authoritative empty result records only `NOT_OBSERVED_IN_LATEST_SCAN`; it is not evidence of remediation, credential revocation, or removal from every copy. Completed results with missing/inconsistent finding details do not update verification or produce new reports. Failed, interrupted, queued and running scans do not update verification.
+The existing deterministic project/fingerprint identity connects later completed findings. A matching finding in a completed same-scanner scan whose persisted finding count matches its summary updates the observation snapshot; a previously `RESOLVED` or `FALSE_POSITIVE` finding becomes `REOPENED` (reclassification by evidence, automatic and audited). An authoritative empty result records only `NOT_OBSERVED_IN_LATEST_SCAN`; it is not evidence of remediation, credential revocation, or removal from every copy. Completed results with missing/inconsistent finding details do not update verification or produce new reports. Failed, interrupted, queued and running scans do not update verification.
 
 Every initial observation, user state change, note, reobservation, and eligible not-observed update is represented in a bounded audit history. There are at most 200 retained events per workflow, 20 notes per workflow (each at most 1,000 normalized characters), 50 events per history page, and 2,000 workflows per scan-store document. A reserved audit slot prevents a user transition from silently blocking a later automatic reopen.
 
