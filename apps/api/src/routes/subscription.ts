@@ -1,8 +1,9 @@
-import type { SubscriptionResponse } from '@drobon/shared';
+import { entitlementsForPlan, type SubscriptionResponse } from '@drobon/shared';
 import { internal, unauthorized } from '../errors.js';
 import type { Route } from '../http.js';
 import * as v from '../lib/validate.js';
 import { sendSuccess } from '../respond.js';
+import type { EntitlementService } from '../entitlements/service.js';
 
 /**
  * Subscription surface (Pump 4) — read-only by construction.
@@ -23,7 +24,11 @@ import { sendSuccess } from '../respond.js';
  *   this path 405 like any unregistered method. Subscription changes are
  *   an operator/server workflow (a later pump adds the authorized one).
  */
-export function createSubscriptionRoutes(): Route[] {
+export function createSubscriptionRoutes(deps: {
+  /** Active admin complimentary PRO grants extend the effective plan. */
+  grants?: EntitlementService;
+} = {}): Route[] {
+  const { grants } = deps;
   return [
     {
       method: 'GET',
@@ -41,10 +46,33 @@ export function createSubscriptionRoutes(): Route[] {
           // account record whenever it sets ctx.user.
           throw internal('Subscription state missing for an authenticated session.');
         }
-        const body: SubscriptionResponse = {
-          subscription,
-          entitlements: [...entitlements],
-        };
+        // Effective-plan presentation: an ACTIVE admin complimentary PRO
+        // grant lifts the effective subscription to PRO+ACTIVE without
+        // ever touching the account's persisted (paid) subscription. The
+        // response states its source honestly; the derived entitlements
+        // always come from the shared decision table.
+        const activeGrant = grants?.getActiveGrant(ctx.user.id);
+        let body: SubscriptionResponse;
+        if (activeGrant !== undefined) {
+          body = {
+            subscription: {
+              plan: 'PRO',
+              status: 'ACTIVE',
+              createdAt: activeGrant.grantedAt,
+              updatedAt: activeGrant.grantedAt,
+            },
+            entitlements: [...entitlementsForPlan('PRO', 'ACTIVE')],
+            proEntitlementSource: 'ADMIN_GRANT',
+          };
+        } else {
+          body = {
+            subscription,
+            entitlements: [...entitlements],
+            ...(subscription.plan === 'PRO' && subscription.status === 'ACTIVE'
+              ? { proEntitlementSource: 'PAID' as const }
+              : {}),
+          };
+        }
         sendSuccess(res, ctx, body);
       },
     },

@@ -1341,3 +1341,12 @@ This is **Main App Pump 17**, separate from the Developer/UserType Pump 17 entry
 - Dataset/production locks: 0 violations (no CVE/NVD/GHSA/OSV/KEV/EPSS
   data; only synthetic fixtures; `VULN_INTEL_PROVIDER=none` unchanged;
   SCA NO_DATA_LOADED→NOT_ASSESSED unchanged; no `.data` committed).
+
+## Admin Complimentary PRO Grant (entitlement ≠ payment)
+
+- New bounded entitlement domain: `apps/api/src/entitlements/` (store mirrors the payment-store atomic-JSON discipline; service is the single grant authority). Shared contracts in `packages/shared/src/entitlements.ts`.
+- Admin surface (dual-gated platform admin): `POST/GET /api/v1/admin/entitlements/pro`, `GET …/pro/audit`, `POST …/pro/:grantId/revoke`. Grant/revoke audit is a separate append-only trail (`ENTITLEMENT_EVENTS_ONLY`); the payment audit remains `PAYMENT_EVENTS_ONLY`.
+- Effective plan = paid subscription OR active ADMIN_GRANT. Wired through the existing seams only: usage/quota exemption (`UsageService` override), `GET /api/v1/subscription` (`proEntitlementSource`), payments route (`currentPlan` is now effective — granted-PRO accounts cannot create paid upgrade requests), admin accounts projection (`effectivePlan` + `proEntitlementSource`).
+- Payment isolation proven by tests: grant/revoke leave payment counts, submitted/approved amounts, user payment history, commissions and coupon attribution unchanged; paid PRO survives revoke/expiry (rules A–E).
+- Persistence: durable `.data/entitlements.json`; survives restarts (tested with two servers over the same stores). Idempotent, concurrency-safe (one active grant per account, one audit event).
+- Tests: `apps/api/test/entitlementApi.test.ts` (authorization matrix, restart durability, idempotency/concurrency, revoke/expiry, payment isolation, quota/UserType integration); UI: Admin Payments page "Complimentary PRO grants" panel + Account page honest source badge.

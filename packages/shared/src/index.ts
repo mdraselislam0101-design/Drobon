@@ -7,6 +7,7 @@ export * from './authz.js';
 export * from './config.js';
 export * from './dast.js';
 export * from './errors.js';
+export * from './entitlements.js';
 export * from './guards.js';
 export * from './jobs.js';
 export * from './models.js';

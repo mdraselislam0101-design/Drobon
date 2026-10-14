@@ -1,5 +1,7 @@
 import {
   ADMIN_ACCOUNT_PAGE_MAX,
+  ADMIN_ENTITLEMENT_PAGE_MAX,
+  ADMIN_ENTITLEMENT_PAGE_SIZE_MAX,
   ADMIN_ACCOUNT_PAGE_SIZE_MAX,
   ADMIN_SCAN_PAGE_MAX,
   ADMIN_SCAN_PAGE_SIZE_MAX,
@@ -15,6 +17,8 @@ import {
   ADMIN_SEARCH_MAX_LENGTH,
   isAccountRole,
   isPaymentAuditAction,
+  isAdminProGrantAuditAction,
+  isAdminProGrantStatus,
   isPlan,
   isUserType,
   type AdminAccountSummary,
@@ -31,7 +35,7 @@ import {
   type UserType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
-import { conflict, forbidden, notFound, unauthorized, validationError } from '../errors.js';
+import { conflict, forbidden, internal, notFound, unauthorized, validationError } from '../errors.js';
 import type { RequestContext, Route } from '../http.js';
 import type { UserRepository } from '../auth/repositories.js';
 import { normalizeSubscription } from '../auth/subscriptions.js';
@@ -42,6 +46,7 @@ import {
   type PaymentConfigStore,
 } from '../payments/configStore.js';
 import type { PaymentService } from '../payments/service.js';
+import type { EntitlementService } from '../entitlements/service.js';
 import type { ProjectStore } from '../projects/store.js';
 import type { ScanStore } from '../scans/store.js';
 import type { ScanProcessor } from '../scans/processor.js';
@@ -58,6 +63,8 @@ export interface AdminRouteDeps {
   scanProcessor: ScanProcessor;
   /** Runtime admin-managed payment configuration (Phase 20). */
   paymentConfig: PaymentConfigStore;
+  /** Admin complimentary PRO entitlements (grants are NEVER payments). */
+  entitlements?: EntitlementService;
 }
 
 function actorFrom(ctx: RequestContext) {
@@ -149,6 +156,16 @@ const paymentConfigMethodAddSchema = v.object({
   accountNumber: v.string({ minLength: 4, maxLength: 40, trim: true }),
   instructions: v.optional(v.string({ maxLength: 300, trim: true })),
 });
+/** Closed schemas for the admin complimentary PRO surface (grants ≠ payments). */
+const proGrantSchema = v.object({
+  accountId: v.string({ minLength: 5, maxLength: 128, trim: true, pattern: /^usr_[A-Za-z0-9_-]{1,128}$/ }),
+  expiresAt: v.optional(v.string({ maxLength: 40 })),
+  reason: v.optional(v.string({ maxLength: 300, trim: true })),
+});
+const proGrantRevokeSchema = v.object({
+  reason: v.optional(v.string({ minLength: 3, maxLength: 300, trim: true })),
+});
+
 const paymentConfigMethodPatchSchema = v.object({
   displayName: v.optional(v.string({ minLength: 1, maxLength: 80, trim: true })),
   accountNumber: v.optional(v.string({ minLength: 4, maxLength: 40, trim: true })),
@@ -169,7 +186,7 @@ function toAdminConfigResponse(state: PaymentConfigState) {
 }
 
 export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
-  const { config, users, projects, scans, payments, scanProcessor, paymentConfig } = deps;
+  const { config, users, projects, scans, payments, scanProcessor, paymentConfig, entitlements } = deps;
   return [
     {
       method: 'GET', path: '/api/v1/admin/dashboard', requireAuth: true,
@@ -222,9 +239,13 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         const accounts: AdminAccountSummary[] = result.accounts.map((account) => {
           const subscription = normalizeSubscription(account.subscription);
           const payment = paymentStats.get(account.id);
+          const grant = entitlements?.getActiveGrant(account.id) ?? undefined;
+          const paidPro = subscription.plan === 'PRO' && subscription.status === 'ACTIVE';
           return {
             accountId: account.id, email: account.email, role: account.role, userType: account.userType,
             plan: subscription.plan, subscriptionStatus: subscription.status, createdAt: account.createdAt,
+            effectivePlan: grant !== undefined ? 'PRO' : subscription.plan,
+            proEntitlementSource: grant !== undefined ? 'ADMIN_GRANT' : paidPro ? 'PAID' : null,
             accountStatus: 'UNAVAILABLE', paymentRequestCount: payment?.requestCount ?? 0,
             latestPaymentStatus: payment?.latestPaymentStatus ?? null,
           };
@@ -395,6 +416,93 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         if (result.kind === 'DUPLICATE_DISPLAY_NAME') throw conflict('Another payment destination already uses this display name.');
         ctx.logger.info('Payment config destination updated', { requestId: ctx.id, actorId: actor.id, methodId });
         sendSuccess(res, ctx, toAdminConfigResponse(result.state));
+      },
+    },
+
+    // ---- Admin complimentary PRO entitlements (grants are NOT payments) ----
+    // A grant is a persistent entitlement record with its own lifecycle and
+    // audit trail. It NEVER creates a payment, never touches the payment
+    // ledger/revenue/commissions/coupons, and NEVER mutates the account's
+    // persisted subscription — paid PRO always survives a revoke/expiry.
+    {
+      method: 'POST', path: '/api/v1/admin/entitlements/pro', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = assertPlatformAdmin(ctx, config);
+        if (entitlements === undefined) throw internal('Entitlement service is not available.');
+        v.rejectUnexpectedQuery(req);
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = proGrantSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const { grant, created } = await entitlements.grantPro(actor.id, {
+          accountId: parsed.value.accountId,
+          ...(parsed.value.expiresAt === undefined ? {} : { expiresAt: parsed.value.expiresAt }),
+          ...(parsed.value.reason === undefined ? {} : { reason: parsed.value.reason }),
+        });
+        ctx.logger.info('Admin PRO grant submitted', { requestId: ctx.id, actorId: actor.id, grantId: grant.grantId, created, targetAccountId: grant.accountId });
+        sendSuccess(res, ctx, { grant }, created ? 201 : 200);
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/admin/entitlements/pro', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        assertPlatformAdmin(ctx, config);
+        if (entitlements === undefined) throw internal('Entitlement service is not available.');
+        const params = query(req, ['page', 'pageSize', 'accountId', 'status']);
+        const page = positiveInt(params.get('page'), 1, ADMIN_ENTITLEMENT_PAGE_MAX, 'page');
+        const pageSize = positiveInt(params.get('pageSize'), 25, ADMIN_ENTITLEMENT_PAGE_SIZE_MAX, 'pageSize');
+        const accountId = params.get('accountId') ?? undefined;
+        if (accountId !== undefined && !/^usr_[A-Za-z0-9_-]{1,128}$/.test(accountId)) throw validationError([{ path: 'accountId', message: 'Account ID is invalid.' }]);
+        const statusRaw = params.get('status');
+        if (statusRaw !== null && !isAdminProGrantStatus(statusRaw)) throw validationError([{ path: 'status', message: 'Unsupported grant status.' }]);
+        const result = entitlements.listGrants({
+          ...(accountId === undefined ? {} : { accountId }),
+          ...(statusRaw === null ? {} : { status: statusRaw as 'ACTIVE' | 'REVOKED' }),
+        }, page, pageSize);
+        sendSuccess(res, ctx, result);
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/admin/entitlements/pro/audit', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        assertPlatformAdmin(ctx, config);
+        if (entitlements === undefined) throw internal('Entitlement service is not available.');
+        const params = query(req, ['page', 'pageSize', 'accountId', 'action', 'grantId', 'from', 'to']);
+        const page = positiveInt(params.get('page'), 1, ADMIN_AUDIT_PAGE_MAX, 'page');
+        const pageSize = positiveInt(params.get('pageSize'), 50, ADMIN_AUDIT_PAGE_SIZE_MAX, 'pageSize');
+        const actionRaw = params.get('action');
+        if (actionRaw !== null && !isAdminProGrantAuditAction(actionRaw)) throw validationError([{ path: 'action', message: 'Unsupported audit action.' }]);
+        const accountId = params.get('accountId') ?? undefined;
+        if (accountId !== undefined && !/^usr_[A-Za-z0-9_-]{1,128}$/.test(accountId)) throw validationError([{ path: 'accountId', message: 'Account ID is invalid.' }]);
+        const grantId = params.get('grantId') ?? undefined;
+        if (grantId !== undefined && !/^apg_[0-9a-f-]{36}$/i.test(grantId)) throw validationError([{ path: 'grantId', message: 'Grant ID is invalid.' }]);
+        const from = isoDateBound(params.get('from'), 'from');
+        const to = isoDateBound(params.get('to'), 'to', true);
+        dateRange(from, to);
+        const result = entitlements.listAudit({
+          ...(actionRaw === null ? {} : { action: actionRaw as 'ADMIN_PRO_GRANT' | 'ADMIN_PRO_REVOKE' }),
+          ...(accountId === undefined ? {} : { accountId }),
+          ...(grantId === undefined ? {} : { grantId }),
+        }, page, pageSize);
+        const body = { events: result.events, page, pageSize, total: result.total, coverage: 'ENTITLEMENT_EVENTS_ONLY' as const };
+        sendSuccess(res, ctx, body);
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/admin/entitlements/pro/:grantId/revoke', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = assertPlatformAdmin(ctx, config);
+        if (entitlements === undefined) throw internal('Entitlement service is not available.');
+        v.rejectUnexpectedQuery(req);
+        const grantId = ctx.params['grantId'];
+        if (typeof grantId !== 'string' || !/^apg_[0-9a-f-]{36}$/i.test(grantId)) throw notFound();
+        const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 4096) });
+        const parsed = proGrantRevokeSchema.parse(raw);
+        if (!parsed.ok) throw validationError(parsed.issues);
+        const { grant } = await entitlements.revokePro(grantId, actor.id, {
+          ...(parsed.value.reason === undefined ? {} : { reason: parsed.value.reason }),
+        });
+        ctx.logger.info('Admin PRO grant revoked', { requestId: ctx.id, actorId: actor.id, grantId });
+        sendSuccess(res, ctx, { grant });
       },
     },
 

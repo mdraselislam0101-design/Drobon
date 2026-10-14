@@ -9,9 +9,17 @@ import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import { sendSuccess } from '../respond.js';
 import type { PaymentService } from '../payments/service.js';
+import type { EntitlementService } from '../entitlements/service.js';
 import type { PaymentAdminFilters } from '../payments/store.js';
 
 export interface PaymentRouteDeps {
+  /**
+   * Active admin complimentary PRO grants extend the EFFECTIVE plan: a
+   * granted-PRO account is not a FREE account and cannot create a paid
+   * upgrade request (it already holds PRO). After a revoke/expiry the
+   * account is FREE again and a genuine payment works exactly as before.
+   */
+  entitlements?: EntitlementService;
   config: ApiConfig;
   users: UserRepository;
   payments: PaymentService;
@@ -112,7 +120,10 @@ function requirePaymentId(raw: string | undefined): string {
 }
 
 export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
-  const { config, users, payments } = deps;
+  const { config, users, payments, entitlements } = deps;
+  /** Effective plan: an active admin grant lifts PRO above the persisted subscription. */
+  const effectivePlanOf = (record: import('../auth/repositories.js').UserRecord): 'FREE' | 'PRO' =>
+    entitlements?.hasActivePro(record.id) === true ? 'PRO' : resolveSubscription(record).plan;
   return [
     {
       method: 'GET', path: '/api/v1/payments/config', requireAuth: true,
@@ -121,7 +132,7 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
         v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
-        sendSuccess(res, ctx, payments.config(resolveSubscription(record).plan));
+        sendSuccess(res, ctx, payments.config(effectivePlanOf(record)));
       },
     },
     {
@@ -156,13 +167,12 @@ export function createPaymentRoutes(deps: PaymentRouteDeps): Route[] {
         v.rejectUnexpectedQuery(req);
         const record = await users.findById(actor.id);
         if (record === undefined) throw unauthorized();
-        const subscription = resolveSubscription(record);
         const input = await parseBody(req, config, createSchema);
         const idempotencyKey = requireIdempotencyKey(req.headers['idempotency-key']);
         const result = await payments.create({
           accountId: record.id,
           userId: actor.id,
-          currentPlan: subscription.plan,
+          currentPlan: effectivePlanOf(record),
           plan: input.plan,
           amountMinorUnits: input.amountMinorUnits,
           currency: input.currency,

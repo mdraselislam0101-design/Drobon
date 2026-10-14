@@ -1,4 +1,5 @@
 import { isRecord } from './guards.js';
+import { isProEntitlementSource, type ProEntitlementSource } from './entitlements.js';
 
 /**
  * Plan + subscription + entitlement contracts (Pump 4).
@@ -85,11 +86,20 @@ export interface Subscription {
  * `GET /api/v1/subscription` response — the caller's own subscription
  * plus the entitlements the server derives from it. Read-only: there is
  * deliberately no mutation endpoint in Pump 4.
+ *
+ * When the account's EFFECTIVE plan is PRO, `proEntitlementSource` states
+ * where that PRO comes from: `'PAID'` (the persisted subscription itself
+ * is PRO+ACTIVE) or `'ADMIN_GRANT'` (an active admin complimentary grant
+ * sits on top of the subscription). It is omitted entirely when the
+ * effective plan is FREE. This is honest presentation only — it never
+ * grants anything by itself and a client cannot influence it.
  */
 export interface SubscriptionResponse {
   subscription: Subscription;
   /** Server-authoritative entitlements for the current (plan, status). */
   entitlements: Entitlement[];
+  /** Present only while the effective plan is PRO. */
+  proEntitlementSource?: ProEntitlementSource;
 }
 
 /** The entitlements every account holds regardless of commercial state. */
@@ -167,10 +177,12 @@ export function isSubscription(value: unknown): value is Subscription {
 
 /** Guard for {@link SubscriptionResponse} payloads. */
 export function isSubscriptionResponse(value: unknown): value is SubscriptionResponse {
-  return (
-    isRecord(value) &&
-    isSubscription(value['subscription']) &&
-    Array.isArray(value['entitlements']) &&
-    value['entitlements'].every((entry) => isEntitlement(entry))
-  );
+  if (!isRecord(value) || !isSubscription(value['subscription']) ||
+      !Array.isArray(value['entitlements']) ||
+      !value['entitlements'].every((entry) => isEntitlement(entry))) {
+    return false;
+  }
+  // The source key is optional; when present it must be a known source.
+  if (value['proEntitlementSource'] === undefined) return true;
+  return isProEntitlementSource(value['proEntitlementSource']);
 }

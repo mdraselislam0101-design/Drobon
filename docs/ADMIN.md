@@ -10,6 +10,28 @@ Partner/coupon/commission management (Pump 7) is a platform-admin capability usi
 
 Both allowlists default to empty. There is no API/UI for self-promotion, bootstrap, role changes, platform-ID edits, account deletion, account suspension, UserType mutation, or manual subscription adjustment. The account store does not currently model account status; account rows explicitly report `accountStatus: UNAVAILABLE`. The existing payment saga is the only supported subscription transition.
 
+## Admin Complimentary PRO grants (entitlement ≠ payment)
+
+Platform admins (same `PLATFORM_ADMIN_IDS` + live ADMIN-role dual gate) can grant a **persistent complimentary PRO entitlement** to any account without taking any payment:
+
+- `POST /api/v1/admin/entitlements/pro` — body `{ accountId, expiresAt?, reason? }`. The server supplies the acting admin identity and timestamps; the client can never set a price, amount, plan level, actor, or commission (closed schema, fail-closed 422).
+- `GET /api/v1/admin/entitlements/pro` — paged grant list (filters: `accountId`, `status`).
+- `GET /api/v1/admin/entitlements/pro/audit` — the grants' own append-only audit trail (`coverage: ENTITLEMENT_EVENTS_ONLY`; the payment audit route remains `PAYMENT_EVENTS_ONLY`).
+- `POST /api/v1/admin/entitlements/pro/:grantId/revoke` — revoke an ACTIVE grant (optional reason; second revoke conflicts).
+
+Business rules (all enforced server-side and covered by tests):
+
+- **A grant is NOT a payment.** It never creates a payment record, never touches the payment ledger, submitted/approved amounts, partner commissions, or coupon attribution. The user-facing payment history stays exactly as it was. `paymentRequired` is a fixed `false`.
+- **Entitlement sources stay separate.** The account's persisted subscription is written ONLY by the payment approval saga (plus the legacy partner-complimentary activation, which shares that seam and is documented in `docs/PARTNERS.md`). Admin grants live in their own store (`.data/entitlements.json`, atomic JSON like the payment store) with their own lifecycle and audit. The two are never merged or re-labeled.
+- **Effective plan** = PRO when the persisted subscription is PRO+ACTIVE **or** at least one ADMIN_GRANT is ACTIVE and unexpired; otherwise FREE. Consequently: revoking/expiring a grant with paid PRO underneath keeps the account PRO (paid survives); with nothing underneath the account returns to FREE. Grants never modify, reset, or delete paid state.
+- **Persistence.** Grants survive logout/login, browser refresh, API restarts, and deployment restarts (durable JSON store; production refuses `:memory:`). No hardcoded user IDs or frontend flags exist.
+- **Idempotency.** At most one effectively-active grant per account exists; duplicate submissions (including concurrent ones) return the existing grant unchanged (200 vs 201) and never duplicate audit effects. An EXPIRED grant no longer blocks a fresh grant.
+- **Expiry** is derived at read time from `expiresAt` (nullable = open-ended, bounded at 3660 days ahead). No background mutator rewrites history.
+- **Quota.** Effective PRO is quota-exempt exactly like paid PRO (3 scans/month FREE limit not applied). The usage counters are authoritative throughout; revoke/expiry falls back to the stored accounting without resets. UserType switching never creates or removes an entitlement.
+- **Audit.** Every grant and revoke appends an immutable audit event with the server-derived actor; the client cannot forge actor, time, or outcome. Free-text reasons are sanitized/redacted like all admin free text.
+- **Presentation.** `GET /api/v1/subscription` reports `proEntitlementSource: ADMIN_GRANT | PAID` while the effective plan is PRO (omitted for FREE); the Account page shows an honest "Complimentary PRO (admin-granted — not a payment)" badge. No fake receipts, amounts, or transactions are shown anywhere.
+- **Database separation.** The grant store is the existing local JSON persistence seam (application-level). Any future migration of entitlements to a production database belongs to the separate Database / Production Data workstream; no production schema or data ships with this feature.
+
 ## Read routes and bounds
 
 All routes below require authentication, platform allowlist + live role authorization, the dedicated `ADMIN_RATE_LIMIT_*` limiter, strict query-key validation, and bounded page sizes/page numbers. Responses use closed shared runtime guards.

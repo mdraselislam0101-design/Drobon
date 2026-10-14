@@ -46,6 +46,7 @@ describe('platform operations dashboard UI', () => {
     const getAdminAccounts = vi.fn(async () => ({ accounts: [{
       accountId: 'usr_synthetic_01', email: 's***@example.test', role: 'MEMBER' as const, userType: null,
       plan: 'FREE' as const, subscriptionStatus: 'ACTIVE' as const, createdAt: '2026-09-01T00:00:00.000Z',
+      effectivePlan: 'FREE' as const, proEntitlementSource: null,
       accountStatus: 'UNAVAILABLE' as const, paymentRequestCount: 0, latestPaymentStatus: null,
     }], page: 1, pageSize: 25, total: 1 }));
     const getAdminAudit = vi.fn(async () => ({ events: [], page: 1, pageSize: 50, total: 0, coverage: 'PAYMENT_EVENTS_ONLY' as const }));

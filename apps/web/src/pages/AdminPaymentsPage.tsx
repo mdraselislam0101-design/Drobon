@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AdminPaymentConfigResponse, AdminPaymentSummary, PaymentAuditEvent } from '@drobon/shared';
+import type { AdminPaymentConfigResponse, AdminPaymentSummary, AdminProGrant, EntitlementAuditEvent, PaymentAuditEvent } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 
@@ -58,6 +58,7 @@ export function AdminPaymentsPage(): React.JSX.Element {
     <section className="panel payment-admin" aria-labelledby="payment-admin-title">
       <p className="eyebrow">Platform operations</p>
       <h1 id="payment-admin-title">Payment review</h1>
+      <ProGrantsPanel client={client} />
       <PaymentConfigPanel client={client} />
       <p className="muted">Only server-configured platform reviewer accounts can view or mutate payment records. Account roles alone do not grant this access.</p>
       <p className="form-alert" role="note">Manual review only. A submitted reference is evidence supplied by the user, not independent proof of payment. No online gateway or webhook is configured.</p>
@@ -96,6 +97,144 @@ export function AdminPaymentsPage(): React.JSX.Element {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Admin Complimentary PRO grants. A grant is an ENTITLEMENT, never a
+ * payment: it creates no transaction, touches no balance/revenue and no
+ * partner commission. Every mutation is enforced server-side (dual-gated
+ * platform admin); the UI only renders the server's verdicts.
+ */
+function ProGrantsPanel({ client }: { client: ReturnType<typeof useApiClient> }): React.JSX.Element {
+  const [grants, setGrants] = useState<AdminProGrant[]>([]);
+  const [audit, setAudit] = useState<EntitlementAuditEvent[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ accountId: '', expiresAt: '', reason: '' });
+  const [revokeReasons, setRevokeReasons] = useState<Record<string, string>>({});
+
+  const load = useCallback(async (): Promise<void> => {
+    setLoadError(null);
+    try {
+      const [grantsResult, auditResult] = await Promise.all([
+        client.getAdminProGrants({ page: 1, pageSize: 50 }),
+        client.getAdminProGrantAudit({ page: 1, pageSize: 8 }),
+      ]);
+      setGrants(grantsResult.grants);
+      setAudit(auditResult.events);
+    } catch (cause: unknown) {
+      setLoadError(cause instanceof ApiClientError && cause.status === 403
+        ? 'Complimentary PRO administration is restricted to platform administrators.'
+        : cause instanceof ApiClientError ? cause.message : 'Grant data is unavailable.');
+    }
+  }, [client]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const submitGrant = async (): Promise<void> => {
+    setBusy(true); setNotice(null); setFormError(null);
+    try {
+      const result = await client.grantAdminPro({
+        accountId: form.accountId.trim(),
+        ...(form.expiresAt.trim() === '' ? {} : { expiresAt: new Date(form.expiresAt).toISOString() }),
+        ...(form.reason.trim() === '' ? {} : { reason: form.reason.trim() }),
+      });
+      setForm({ accountId: '', expiresAt: '', reason: '' });
+      await load();
+      setNotice(result.grant.status === 'ACTIVE'
+        ? `Complimentary PRO is active for ${result.grant.accountId}. This is not a payment — no charge, no revenue, no commission.`
+        : `Grant loaded for ${result.grant.accountId}.`);
+    } catch (cause: unknown) {
+      setFormError(cause instanceof ApiClientError ? cause.message : 'The grant could not be completed.');
+    } finally { setBusy(false); }
+  };
+
+  const revoke = async (grantId: string): Promise<void> => {
+    setBusy(true); setNotice(null); setFormError(null);
+    try {
+      const reason = (revokeReasons[grantId] ?? '').trim();
+      await client.revokeAdminProGrant(grantId, reason === '' ? {} : { reason });
+      await load();
+      setNotice('Grant revoked. The account keeps any PAID PRO it holds underneath; it becomes FREE only if no other PRO entitlement remains.');
+    } catch (cause: unknown) {
+      setFormError(cause instanceof ApiClientError ? cause.message : 'The revoke could not be completed.');
+    } finally { setBusy(false); }
+  };
+
+  if (loadError !== null) {
+    return (
+      <div className="payment-config-panel" data-testid="pro-grants-denied">
+        <h2>Complimentary PRO grants</h2>
+        <div className="form-alert" role="alert"><p>{loadError}</p></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="payment-config-panel" data-testid="pro-grants-panel">
+      <h2>Complimentary PRO grants</h2>
+      <p className="muted">
+        Grants a persistent PRO entitlement WITHOUT any payment: no transaction, no balance change, no revenue,
+        no partner commission, no coupon attribution. The account&apos;s paid subscription is never modified —
+        revoke/expiry removes only the granted PRO.
+      </p>
+      {notice !== null && <p className="notice" role="status" data-testid="pro-grant-notice">{notice}</p>}
+      {formError !== null && <div className="form-alert" role="alert" data-testid="pro-grant-error"><p>{formError}</p></div>}
+
+      <div className="payment-config-add">
+        <label htmlFor="pro-grant-account">Target account ID</label>
+        <input id="pro-grant-account" maxLength={128} value={form.accountId} onChange={(event) => setForm((c) => ({ ...c, accountId: event.target.value }))} placeholder="usr_…" data-testid="pro-grant-account-input" />
+        <label htmlFor="pro-grant-expiry">Expiry (optional)</label>
+        <input id="pro-grant-expiry" type="datetime-local" value={form.expiresAt} onChange={(event) => setForm((c) => ({ ...c, expiresAt: event.target.value }))} data-testid="pro-grant-expiry-input" />
+        <label htmlFor="pro-grant-reason">Reason (optional, audited)</label>
+        <input id="pro-grant-reason" maxLength={300} value={form.reason} onChange={(event) => setForm((c) => ({ ...c, reason: event.target.value }))} data-testid="pro-grant-reason-input" />
+        <button type="button" className="button button-secondary" onClick={() => void submitGrant()} disabled={busy || form.accountId.trim() === ''} aria-busy={busy} data-testid="pro-grant-submit">
+          {busy ? 'Working…' : 'Grant complimentary PRO'}
+        </button>
+      </div>
+
+      <h3>Grants</h3>
+      {grants.length === 0 && <p className="muted" data-testid="pro-grants-empty">No complimentary PRO grants exist.</p>}
+      {grants.length > 0 && (
+        <div className="table-wrap">
+          <table className="payment-table" data-testid="pro-grants-table">
+            <thead><tr><th>Grant / account</th><th>State</th><th>Grant window</th><th>Reason</th><th>Revoke</th></tr></thead>
+            <tbody>
+              {grants.map((grant) => (
+                <tr key={grant.grantId} data-testid={`pro-grant-${grant.grantId}`}>
+                  <td><code>{grant.grantId}</code><br /><span>Account: <code>{grant.accountId}</code></span><br /><span>By: <code>{grant.grantedBy}</code></span></td>
+                  <td><strong>{grant.status}</strong><br /><small>Entitlement only — never a payment.</small></td>
+                  <td>Granted: {grant.grantedAt}<br />Expires: {grant.expiresAt ?? '—'}{grant.revokedAt !== null && <><br />Revoked: {grant.revokedAt}</>}</td>
+                  <td>{grant.reason ?? '—'}</td>
+                  <td>
+                    {grant.status === 'ACTIVE' && <>
+                      <label htmlFor={`revoke-${grant.grantId}`}>Reason (optional)</label>
+                      <input id={`revoke-${grant.grantId}`} maxLength={300} value={revokeReasons[grant.grantId] ?? ''} onChange={(event) => setRevokeReasons((c) => ({ ...c, [grant.grantId]: event.target.value }))} data-testid={`pro-grant-revoke-reason-${grant.grantId}`} />
+                      <button type="button" className="button button-secondary" onClick={() => void revoke(grant.grantId)} disabled={busy} data-testid={`pro-grant-revoke-${grant.grantId}`}>Revoke grant</button>
+                    </>}
+                    {grant.status === 'REVOKED' && <span>Revoked by {grant.revokedBy ?? '—'}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {audit.length > 0 && (
+        <>
+          <h3>Grant audit (append-only)</h3>
+          <ul aria-label="Complimentary PRO grant audit trail" data-testid="pro-grant-audit">
+            {audit.map((event) => (
+              <li key={event.eventId}>{event.action} · {event.accountId} · {event.timestamp}{event.reason !== null ? ` · ${event.reason}` : ''}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }
 

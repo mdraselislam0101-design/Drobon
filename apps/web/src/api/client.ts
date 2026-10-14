@@ -23,6 +23,9 @@ import {
   isSubscriptionResponse,
   isUsageResponse,
   isAdminPaymentConfigResponse,
+  isAdminProGrantResponse,
+  isAdminProGrantsResponse,
+  isEntitlementAuditResponse,
   isPaymentConfigResponse,
   isPaymentHistoryResponse,
   isPaymentDetailResponse,
@@ -88,6 +91,10 @@ import {
   type SubscriptionResponse,
   type UsageResponse,
   type AdminPaymentConfigResponse,
+  type AdminProGrantResponse,
+  type AdminProGrantsResponse,
+  type AdminProGrantStatus,
+  type EntitlementAuditResponse,
   type PaymentConfigResponse,
   type PaymentHistoryResponse,
   type PaymentDetailResponse,
@@ -239,6 +246,10 @@ export interface ApiClient {
   approvePayment(paymentId: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   rejectPayment(paymentId: string, reason: string, signal?: AbortSignal): Promise<PaymentDetailResponse>;
   getPaymentAudit(paymentId: string, signal?: AbortSignal): Promise<PaymentAuditResponse>;
+  getAdminProGrants(query?: { page?: number; pageSize?: number; accountId?: string; status?: AdminProGrantStatus }, signal?: AbortSignal): Promise<AdminProGrantsResponse>;
+  grantAdminPro(input: { accountId: string; expiresAt?: string; reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse>;
+  revokeAdminProGrant(grantId: string, input?: { reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse>;
+  getAdminProGrantAudit(query?: { page?: number; pageSize?: number; accountId?: string; grantId?: string; action?: 'ADMIN_PRO_GRANT' | 'ADMIN_PRO_REVOKE' }, signal?: AbortSignal): Promise<EntitlementAuditResponse>;
   /** Phase 20: platform-admin runtime payment configuration (dual-gated). */
   getAdminPaymentConfig(signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
   updateAdminPaymentPrice(proPriceMinorUnits: number, signal?: AbortSignal): Promise<AdminPaymentConfigResponse>;
@@ -736,6 +747,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }, isPaymentDetailResponse),
     getPaymentAudit: (paymentId, signal?: AbortSignal): Promise<PaymentAuditResponse> =>
       authRequest<PaymentAuditResponse>(`/api/v1/admin/payments/${encodeURIComponent(paymentId)}/audit`, signal === undefined ? {} : { signal }, isPaymentAuditResponse),
+    getAdminProGrants: (query: { page?: number; pageSize?: number; accountId?: string; status?: AdminProGrantStatus } = {}, signal?: AbortSignal): Promise<AdminProGrantsResponse> =>
+      authRequest<AdminProGrantsResponse>(`/api/v1/admin/entitlements/pro${adminQuery(query)}`, signal === undefined ? {} : { signal }, isAdminProGrantsResponse),
+    grantAdminPro: (input: { accountId: string; expiresAt?: string; reason?: string }, signal?: AbortSignal): Promise<AdminProGrantResponse> =>
+      authRequest<AdminProGrantResponse>('/api/v1/admin/entitlements/pro', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminProGrantResponse),
+    revokeAdminProGrant: (grantId: string, input: { reason?: string } = {}, signal?: AbortSignal): Promise<AdminProGrantResponse> =>
+      authRequest<AdminProGrantResponse>(`/api/v1/admin/entitlements/pro/${encodeURIComponent(grantId)}/revoke`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+        ...(signal === undefined ? {} : { signal }),
+      }, isAdminProGrantResponse),
+    getAdminProGrantAudit: (query: { page?: number; pageSize?: number; accountId?: string; grantId?: string; action?: 'ADMIN_PRO_GRANT' | 'ADMIN_PRO_REVOKE' } = {}, signal?: AbortSignal): Promise<EntitlementAuditResponse> =>
+      authRequest<EntitlementAuditResponse>(`/api/v1/admin/entitlements/pro/audit${adminQuery(query)}`, signal === undefined ? {} : { signal }, isEntitlementAuditResponse),
     getAdminPaymentConfig: (signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>
       authRequest<AdminPaymentConfigResponse>('/api/v1/admin/payment-config', signal === undefined ? {} : { signal }, isAdminPaymentConfigResponse),
     updateAdminPaymentPrice: (proPriceMinorUnits, signal?: AbortSignal): Promise<AdminPaymentConfigResponse> =>

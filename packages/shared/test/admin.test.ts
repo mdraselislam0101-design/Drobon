@@ -29,7 +29,7 @@ describe('Pump 16 admin response guards', () => {
   });
 
   test('account, scan, finding, and audit pages reject over-posted sensitive fields', () => {
-    const account = { accountId: 'usr_test', email: 'masked@example.test', role: 'MEMBER', userType: null, plan: 'FREE', subscriptionStatus: 'ACTIVE', createdAt: '2026-09-01T00:00:00.000Z', accountStatus: 'UNAVAILABLE', paymentRequestCount: 0, latestPaymentStatus: null };
+    const account = { accountId: 'usr_test', email: 'masked@example.test', role: 'MEMBER', userType: null, plan: 'FREE', subscriptionStatus: 'ACTIVE', effectivePlan: 'FREE', proEntitlementSource: null, createdAt: '2026-09-01T00:00:00.000Z', accountStatus: 'UNAVAILABLE', paymentRequestCount: 0, latestPaymentStatus: null };
     expect(isAdminAccountsResponse({ accounts: [account], page: 1, pageSize: 25, total: 1 })).toBe(true);
     expect(isAdminAccountsResponse({ accounts: [{ ...account, passwordHash: 'scrypt$secret' }], page: 1, pageSize: 25, total: 1 })).toBe(false);
 

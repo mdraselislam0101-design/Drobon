@@ -30,6 +30,7 @@ import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
+import type { EntitlementStore } from '../src/entitlements/store.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from '../src/assessments/store.js';
 
 export interface TestServer {
@@ -108,6 +109,8 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   paymentStoreDir?: string;
   /** Inject a payment store directly (defaults: memory or paymentStoreDir). */
   paymentStore?: PaymentStore;
+  /** Inject the admin PRO entitlement store directly (restart proofs). */
+  entitlementStore?: EntitlementStore;
   /** Deterministic payment timestamps. */
   paymentNow?: () => number;
   partnerNow?: () => number;
@@ -177,6 +180,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sourceStore,
     paymentStoreDir,
     paymentStore,
+    entitlementStore,
     paymentNow,
     partnerNow,
     scanEngines,
@@ -212,6 +216,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     sourceStorePath: ':memory:',
     vulnIntelProvider: vulnIntelProvider ?? 'none',
     paymentStorePath: ':memory:',
+    entitlementStorePath: ':memory:',
     partnerStorePath: ':memory:',
     paymentConfigStorePath: ':memory:',
     proPriceMinorUnits: 100_000,
@@ -326,6 +331,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
     ...(scanEngines === undefined ? {} : { scanEngines }),
+    ...(entitlementStore === undefined ? {} : { entitlementStore }),
     dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
     dastTransport: dastTransport ?? FIXTURE_DAST_TRANSPORT,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),

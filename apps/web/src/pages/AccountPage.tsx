@@ -476,7 +476,7 @@ function PlanPanel({
       </div>
     );
   }
-  const { subscription, entitlements } = planState.data;
+  const { subscription, entitlements, proEntitlementSource } = planState.data;
   // The verdict is the SERVER's entitlement list — the page never derives
   // it from the plan name (a plan string alone must not unlock UI).
   const proEnabled = entitlements.includes('feature:pro');
@@ -489,6 +489,16 @@ function PlanPanel({
         <span className="pill" data-testid="subscription-status-badge">
           Status: {subscription.status}
         </span>
+        {proEntitlementSource === 'ADMIN_GRANT' && (
+          <span className="pill" data-testid="pro-source-badge">
+            Complimentary PRO (admin-granted — not a payment)
+          </span>
+        )}
+        {proEntitlementSource === 'PAID' && (
+          <span className="pill" data-testid="pro-source-badge">
+            PRO source: paid subscription
+          </span>
+        )}
       </p>
       <ul className="access-checks" aria-label="Plan entitlements">
         <li data-testid="pro-entitlement">

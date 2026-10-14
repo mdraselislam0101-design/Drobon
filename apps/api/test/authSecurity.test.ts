@@ -389,6 +389,7 @@ describe('auth security controls', () => {
             paymentStorePath: `${dir}/payments.json`,
             partnerStorePath: `${dir}/partners.json`,
             paymentConfigStorePath: `${dir}/payment-config.json`,
+            entitlementStorePath: `${dir}/entitlements.json`,
             proPriceMinorUnits: 100_000,
             paymentReviewerIds: [],
             manualPaymentMethods: ['MANUAL_TRANSFER'],

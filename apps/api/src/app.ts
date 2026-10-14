@@ -34,6 +34,8 @@ import { createSubscriptionRoutes } from './routes/subscription.js';
 import { createUsageRoutes } from './routes/usage.js';
 import { createProjectRoutes } from './routes/projects.js';
 import { createUsageService, type UsageService } from './usage/service.js';
+import { createEntitlementService, type EntitlementService } from './entitlements/service.js';
+import { createJsonFileEntitlementStore, createMemoryEntitlementStore, type EntitlementStore } from './entitlements/store.js';
 import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
 import {
   createJsonFileProjectStore,
@@ -155,6 +157,8 @@ export interface AppDeps {
   scanProcessorAutoStart?: boolean;
   /** Durable payment + audit JSON store; tests may inject a local fixture. */
   paymentStore?: PaymentStore;
+  /** Durable admin PRO entitlement store; tests may inject a local fixture. */
+  entitlementStore?: EntitlementStore;
   partnerStore?: PartnerStore;
   paymentConfigStore?: PaymentConfigStore;
   /** Clock for partner/coupon/commission timestamps (injectable for tests). */
@@ -274,6 +278,19 @@ export function createApp(deps: AppDeps): App {
     (config.paymentConfigStorePath === ':memory:'
       ? createMemoryPaymentConfigStore(config.proPriceMinorUnits)
       : createJsonFilePaymentConfigStore(config.paymentConfigStorePath, config.proPriceMinorUnits));
+  // Admin complimentary PRO entitlements (grants are NEVER payments).
+  // One atomic JSON document for grants + their append-only audit trail;
+  // durable outside explicitly ephemeral development.
+  const entitlementStore: EntitlementStore =
+    deps.entitlementStore ??
+    (config.entitlementStorePath === ':memory:'
+      ? createMemoryEntitlementStore()
+      : createJsonFileEntitlementStore(config.entitlementStorePath));
+  const entitlements: EntitlementService = createEntitlementService({
+    store: entitlementStore,
+    users,
+  });
+
   const partners: PartnerService = createPartnerService({
     store: partnerStore,
     users,
@@ -321,6 +338,7 @@ export function createApp(deps: AppDeps): App {
   });
   const usage: UsageService = createUsageService({
     store: usageStore,
+    activePro: (accountId) => entitlements.hasActivePro(accountId),
     ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
   });
 
@@ -330,10 +348,10 @@ export function createApp(deps: AppDeps): App {
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
-    ...createSubscriptionRoutes(),
-    ...createPaymentRoutes({ config, users, payments }),
+    ...createSubscriptionRoutes({ grants: entitlements }),
+    ...createPaymentRoutes({ config, users, payments, entitlements }),
     ...createPartnerRoutes({ config, partners }),
-    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig }),
+    ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig, entitlements }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock }),
