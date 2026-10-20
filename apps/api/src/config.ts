@@ -89,12 +89,15 @@ export interface ApiConfig {
   sourceStorePath: string;
   /**
    * The vulnerability-intelligence provider selector (Pump 9).
-   * `none` — the ONLY supported value — selects the locked Null
-   * provider (no dataset; assessments are honestly NOT_ASSESSED /
-   * NO_DATA_LOADED). A future real dataset integration registers a
-   * new selector here; anything unknown fails fast at startup.
+   * `none` — the locked Null provider (no dataset; assessments are
+   * honestly NOT_ASSESSED / NO_DATA_LOADED). `filesystem` — loads
+   * the external Drobon-Dataset corpus from DATASET_PATH (separate
+   * repo, never committed to the app repo). Anything unknown fails
+   * fast at startup.
    */
-  vulnIntelProvider: 'none';
+  vulnIntelProvider: 'none' | 'filesystem';
+  /** Filesystem path to the external Drobon-Dataset repo (when provider is filesystem). */
+  datasetPath?: string;
   /** Durable Pump 15 payment + audit JSON document. */
   paymentStorePath: string;
   /** Admin complimentary PRO entitlement store (persistent by default). */
@@ -330,15 +333,29 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   // --- Sources (Pump 8) -----------------------------------------------------
   // VULN_INTEL_PROVIDER (Pump 9): the dataset lock in config form —
-  // only 'none' exists today, so any attempt to point the app at a
-  // "dataset" fails fast instead of silently pretending.
-  const vulnIntelProviderRaw = (env['VULN_INTEL_PROVIDER'] ?? 'none').trim();
-  if (vulnIntelProviderRaw !== 'none') {
-    issues.push(
-      `VULN_INTEL_PROVIDER must be "none" (no vulnerability dataset is bundled; external intelligence is a separate future integration)`,
-    );
+  // 'none' is the locked default (no dataset); 'filesystem' loads the
+  // external Drobon-Dataset corpus from DATASET_PATH (separate repo,
+  // never committed to the app repo).
+  const vulnIntelProviderRaw = (env['VULN_INTEL_PROVIDER'] ?? 'none').trim().toLowerCase();
+  let vulnIntelProvider: 'none' | 'filesystem' = 'none';
+  if (vulnIntelProviderRaw === 'none' || vulnIntelProviderRaw === 'filesystem') {
+    vulnIntelProvider = vulnIntelProviderRaw as 'none' | 'filesystem';
+  } else {
+    issues.push(`VULN_INTEL_PROVIDER must be one of none, filesystem`);
   }
-  const vulnIntelProvider = 'none' as const;
+  const datasetPathRaw = (env['DATASET_PATH'] ?? '').trim();
+  let datasetPath: string | undefined;
+  if (vulnIntelProvider === 'filesystem') {
+    if (datasetPathRaw.length === 0) {
+      issues.push('DATASET_PATH must be set when VULN_INTEL_PROVIDER=filesystem (path to Drobon-Dataset checkout)');
+    } else if (datasetPathRaw.length > 500 || hasControlCharacter(datasetPathRaw)) {
+      issues.push('DATASET_PATH must be 1-500 printable characters');
+    } else {
+      datasetPath = datasetPathRaw;
+    }
+  } else if (datasetPathRaw.length > 0) {
+    issues.push('DATASET_PATH is only allowed when VULN_INTEL_PROVIDER=filesystem');
+  }
 
   const sourceStorePath = (env['SOURCE_STORE_PATH'] ?? '.data/sources.json').trim();
   const sourceMemoryStore = sourceStorePath === ':memory:';
@@ -477,6 +494,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     studentStorePath,
     sourceStorePath,
     vulnIntelProvider,
+    datasetPath,
     paymentStorePath,
     entitlementStorePath,
     partnerStorePath,

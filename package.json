@@ -2,7 +2,7 @@
   "name": "drobon-aegis-ai",
   "version": "0.1.0",
   "private": true,
-  "description": "Drobon Aegis AI — cumulative security product foundation with shared user-type workspaces (Pump 20).",
+  "description": "Drobon Aegis AI \u2014 cumulative security product foundation with shared user-type workspaces (Pump 20).",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "engines": {
@@ -28,7 +28,9 @@
     "check:repo-integrity": "node scripts/check-repo-integrity.mjs",
     "check:release-evidence": "node scripts/release-evidence.mjs --self-test",
     "release:evidence": "node scripts/release-evidence.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "sync:dataset": "node scripts/sync-dataset.mjs",
+    "check:dataset": "node scripts/sync-dataset.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",

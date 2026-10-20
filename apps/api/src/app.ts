@@ -56,6 +56,7 @@ import { createSastEngine } from './scans/sast/engine.js';
 import { createScaEngine } from './scans/sca/engine.js';
 import { createSecretsEngine } from './scans/secrets/engine.js';
 import { createNullIntelligenceProvider } from './scans/sca/provider.js';
+import { createFilesystemIntelligenceProvider } from './scans/sca/filesystemProvider.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
@@ -316,7 +317,10 @@ export function createApp(deps: AppDeps): App {
   // The engine registry (server-side composition ONLY). Pump 8: REAL
   // SAST; Pump 9: REAL SCA; Pump 10: REAL Secrets; Pump 11: bounded,
   // passive, single-target DAST. No browser or exploit capabilities.
-  const intelligenceProvider = createNullIntelligenceProvider();
+  const intelligenceProvider =
+    config.vulnIntelProvider === 'filesystem' && config.datasetPath !== undefined
+      ? createFilesystemIntelligenceProvider({ datasetPath: config.datasetPath, logger })
+      : createNullIntelligenceProvider();
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore }),
