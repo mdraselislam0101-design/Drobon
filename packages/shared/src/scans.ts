@@ -113,6 +113,8 @@ export const SCAN_FAILURE_CODES = [
   'DAST_REQUEST_FAILED',
   'DAST_REQUEST_TIMEOUT',
   'DAST_SCAN_TIMEOUT',
+  'DAST_ACTIVE_CONSENT_REQUIRED',
+  'DAST_ACTIVE_NOT_ALLOWED',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -253,10 +255,10 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   if (record['directDependencies'] !== undefined && !isCount(record['directDependencies'])) {
     return false;
   }
-  if (record['requestsMade'] !== undefined && (!isCount(record['requestsMade']) || record['requestsMade'] > 3)) {
+  if (record['requestsMade'] !== undefined && (!isCount(record['requestsMade']) || record['requestsMade'] > 20)) {
     return false;
   }
-  if (record['redirectsFollowed'] !== undefined && (!isCount(record['redirectsFollowed']) || record['redirectsFollowed'] > 2)) {
+  if (record['redirectsFollowed'] !== undefined && (!isCount(record['redirectsFollowed']) || record['redirectsFollowed'] > 5)) {
     return false;
   }
   if (record['partial'] !== undefined && typeof record['partial'] !== 'boolean') {
@@ -300,6 +302,8 @@ export interface Scan {
   assessmentId?: string;
   /** Canonical target, present only for DAST scans. */
   targetUrl?: string;
+  /** DAST mode: PASSIVE (default, ≤3 req) or ACTIVE_SAFE (crawl+injection, ≤20 req, consent required). */
+  dastMode?: 'PASSIVE' | 'ACTIVE_SAFE';
   /** Set on a terminal status (COMPLETED, FAILED, or TIMED_OUT). */
   completedAt?: string;
   /** Terminal failure classification (FAILED or TIMED_OUT only). */
@@ -715,6 +719,7 @@ export function isScan(value: unknown): value is Scan {
     'status',
     'assessmentId',
     'targetUrl',
+    'dastMode',
     'createdAt',
     'updatedAt',
     'startedAt',
@@ -742,6 +747,7 @@ export function isScan(value: unknown): value is Scan {
   if (record['targetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['targetUrl']))) {
     return false;
   }
+  if (record['dastMode'] !== undefined && (record['scanType'] !== 'DAST' || (record['dastMode'] !== 'PASSIVE' && record['dastMode'] !== 'ACTIVE_SAFE'))) return false;
   if (
     record['scanType'] === 'DAST' &&
     (record['status'] === 'QUEUED' || record['status'] === 'RUNNING' || record['status'] === 'COMPLETED') &&

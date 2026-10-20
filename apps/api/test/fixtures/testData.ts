@@ -94,7 +94,7 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
   },
 ];
 
-// Minimal secrets test rules — 2 rules for smoke tests
+// Secrets test fixtures — 6 rules covering all categories (paid-tool parity: test data in test/, not src/)
 export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
   {
     id: 'DG-SEC-001',
@@ -119,9 +119,122 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
     cwe: 'CWE-798',
     remediation: 'Move the credential to the environment or a secret manager.',
     limitation: 'Prefix-shaped only.',
-    patterns: [/\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/, /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/],
+    patterns: [/\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/, /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/, /\b[sr]k_live_[A-Za-z0-9]{20,255}\b/, /\bxox[baprs]-[A-Za-z0-9-]{20,255}\b/, /\bAIza[0-9A-Za-z_-]{35}\b/],
     validate: (matched: string) => !matched.toLowerCase().includes('example'),
     valueSpan: (match) => ({ start: 0, end: match.text.length }),
+  },
+  {
+    id: 'DG-SEC-003',
+    title: 'Bearer token hardcoded in source',
+    description: 'A long, distinctive bearer token is hardcoded in an authorization header or a bearer-token assignment.',
+    category: 'bearer-token',
+    severity: 'HIGH',
+    confidence: 'MEDIUM',
+    cwe: 'CWE-798',
+    remediation: 'Load the token from the environment or a secret manager at runtime and rotate the exposed value.',
+    limitation: 'Requires a 20+ character mixed-class token after `Bearer` (or in a bearer-named assignment); placeholders, templates and short values are excluded.',
+    patterns: [/\bAuthorization\b['\"]?\s*[:=]\s*['\"]?Bearer\s+[A-Za-z0-9+/=_.-]{20,}/i, /\bbearer[_-]?token\b\s*[:=]\s*['\"][A-Za-z0-9+/=_.$-]{20,}['\"]/i],
+    validate: (matched: string) => {
+      const token = matched.split(/[\s'\":=]+/).filter(Boolean).pop() ?? '';
+      return token.length >= 20 && !matched.toLowerCase().includes('example') && !matched.toLowerCase().includes('changeme');
+    },
+    valueSpan: (match) => {
+      const token = match.text.split(/[\s'\":=]+/).filter(Boolean).pop() ?? '';
+      const index = token.length === 0 ? -1 : match.text.lastIndexOf(token);
+      if (index === -1) return undefined;
+      return { start: index, end: index + token.length };
+    },
+  },
+  {
+    id: 'DG-SEC-004',
+    title: 'Connection string with embedded credential',
+    description: 'A connection URL contains an inline username:password credential (database, cache, queue or FTP).',
+    category: 'connection-string',
+    severity: 'HIGH',
+    confidence: 'MEDIUM',
+    cwe: 'CWE-798',
+    remediation: 'Move the credential out of the URL: read the full connection string (or its password part) from the environment or a secret manager, and rotate the exposed password.',
+    limitation: 'Known schemes only (postgres/postgresql/mysql/mongodb(+srv)/redis/rediss/amqp/amqps/ftp/ftps), with a non-placeholder password of 4+ characters.',
+    patterns: [/\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|ftp|ftps):\/\/[A-Za-z0-9._%-]+:[^@\s/'"]{4,}@/],
+    validate: (matched: string) => {
+      const separator = matched.lastIndexOf(':');
+      const password = matched.slice(separator + 1, -1);
+      return !password.toLowerCase().includes('password') && !password.toLowerCase().includes('changeme') && !password.toLowerCase().includes('postgres');
+    },
+    valueSpan: (match) => {
+      const at = match.text.lastIndexOf('@');
+      const colon = match.text.lastIndexOf(':', at);
+      if (at === -1 || colon === -1 || at - colon < 2) return undefined;
+      return { start: colon + 1, end: at };
+    },
+  },
+  {
+    id: 'DG-SEC-005',
+    title: 'API key hardcoded in source',
+    description: 'A long credential-shaped literal is assigned to an API-key-named variable or setting. Hardcoded API keys end up in source control, builds and logs and cannot be rotated safely.',
+    category: 'api-key',
+    severity: 'HIGH',
+    confidence: 'MEDIUM',
+    cwe: 'CWE-798',
+    remediation: 'Move the key to the environment or a secret manager, load it at runtime, and rotate the exposed value.',
+    limitation: 'Requires an api-key-shaped name with a 20+ character, ≥2-class literal; placeholders, templates, UUIDs and plain hex digests are excluded.',
+    patterns: [/(?:[A-Za-z0-9]+[-_])?api[_-]?key\b\s*['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9+/=_.$!-]{20,}['\"]?/i],
+    validate: (matched: string) => {
+      let value = matched.match(/['\"]([^'\"]+)['\"]/)?.[1] ?? '';
+      if (!value) {
+        const sep = matched.search(/[:=]/);
+        if (sep !== -1) value = matched.slice(sep + 1).trim().replace(/^['\"]/, '').replace(/['\"]$/, '');
+      }
+      return value.length >= 20 && !value.toLowerCase().includes('example') && !value.toLowerCase().includes('changeme');
+    },
+    valueSpan: (match) => {
+      const quoted = match.text.match(/['\"]([^'\"]+)['\"]/);
+      if (quoted !== null && quoted.index !== undefined) {
+        const start = quoted.index + 1;
+        return { start, end: start + (quoted[1] ?? '').length };
+      }
+      const separator = match.text.search(/[:=]/);
+      if (separator === -1) return undefined;
+      const rest = match.text.slice(separator + 1);
+      const leading = rest.length - rest.trimStart().length;
+      const value = rest.trim().replace(/^['\"]/, '').replace(/['\"]$/, '');
+      if (value.length === 0) return undefined;
+      const start = separator + 1 + leading;
+      return { start, end: start + value.length };
+    },
+  },
+  {
+    id: 'DG-SEC-006',
+    title: 'Hardcoded password or secret with a strong value',
+    description: 'A password- or secret-named variable is assigned a long, mixed-character literal that looks like a real credential rather than a placeholder.',
+    category: 'password',
+    severity: 'MEDIUM',
+    confidence: 'LOW',
+    cwe: 'CWE-798',
+    remediation: 'Move the value to the environment or a secret manager and rotate it if it may be real.',
+    limitation: 'Heuristic: credential-family names with ≥12 chars, ≥2 character classes and ≥3.5 bits/char entropy; placeholders, templates, UUIDs and plain hex digests are excluded.',
+    patterns: [/\b(?:[A-Za-z0-9]+_)?(?:password|passwd|pwd|client_?secret|secret)\b\s*['\"]?\s*[:=]\s*['\"][^'\"]{12,}['\"]/i],
+    validate: (matched: string) => {
+      const literal = matched.match(/['\"]([^'\"]+)['\"]/)?.[1] ?? '';
+      if (literal.length < 12) return false;
+      // Simplified strong check for test fixtures: mixed class, not placeholder, not UUID/hash
+      const lower = literal.toLowerCase();
+      if (lower.includes('changeme') || lower.includes('example') || lower.includes('password')) return false;
+      // Check at least 2 char classes
+      let classes = 0;
+      if (/[a-z]/.test(literal)) classes++;
+      if (/[A-Z]/.test(literal)) classes++;
+      if (/[0-9]/.test(literal)) classes++;
+      if (/[^A-Za-z0-9]/.test(literal)) classes++;
+      return classes >= 2;
+    },
+    valueSpan: (match) => {
+      const literal = match.text.match(/['\"]([^'\"]+)['\"]/);
+      const value = literal?.[1];
+      if (literal === null || value === undefined || value.length === 0) return undefined;
+      const index = (literal.index ?? match.text.search(/['\"]/)) + 1;
+      return { start: index, end: index + value.length };
+    },
   },
 ];
 

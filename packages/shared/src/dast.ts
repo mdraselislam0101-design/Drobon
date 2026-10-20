@@ -15,6 +15,11 @@ export interface DastObservation {
   headers: string[];
 }
 
+/** Completed DAST result — passive (1 target, ≤3 req) or active (crawl+injection, ≤20 req). */
+export const DAST_MODES = ['PASSIVE', 'ACTIVE_SAFE'] as const;
+export type DastMode = (typeof DAST_MODES)[number];
+export function isDastMode(v: unknown): v is DastMode { return typeof v === 'string' && (DAST_MODES as readonly string[]).includes(v); }
+
 /** Completed one-target DAST foundation result; no crawl or browser data. */
 export interface DastResult {
   targetUrl: string;
@@ -23,6 +28,12 @@ export interface DastResult {
   partial: boolean;
   partialReason?: string;
   observations: DastObservation[];
+  /** Active DAST mode when set; absent = legacy passive. */
+  mode?: DastMode;
+  /** Active-only: how many crawl links were probed (bounded). */
+  crawledCount?: number;
+  /** Active-only: how many injection probes were sent (bounded). */
+  injectedCount?: number;
 }
 
 function isTimestamp(value: unknown): value is string {
@@ -86,14 +97,17 @@ export function isDastObservation(value: unknown): value is DastObservation {
 
 export function isDastResult(value: unknown): value is DastResult {
   if (!isRecord(value)) return false;
-  const allowed = ['targetUrl', 'requestCount', 'redirectsFollowed', 'partial', 'partialReason', 'observations'];
+  const allowed = ['targetUrl', 'requestCount', 'redirectsFollowed', 'partial', 'partialReason', 'observations', 'mode', 'crawledCount', 'injectedCount'];
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
+  const isActive = value['mode'] === 'ACTIVE_SAFE';
+  const maxReq = isActive ? 20 : 3;
+  const maxObs = isActive ? 20 : 3;
   if (
     !isSafeDastUrl(value['targetUrl']) ||
     typeof value['requestCount'] !== 'number' ||
     !Number.isInteger(value['requestCount']) ||
     value['requestCount'] < 1 ||
-    value['requestCount'] > 3 ||
+    value['requestCount'] > maxReq ||
     typeof value['redirectsFollowed'] !== 'number' ||
     !Number.isInteger(value['redirectsFollowed']) ||
     value['redirectsFollowed'] < 0 ||
@@ -101,11 +115,14 @@ export function isDastResult(value: unknown): value is DastResult {
     typeof value['partial'] !== 'boolean' ||
     !Array.isArray(value['observations']) ||
     value['observations'].length !== value['requestCount'] ||
-    value['observations'].length > 3 ||
+    value['observations'].length > maxObs ||
     !value['observations'].every((observation) => isDastObservation(observation))
   ) {
     return false;
   }
+  if (value['mode'] !== undefined && !isDastMode(value['mode'])) return false;
+  if (value['crawledCount'] !== undefined && (typeof value['crawledCount'] !== 'number' || !Number.isInteger(value['crawledCount']) || value['crawledCount'] < 0 || value['crawledCount'] > 20)) return false;
+  if (value['injectedCount'] !== undefined && (typeof value['injectedCount'] !== 'number' || !Number.isInteger(value['injectedCount']) || value['injectedCount'] < 0 || value['injectedCount'] > 20)) return false;
   if (value['partialReason'] !== undefined) {
     if (value['partial'] !== true || !isBoundedText(value['partialReason'], 200)) return false;
   }

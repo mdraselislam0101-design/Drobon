@@ -12,6 +12,7 @@ import { evaluateDastObservation, type DastRuleMatch } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
 import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type ResolvedDastTarget } from './target.js';
 import { findingFingerprint } from '../findingIdentity.js';
+import { createActiveDastEngine } from './activeEngine.js';
 
 export const DAST_MAX_REQUESTS = 3;
 export const DAST_MAX_REDIRECTS = 2;
@@ -184,6 +185,10 @@ function isRedirect(status: number): boolean {
  * or sends a second class of probe.
  */
 export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
+  // If active mode requested, delegate to the safe active engine (bounded crawl+injection).
+  // Keeps one scanType (DAST) with mode flag — passive is default, active requires consent.
+  const activeDelegate = createActiveDastEngine(options as any);
+
   const policy = options.targetPolicy ?? createDastTargetPolicy();
   const transport = options.transport ?? createNodeDastTransport();
   const now = options.now ?? Date.now;
@@ -196,6 +201,10 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
   return {
     scanType: 'DAST',
     execute: async (record: ScanRecord, context: ScanEngineContext): Promise<EngineOutcome> => {
+      const anyRec = record as unknown as Record<string, unknown>;
+      if (anyRec['dastMode'] === 'ACTIVE_SAFE') {
+        return activeDelegate.execute(record, context);
+      }
       const configuredUrl = record.dastTargetUrl;
       if (context.signal.aborted) return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it started.');
       if (configuredUrl === undefined) {

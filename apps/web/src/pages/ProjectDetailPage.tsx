@@ -714,6 +714,8 @@ function ScansSection({
   const [scansError, setScansError] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [scanType, setScanType] = useState<ScanType>('SAST');
+  const [dastMode, setDastMode] = useState<'PASSIVE' | 'ACTIVE_SAFE'>('PASSIVE');
+  const [dastConsent, setDastConsent] = useState(false);
   const [activeAssessments, setActiveAssessments] = useState<Assessment[]>([]);
   const [assessmentId, setAssessmentId] = useState('');
   const [assessmentLoadError, setAssessmentLoadError] = useState<string | null>(null);
@@ -788,7 +790,8 @@ function ScansSection({
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `web-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
-      await client.createScan(projectId, scanType, key, undefined, assessmentId.length === 0 ? undefined : assessmentId);
+      const dastOpts = scanType === 'DAST' ? { dastMode, ...(dastMode === 'ACTIVE_SAFE' ? { dastActiveConsent: dastConsent } : {}) } : undefined;
+      await client.createScan(projectId, scanType, key, undefined, assessmentId.length === 0 ? undefined : assessmentId, dastOpts as any);
       await load();
     } catch (error: unknown) {
       setFormError(
@@ -843,6 +846,21 @@ function ScansSection({
               ))}
             </select>
           </div>
+          {scanType === 'DAST' && dastTargetUrl !== undefined && (
+            <div className="field" style={{ border: '1px solid var(--border)', padding: '0.75rem', borderRadius: '8px', background: dastMode === 'ACTIVE_SAFE' ? 'var(--bg-caution, #fff8e1)' : undefined }}>
+              <label htmlFor="dast-mode">DAST mode</label>
+              <select id="dast-mode" value={dastMode} onChange={(event) => setDastMode(event.target.value as any)} data-testid="dast-mode-select">
+                <option value="PASSIVE">Passive — bounded GET + header checks (≤3 requests, safe)</option>
+                <option value="ACTIVE_SAFE">Active Safe — crawl + safe injection probes (≤20 requests, consent required)</option>
+              </select>
+              <p className="field-hint">Passive: no crawl/injection, headers/body only. Active Safe: same-host crawl (≤10 links) + 1 safe payload per param (XSS/SQLi/redirect/traversal/CRLF) via GET query param; throttled 200ms; public-address &amp; HTTPS downgrade blocked; ≤10 injections.</p>
+              {dastMode === 'ACTIVE_SAFE' && (
+                <label style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', fontWeight: 500 }}>
+                  <input type="checkbox" checked={dastConsent} onChange={(e) => setDastConsent(e.target.checked)} data-testid="dast-consent-checkbox" /> I confirm I have permission to actively test this target and accept the assessment scope.
+                </label>
+              )}
+            </div>
+          )}
           {showAssessmentTools && (
             <div className="field">
               <label htmlFor="scan-assessment">Link to active assessment (optional)</label>
@@ -856,16 +874,15 @@ function ScansSection({
           <button
             type="submit"
             className="button button-secondary"
-            disabled={submitting}
+            disabled={submitting || (scanType === 'DAST' && dastMode === 'ACTIVE_SAFE' && !dastConsent)}
             aria-busy={submitting}
             data-testid="request-scan-button"
           >
-            {submitting ? 'Requesting…' : 'Request scan'}
+            {submitting ? 'Requesting…' : dastMode === 'ACTIVE_SAFE' && scanType === 'DAST' ? 'Request active scan (with consent)' : 'Request scan'}
           </button>
           <p className="muted">
             SAST, Secrets and SCA analyze the uploaded source snapshot; files are never executed, credentials are never verified, and secret evidence is redacted before persistence.
-            SCA advisories remain not assessed without a vulnerability dataset. DAST is a limited passive check of the one
-            configured project URL: bounded GET requests, validated same-host redirects and observed response headers/body only.
+            SCA advisories remain not assessed without a vulnerability dataset. DAST Passive: bounded GET + header checks (≤3). DAST Active Safe: same-host crawl (≤10) + safe GET injection probes (≤10) with 200ms throttle; reflected-payload observations only — not proof of exploitability; absence is not proof of safety.
             It does not use a browser, execute JavaScript, authenticate, crawl, fuzz, or exploit. Configure a target above to enable DAST.
           </p>
           {formError !== null && (
@@ -895,15 +912,15 @@ function ScansSection({
                   return (
                     <>
                       <div className="severity-bar" style={{ margin: '0.75rem 0' }} aria-label="Severity distribution">
-                        <span className="severity-critical" style={{ width: `${(totals[0] / sum) * 100}%` }} title={`CRITICAL ${totals[0]}`} />
-                        <span className="severity-high" style={{ width: `${(totals[1] / sum) * 100}%` }} title={`HIGH ${totals[1]}`} />
-                        <span className="severity-medium" style={{ width: `${(totals[2] / sum) * 100}%` }} title={`MEDIUM ${totals[2]}`} />
-                        <span className="severity-low" style={{ width: `${(totals[3] / sum) * 100}%` }} title={`LOW ${totals[3]}`} />
-                        <span className="severity-info" style={{ width: `${(totals[4] / sum) * 100}%` }} title={`INFO ${totals[4]}`} />
+                        <span className="severity-critical" style={{ width: `${((totals[0] ?? 0) / sum) * 100}%` }} title={`CRITICAL ${totals[0] ?? 0}`} />
+                        <span className="severity-high" style={{ width: `${((totals[1] ?? 0) / sum) * 100}%` }} title={`HIGH ${totals[1] ?? 0}`} />
+                        <span className="severity-medium" style={{ width: `${((totals[2] ?? 0) / sum) * 100}%` }} title={`MEDIUM ${totals[2] ?? 0}`} />
+                        <span className="severity-low" style={{ width: `${((totals[3] ?? 0) / sum) * 100}%` }} title={`LOW ${totals[3] ?? 0}`} />
+                        <span className="severity-info" style={{ width: `${((totals[4] ?? 0) / sum) * 100}%` }} title={`INFO ${totals[4] ?? 0}`} />
                       </div>
                       <div className="severity-legend" aria-label="Severity legend">
                         {severityTotals.map((sev, idx) => (
-                          <span key={sev}><i className={`severity-${sev.toLowerCase()}`} /> {sev} {totals[idx]}</span>
+                          <span key={sev}><i className={`severity-${sev.toLowerCase()}`} /> {sev} {totals[idx] ?? 0}</span>
                         ))}
                       </div>
                     </>
