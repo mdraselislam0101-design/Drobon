@@ -28,6 +28,12 @@ import type { ScanEngine } from '../src/scans/engines.js';
 import type { ScanProcessor } from '../src/scans/processor.js';
 import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { DastProbeResponse, DastTransport } from '../src/scans/dast/http.js';
+import { createSastEngine } from '../src/scans/sast/engine.js';
+import { createScaEngine } from '../src/scans/sca/engine.js';
+import { createSecretsEngine } from '../src/scans/secrets/engine.js';
+import { createDastEngine } from '../src/scans/dast/engine.js';
+import { createNullIntelligenceProvider } from '../src/scans/sca/provider.js';
+import { TEST_SAST_RULES, TEST_SECRETS_RULES, TEST_DAST_RULES } from './fixtures/testData.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
 import type { EntitlementStore } from '../src/entitlements/store.js';
@@ -316,6 +322,21 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
       logs.push(line);
     },
   });
+  // Test default: inject minimal test rule fixtures so SAST/secrets
+  // produce findings without needing a full Drobon-Dataset. Production
+  // src has 0 embedded rules (paid-tool parity); test fixtures live
+  // in test/fixtures/testData.ts (not in src/). When a real dataset
+  // is configured (vulnIntelProvider=filesystem + datasetPath), we
+  // let the app's dataset service provide DPK rules instead.
+  const effectiveDastTargetPolicy = dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] });
+  const effectiveDastTransport = dastTransport ?? FIXTURE_DAST_TRANSPORT;
+  const hasRealDataset = (configOverrides as any).datasetPath !== undefined || overrides.vulnIntelProvider === 'filesystem';
+  const effectiveScanEngines = scanEngines ?? (hasRealDataset ? undefined : [
+    createSastEngine({ sources: resolvedSourceStore, rules: TEST_SAST_RULES }),
+    createScaEngine({ sources: resolvedSourceStore, provider: createNullIntelligenceProvider() }),
+    createSecretsEngine({ sources: resolvedSourceStore, rules: TEST_SECRETS_RULES }),
+    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, packRules: TEST_DAST_RULES as any }),
+  ]);
   const started: StartedServer = await startServer({
     config: configWithStore,
     logger,
@@ -330,10 +351,10 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     scanStore: resolvedScanStore,
     assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
-    ...(scanEngines === undefined ? {} : { scanEngines }),
+    ...(effectiveScanEngines === undefined ? {} : { scanEngines: effectiveScanEngines }),
     ...(entitlementStore === undefined ? {} : { entitlementStore }),
-    dastTargetPolicy: dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }),
-    dastTransport: dastTransport ?? FIXTURE_DAST_TRANSPORT,
+    dastTargetPolicy: effectiveDastTargetPolicy,
+    dastTransport: effectiveDastTransport,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),
     // Deterministic tests: no background processing unless a suite
     // starts the processor itself.

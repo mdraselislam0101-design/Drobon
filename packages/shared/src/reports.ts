@@ -49,7 +49,7 @@ export interface ReportDependencyIntelligence {
   status: 'ASSESSED' | 'NOT_ASSESSED';
   reason?: string;
   providerId?: string;
-  datasetStatus?: 'NO_DATA_LOADED' | 'DATASET_UNAVAILABLE';
+  datasetStatus?: 'NO_DATA_LOADED' | 'DATASET_UNAVAILABLE' | 'DATASET_AVAILABLE';
   advisoriesTotal?: number;
 }
 
@@ -169,7 +169,7 @@ function isDependencyIntelligence(value: unknown, inventory: ReportInventory): v
       (record['status'] !== 'ASSESSED' && record['status'] !== 'NOT_ASSESSED')) return false;
   if (record['reason'] !== undefined && !isBoundedText(record['reason'], 200)) return false;
   if (record['providerId'] !== undefined && !isBoundedText(record['providerId'], 64)) return false;
-  if (record['datasetStatus'] !== undefined && record['datasetStatus'] !== 'NO_DATA_LOADED' && record['datasetStatus'] !== 'DATASET_UNAVAILABLE') return false;
+  if (record['datasetStatus'] !== undefined && record['datasetStatus'] !== 'NO_DATA_LOADED' && record['datasetStatus'] !== 'DATASET_UNAVAILABLE' && record['datasetStatus'] !== 'DATASET_AVAILABLE') return false;
   if (record['advisoriesTotal'] !== undefined && !isCount(record['advisoriesTotal'], 200)) return false;
   if (inventory.status === 'NOT_INCLUDED') {
     return record['status'] === 'NOT_ASSESSED' &&

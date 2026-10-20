@@ -310,7 +310,7 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
           for (const packRule of allPackRules) {
             let matched = false;
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType }); } catch {}
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch {}
             if (matched) {
               const packMatch = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
               findings.push(buildFinding(record, configuredUrl, endpoint, response, packMatch, observedAt));

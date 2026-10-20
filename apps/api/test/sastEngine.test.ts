@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { isFinding, isScanResultSummary, type Finding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
+import { TEST_SAST_RULES } from './fixtures/testData.js';
 import {
   createSastEngine,
   DEFAULT_SAST_LIMITS,
@@ -82,7 +83,7 @@ const VULNERABLE = [
 
 describe('SAST engine: happy paths', () => {
   test('a SAFE snapshot completes with zero findings and honest counts', async () => {
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/safe.ts', content: 'export const ok = true;\n' }])),
     });
     const outcome = await engine.execute(scanRecord(), ctx);
@@ -97,7 +98,7 @@ describe('SAST engine: happy paths', () => {
   });
 
   test('a VULNERABLE snapshot produces the six real findings with full detail', async () => {
-    const engine = createSastEngine({ sources: providerFor(snapshot(VULNERABLE)) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(VULNERABLE)) });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome.kind).toBe('completed');
     if (outcome.kind !== 'completed') return;
@@ -127,7 +128,7 @@ describe('SAST engine: happy paths', () => {
   });
 
   test('repeated scans of unchanged source are byte-identical (stable ids + fingerprints)', async () => {
-    const engine = createSastEngine({ sources: providerFor(snapshot(VULNERABLE)) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(VULNERABLE)) });
     const first = await engine.execute(scanRecord(), ctx);
     const second = await engine.execute(scanRecord(), ctx);
     expect(second).toEqual(first);
@@ -136,7 +137,7 @@ describe('SAST engine: happy paths', () => {
   });
 
   test('unrelated findings never collapse into one fingerprint or id', async () => {
-    const engine = createSastEngine({ sources: providerFor(snapshot(VULNERABLE)) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(VULNERABLE)) });
     const outcome = await engine.execute(scanRecord(), ctx);
     if (outcome.kind !== 'completed') throw new Error('expected completion');
     const findings = outcome.findings ?? [];
@@ -149,7 +150,7 @@ describe('SAST engine: happy paths', () => {
     const shifted = snapshot([
       { path: 'src/cmd.ts', content: "import { exec } from 'x';\n\n\nexport function run(dir) {\n  exec(`rm -rf ${dir}`);\n}\n" },
     ]);
-    const shiftedEngine = createSastEngine({ sources: providerFor(shifted) });
+    const shiftedEngine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(shifted) });
     const shiftedOutcome = await shiftedEngine.execute(scanRecord(), ctx);
     if (shiftedOutcome.kind !== 'completed') throw new Error('expected completion');
     expect((shiftedOutcome.findings ?? [])[0]?.fingerprint).not.toBe(
@@ -160,7 +161,7 @@ describe('SAST engine: happy paths', () => {
 
 describe('SAST engine: discovery', () => {
   test('SAST v2: python/csharp are analyzed; syntax-only and unknown files are skipped and counted', async () => {
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(
         snapshot([
           { path: 'src/app.ts', content: 'export const a = 1;\n' },
@@ -180,7 +181,7 @@ describe('SAST engine: discovery', () => {
   });
 
   test('dependency/build directories are ignored deterministically', async () => {
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(
         snapshot([
           { path: 'node_modules/pkg/index.js', content: 'exec(`x ${y}`);\n' },
@@ -214,7 +215,7 @@ describe('SAST engine: discovery', () => {
   });
 
   test('oversize files are skipped (per-file bound, defense in depth)', async () => {
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(
         snapshot([
           { path: 'src/huge.ts', content: 'x'.repeat(DEFAULT_SAST_LIMITS.maxFileBytes + 1) },
@@ -234,7 +235,7 @@ describe('SAST engine: discovery', () => {
       path: `src/f${index}.ts`,
       content: 'export const a = 1;\n',
     }));
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot(files)),
       limits: { maxFiles: 2 },
     });
@@ -247,7 +248,7 @@ describe('SAST engine: discovery', () => {
   });
 
   test('over the total-bytes cap: fail closed with SAST_TARGET_TOO_LARGE', async () => {
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/big.ts', content: 'x'.repeat(2000) }])),
       limits: { maxTotalBytes: 1000 },
     });
@@ -262,7 +263,7 @@ describe('SAST engine: discovery', () => {
 
 describe('SAST engine: failure modes (fail closed, no leaks)', () => {
   test('no snapshot: SAST_TARGET_NOT_FOUND with a safe, actionable message', async () => {
-    const engine = createSastEngine({ sources: providerFor(undefined) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(undefined) });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toEqual({
       kind: 'failed',
@@ -274,7 +275,7 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
 
   test('owner mismatch (inconsistent state): SAST_INPUT_INVALID, no details', async () => {
     const foreign = { ...snapshot([{ path: 'a.ts', content: 'x' }]), ownerId: 'usr_other' };
-    const engine = createSastEngine({ sources: providerFor(foreign) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(foreign) });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toEqual({
       kind: 'failed',
@@ -288,7 +289,7 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
     // still refuse to resolve anything outside the virtual root.
     const poisoned = snapshot([{ path: 'ok.ts', content: 'x' }]);
     poisoned.files.push({ path: '../../etc/passwd', bytes: 4, content: 'root' });
-    const engine = createSastEngine({ sources: providerFor(poisoned) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(poisoned) });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toEqual({
       kind: 'failed',
@@ -300,7 +301,7 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
   test('processing deadline exceeded: SAST_SCAN_TIMEOUT (never COMPLETED)', async () => {
     // A fake clock that jumps past the deadline after startup.
     let time = 1_000_000;
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot(VULNERABLE)),
       limits: { deadlineMs: 1000 },
       now: () => {
@@ -319,7 +320,7 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
   test('an aborted signal is observed as a deterministic timeout failure', async () => {
     const controller = new AbortController();
     controller.abort();
-    const engine = createSastEngine({ sources: providerFor(snapshot(VULNERABLE)) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(VULNERABLE)) });
     const outcome = await engine.execute(scanRecord(), { signal: controller.signal });
     expect(outcome.kind).toBe('failed');
     if (outcome.kind !== 'failed') return;
@@ -329,7 +330,7 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
   test('the findings cap truncates honestly (truncated: true, bounded list)', async () => {
     // 200 vulnerable lines → the cap (3 here) stops analysis and flags.
     const lines = Array.from({ length: 200 }, () => 'exec(`x ${y}`);').join('\n');
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/many.ts', content: lines }])),
       limits: { maxFindings: 3 },
     });
@@ -346,7 +347,7 @@ describe('SAST engine: evidence discipline', () => {
   test('long lines produce bounded, match-centered evidence', async () => {
     const pad = 'x'.repeat(500);
     const line = `const a = "${pad}"; exec(\`rm \${dir}\`);`;
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/long.ts', content: line }])),
     });
     const outcome = await engine.execute(scanRecord(), ctx);
@@ -364,7 +365,7 @@ describe('SAST engine: evidence discipline', () => {
     const pad = 'y'.repeat(400);
     // The 'sk_live_…' literal below is a FAKE test fixture.
     const line = `const pad = "${pad}"; const apiKey = 'sk_live_abcdef123456';`; // fake
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/secret.ts', content: line }])),
     });
     const outcome = await engine.execute(scanRecord(), ctx);
@@ -378,7 +379,7 @@ describe('SAST engine: evidence discipline', () => {
 
   test('CRLF and tabs in source never leak control characters into evidence', async () => {
     const content = 'const t = 1;\r\nexec(`x ${y}`);\r\nconst z\t= 2;\r\n';
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/crlf.ts', content }])),
     });
     const outcome = await engine.execute(scanRecord(), ctx);
@@ -393,7 +394,7 @@ describe('SAST engine: evidence discipline', () => {
 
   test('XSS payloads in evidence are plain text (never markup)', async () => {
     const content = 'el.innerHTML = `<img src=x onerror=alert(1)>${user}`;\n';
-    const engine = createSastEngine({
+    const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/xss.ts', content }])),
     });
     const outcome = await engine.execute(scanRecord(), ctx);
@@ -413,7 +414,7 @@ describe('SAST engine: performance bounds', () => {
       content: Array.from({ length: 100 }, (_, line) => `export const v${line} = ${line};`).join('\n') + '\n',
     }));
     const started = Date.now();
-    const engine = createSastEngine({ sources: providerFor(snapshot(files)) });
+    const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(files)) });
     const outcome = await engine.execute(scanRecord(), ctx);
     const elapsed = Date.now() - started;
     expect(outcome.kind).toBe('completed');

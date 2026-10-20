@@ -17,8 +17,6 @@ function header(obs: PackDastObservation, name: string): string | undefined {
   return typeof sel === 'string' ? sel.trim() : undefined;
 }
 
-function hasEffectiveHsts(_v: string | undefined): boolean { return false; }
-
 export function evaluatePackDastCheck(ruleCheck: any, obs: PackDastObservation): boolean {
   const t = ruleCheck.type;
   if (t === 'http-url') {

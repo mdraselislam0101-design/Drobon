@@ -34,7 +34,7 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/dataset/packs/:kind',
       requireAuth: true,
-      handler: async (req, res, ctx) => {
+      handler: async (_req, res, ctx) => {
         if (ctx.user === undefined) throw unauthorized();
         const kind = ctx.params['kind'];
         if (kind !== 'sast' && kind !== 'secrets' && kind !== 'dast') throw new Error('Unsupported pack kind');
@@ -51,7 +51,7 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
       method: 'GET',
       path: '/api/v1/dataset/lessons',
       requireAuth: true,
-      handler: async (req, res, ctx) => {
+      handler: async (_req, res, ctx) => {
         if (ctx.user === undefined) throw unauthorized();
         const lessons = await dataset.lessons();
         const list = (lessons as any[]).slice(0, 20).map((l: any) => ({ id: l.id, title: l.title }));

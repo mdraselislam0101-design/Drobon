@@ -97,7 +97,7 @@ export interface ApiConfig {
    */
   vulnIntelProvider: 'none' | 'filesystem';
   /** Filesystem path to the external Drobon-Dataset repo (when provider is filesystem). */
-  datasetPath?: string;
+  datasetPath?: string | undefined;
   /** Durable Pump 15 payment + audit JSON document. */
   paymentStorePath: string;
   /** Admin complimentary PRO entitlement store (persistent by default). */

@@ -8,11 +8,6 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatasetOverallStatus, DatasetCategoryStatus, DatasetAvailability } from './types.js';
 
-interface LoaderOptions {
-  datasetPath: string;
-  logger?: Pick<Console, 'info' | 'warn' | 'error'>;
-}
-
 async function collectJsonFiles(dir: string, out: string[] = []): Promise<string[]> {
   let entries: string[];
   try {
@@ -40,7 +35,7 @@ function avail(count: number, providerId: string, configured: boolean): DatasetC
   return { status: 'AVAILABLE', count, providerId };
 }
 
-export function createDatasetService(options: { datasetPath?: string; providerId: string; logger?: Pick<Console, 'info' | 'warn' | 'error'> }) {
+export function createDatasetService(options: { datasetPath?: string | undefined; providerId: string; logger?: Pick<Console, 'info' | 'warn' | 'error'> }) {
   const { datasetPath, providerId, logger } = options;
   const configured = providerId === 'filesystem' && typeof datasetPath === 'string' && datasetPath.length > 0;
 
