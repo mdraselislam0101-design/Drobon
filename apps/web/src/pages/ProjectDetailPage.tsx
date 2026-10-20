@@ -888,6 +888,27 @@ function ScansSection({
               <>
                 <p data-testid="project-findings-total">{findingsTotal} persisted finding{findingsTotal === 1 ? '' : 's'} across {completed.length} completed scan{completed.length === 1 ? '' : 's'}.</p>
                 <p className="muted">These are scan findings, not a cross-scan deduplicated issue count. Dependency vulnerability status is reported separately and may be NOT ASSESSED.</p>
+                {(() => {
+                  const totals = severityTotals.map((s) => completed.reduce((sum, scan) => sum + (scan.resultSummary?.findingsBySeverity?.[s] ?? 0), 0));
+                  const sum = totals.reduce((a, b) => a + b, 0);
+                  if (sum === 0) return null;
+                  return (
+                    <>
+                      <div className="severity-bar" style={{ margin: '0.75rem 0' }} aria-label="Severity distribution">
+                        <span className="severity-critical" style={{ width: `${(totals[0] / sum) * 100}%` }} title={`CRITICAL ${totals[0]}`} />
+                        <span className="severity-high" style={{ width: `${(totals[1] / sum) * 100}%` }} title={`HIGH ${totals[1]}`} />
+                        <span className="severity-medium" style={{ width: `${(totals[2] / sum) * 100}%` }} title={`MEDIUM ${totals[2]}`} />
+                        <span className="severity-low" style={{ width: `${(totals[3] / sum) * 100}%` }} title={`LOW ${totals[3]}`} />
+                        <span className="severity-info" style={{ width: `${(totals[4] / sum) * 100}%` }} title={`INFO ${totals[4]}`} />
+                      </div>
+                      <div className="severity-legend" aria-label="Severity legend">
+                        {severityTotals.map((sev, idx) => (
+                          <span key={sev}><i className={`severity-${sev.toLowerCase()}`} /> {sev} {totals[idx]}</span>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
                 <dl className="facts">
                   {SCAN_TYPES.map((type) => <div className="fact" key={type}><dt>{type} runs</dt><dd>{completed.filter((scan) => scan.scanType === type).length}</dd></div>)}
                   {severityTotals.map((severity) => <div className="fact" key={severity}><dt>{severity}</dt><dd>{completed.reduce((sum, scan) => sum + (scan.resultSummary?.findingsBySeverity?.[severity] ?? 0), 0)}</dd></div>)}

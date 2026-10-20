@@ -41,6 +41,12 @@ export function Layout({
             </NavLink>
             <NavLink
               className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+              to="/pricing"
+            >
+              Pricing
+            </NavLink>
+            <NavLink
+              className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
               to="/status"
             >
               Service status
@@ -154,10 +160,22 @@ export function Layout({
         <Outlet />
       </main>
       <footer className="site-footer">
-        <div className="container footer-inner">
-          <span>
-            {appName} · v{appVersion}
-          </span>
+        <div className="container footer-premium">
+          <div className="footer-inner" style={{ paddingBottom: 0 }}>
+            <span>
+              {appName} · v{appVersion} · Built for security teams — evidence over promises
+            </span>
+            <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+              <span className="status-dot" /> All systems operational
+            </span>
+          </div>
+          <div className="footer-links">
+            <Link to="/pricing">Pricing</Link>
+            <Link to="/status">Status</Link>
+            <a href="https://github.com/mdraselislam0101-design/Drobon" target="_blank" rel="noreferrer">GitHub</a>
+            <span style={{ color: 'var(--muted)' }}>SAST · SCA · Secrets · Passive DAST</span>
+            <span style={{ color: 'var(--muted)' }}>© {new Date().getFullYear()} Drobon Aegis</span>
+          </div>
         </div>
       </footer>
     </div>

@@ -19,10 +19,12 @@ import { LoginPage } from './pages/LoginPage.js';
 import { NotFoundPage } from './pages/NotFoundPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
 import { StatusPage } from './pages/StatusPage.js';
+import { PricingPage } from './pages/PricingPage.js';
 
 export const APP_ROUTES = {
   home: '/',
   status: '/status',
+  pricing: '/pricing',
   login: '/login',
   register: '/register',
   account: '/account',
@@ -61,6 +63,7 @@ export function AppRoutes({
           <Routes>
             <Route element={<Layout appName={appName} appVersion={appVersion} />}>
               <Route index element={<HomePage />} />
+              <Route path="pricing" element={<PricingPage />} />
               <Route path="status" element={<StatusPage />} />
               <Route
                 path="login"

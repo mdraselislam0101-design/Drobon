@@ -134,6 +134,70 @@ export function DeveloperDashboardPage(): React.JSX.Element {
             </article>
           </div>
 
+          {/* Premium metrics — visual paid-tool polish (CSS-only, no new data fetching) */}
+          <div className="metric-grid">
+            <article className="metric-card">
+              <h3>Security posture</h3>
+              <div className="metric-value" style={{ color: dashboard.overview.findings.unresolved === 0 ? 'var(--ok)' : dashboard.overview.findings.unresolved > 5 ? 'var(--critical)' : 'var(--warning)' }}>
+                {dashboard.overview.findings.unresolved === 0 ? 'Healthy' : dashboard.overview.findings.unresolved > 5 ? 'Attention' : 'Review'}
+              </div>
+              <p className="metric-sub">{dashboard.overview.findings.unresolved} unresolved · {dashboard.overview.findings.currentObserved} observed</p>
+              {(() => {
+                const sev = dashboard.overview.findings.unresolvedBySeverity;
+                const total = sev.CRITICAL + sev.HIGH + sev.MEDIUM + sev.LOW + sev.INFO;
+                if (total === 0) return <p className="muted" style={{ fontSize: '0.82rem' }}>No active severity distribution — clean baseline.</p>;
+                return (
+                  <>
+                    <div className="severity-bar" aria-hidden="true">
+                      {sev.CRITICAL > 0 && <span className="severity-critical" style={{ width: `${(sev.CRITICAL / total) * 100}%` }} />}
+                      {sev.HIGH > 0 && <span className="severity-high" style={{ width: `${(sev.HIGH / total) * 100}%` }} />}
+                      {sev.MEDIUM > 0 && <span className="severity-medium" style={{ width: `${(sev.MEDIUM / total) * 100}%` }} />}
+                      {sev.LOW > 0 && <span className="severity-low" style={{ width: `${(sev.LOW / total) * 100}%` }} />}
+                      {sev.INFO > 0 && <span className="severity-info" style={{ width: `${(sev.INFO / total) * 100}%` }} />}
+                    </div>
+                    <div className="severity-legend">
+                      <span><i className="severity-critical" /> CRITICAL {sev.CRITICAL}</span>
+                      <span><i className="severity-high" /> HIGH {sev.HIGH}</span>
+                      <span><i className="severity-medium" /> MED {sev.MEDIUM}</span>
+                      <span><i className="severity-low" /> LOW {sev.LOW}</span>
+                      <span><i className="severity-info" /> INFO {sev.INFO}</span>
+                    </div>
+                  </>
+                );
+              })()}
+            </article>
+            <article className="metric-card">
+              <h3>Engine coverage</h3>
+              <div className="scanner-breakdown">
+                {(['SAST', 'SCA', 'SECRETS', 'DAST'] as const).map((type) => {
+                  const count = dashboard.overview.scans.recent.filter((s) => s.scanType === type).length;
+                  const max = Math.max(1, ...(['SAST','SCA','SECRETS','DAST'] as const).map((t) => dashboard.overview.scans.recent.filter((s) => s.scanType === t).length));
+                  const pct = (count / max) * 100;
+                  const cls = type === 'SAST' ? 'fill-sast' : type === 'SCA' ? 'fill-sca' : type === 'SECRETS' ? 'fill-secrets' : 'fill-dast';
+                  return (
+                    <div key={type} className="scanner-row">
+                      <span>{type}</span>
+                      <div className="progress-track"><div className={`progress-fill ${cls}`} style={{ width: `${pct}%` }} /></div>
+                      <span>{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="metric-sub" style={{ marginTop: '0.5rem' }}>
+                {dashboard.overview.scans.byStatus.COMPLETED} completed · {dashboard.overview.scans.byStatus.FAILED + dashboard.overview.scans.byStatus.TIMED_OUT} failed
+              </p>
+            </article>
+            <article className="metric-card">
+              <h3>Quick actions — Paid-tool workflow</h3>
+              <div style={{ display: 'grid', gap: '0.5rem' }}>
+                <Link to="/projects" className="button button-secondary" style={{ textAlign: 'center', padding: '0.5rem' }}>+ New scan →</Link>
+                <Link to={activeProject ? `/projects/${activeProject.id}#security-scans` : '/projects'} className="button button-ghost" style={{ textAlign: 'center', padding: '0.5rem' }}>View findings</Link>
+                <Link to="/pricing" className="button button-ghost" style={{ textAlign: 'center', padding: '0.5rem', fontSize: '0.85rem' }}>Upgrade to PRO — Unlimited</Link>
+              </div>
+              <p className="metric-sub">Existing engines only — no extra feature added.</p>
+            </article>
+          </div>
+
           {isProfessional && (
             <nav className="workspace-workflow-nav" aria-label="Security Professional workflow">
               <Link to="/projects">Assessments &amp; projects</Link>
