@@ -1,8 +1,26 @@
-# Dataset Connection — Main App ↔ Drobon-Dataset
+# Dataset Connection — Main App ↔ Drobon-Dataset (Full Unlock)
 
 This document explains how the **main app** (`mdraselislam0101-design/Drobon`) connects to the **external dataset repo** (`mdraselislam0101-design/Drobon-Dataset`) **without ever committing dataset files into the app repo**.
 
-The app repo enforces an absolute dataset lock: no `cve/nvd/ghsa/osv/cve` files may be committed (checked by `scripts/check-boundaries.mjs` and `scripts/check-repo-integrity.mjs`). The dataset lives in its own repo; the app only *reads* it at runtime via a server-side filesystem provider.
+The app repo enforces an absolute dataset lock: no `cve/nvd/ghsa/osv/cve` files may be committed (checked by `scripts/check-boundaries.mjs`). The dataset lives in its own repo; the app only *reads* it at runtime via server-side filesystem providers.
+
+## What is now unlocked (all UserTypes)
+
+A single env switch unlocks **all** dataset-backed categories. `VULN_INTEL_PROVIDER` was the original SCA lock; it now gates the entire external content surface (SCA + packs + knowledge + audiences) — one mount, one honesty model.
+
+| Category | Dataset path | App consumer | UserType | Honest state |
+|---|---|---|---|---|
+| **SCA vuln-intel** | `vuln-intel/{npm, pypi}/*.json` (100 GHSA) | `createFilesystemIntelligenceProvider` → `assess(coordinates)` | All | `DATASET_AVAILABLE`/`UNAVAILABLE`/`NOT_CONFIGURED` |
+| **SAST packs** | `packs/sast/v1/rules/*.json` (950) | `SastEngine` merges `DG-SAST-*` (50 built-in) + `DPK-SAST-*` (dataset) per scan | All (Student/Developer verify via practice) | `AVAILABLE` when 950 loaded else embedded-only |
+| **Secrets packs** | `packs/secrets/v1/rules/*.json` (97) | `SecretsEngine` merges `DG-SEC-*` + `DPK-SEC-*` | All | Same |
+| **DAST packs** | `packs/dast/v1/rules/*.json` (263) | `DastEngine` evaluates built-in 8 DG-DAST-* + dataset checks via `http-url`/`missing-header`/etc. | PENTESTER (passive) | Same |
+| **Remediation** | `knowledge/remediation/*.json` (1310) | `assistant` + `reports` + finding `remediation` (dataset value preferred) | DEVELOPER (primary) | `AVAILABLE` 1310 |
+| **CWE** | `knowledge/cwe/*.json` (68) | CWE reference resolver | All | `AVAILABLE` 68 |
+| **Lessons** | `learning/lessons/*.json` (6; 2 `lsn_dev_*`) | `GET /api/v1/student/lessons` merges 4 embedded + 6 dataset = 10 | STUDENT (6), DEVELOPER (2) | `byUserType: {DEVELOPER:2, STUDENT:6}` |
+| **Assessment templates** | `assessments/templates/*.json` (3) | `GET /api/v1/dataset/status` + future assessment-create template picker | SECURITY_PROFESSIONAL | `AVAILABLE` 3 |
+| **Engagement templates** | `engagements/*.json` (2) | Same status surface | PENTESTER (passive-only) | `AVAILABLE` 2 |
+
+Shared status endpoint: `GET /api/v1/dataset/status` (auth required) — honest counts for every category, plus `/api/v1/dataset/packs/:kind` and `/api/v1/dataset/lessons` for inspection.
 
 ## Architecture
 
@@ -12,141 +30,119 @@ Drobon/                     (main app — code only, VULN_INTEL_PROVIDER=none by
     provider.ts            — Null provider (locked default, NO_DATA_LOADED)
     filesystemProvider.ts  — Filesystem provider (DATASET_AVAILABLE, loads external corpus)
     range.ts               — npm semver + PEP 440 evaluator (copied from dataset repo)
+  apps/api/src/external/   — Unified dataset service (filesystem, read-only, cached)
+    service.ts             — Loads all categories from DATASET_PATH, exposes status
+    packProvider.ts        — DPK-* → engine rule conversion (validated, ReDoS-linted)
+    lessonProvider.ts      — Merges embedded 4 + dataset 6 lessons
+    evaluator.ts           — 7 DAST pack check types (PACKS.md)
+    knowledge.ts           — Remediation/CWE lookups
   .env                     — VULN_INTEL_PROVIDER=filesystem + DATASET_PATH=../Drobon-Dataset
 
 Drobon-Dataset/             (external — never committed to Drobon/)
-  vuln-intel/npm/*.json    — 50 GHSA npm advisories (100 files, 78 ids)
-  vuln-intel/pypi/*.json   — 50 GHSA pypi advisories
-  packs/                   — 1310 rule packs (future loader)
-  interop/provider-vectors.json — 16 pinned vectors for provider testing
+  vuln-intel/npm|pypi      — 100 GHSA advisories
+  packs/sast|secrets|dast  — 1310 rules (950/97/263)
+  knowledge/remediation|cwe — 1310 + 68
+  learning/lessons         — 6 (2 dev)
+  assessments/templates    — 3
+  engagements              — 2 (passive-only)
+  interop/provider-vectors — 16 pinned vectors
 ```
 
-In production the dataset can be mounted as a volume, an EFS/NFS mount, or a separate API service — the app only needs a filesystem path. No dataset is ever vendored.
+In production the dataset can be mounted as a volume, EFS/NFS, or a future DB service — the app only needs a filesystem path. No dataset is ever vendored.
 
-## How SCA uses the dataset
+## How engines use the dataset
 
-1. **Inventory first**: SCA scans ALWAYS produce the real inventory + SBOM (manifest parsing, no execution) — even with no dataset.
-2. **Provider seam**: `assess(coordinates)` receives only `{ ecosystem, name, version?, dependencyId }` — never manifest content.
-3. **Honest states**:
-   - `VULN_INTEL_PROVIDER=none` → `NO_DATA_LOADED` + `NOT_ASSESSED` (zero advisories, never "0 vulns")
-   - `VULN_INTEL_PROVIDER=filesystem` + valid `DATASET_PATH` + no matches → `DATASET_AVAILABLE` + `NOT_ASSESSED` (checked, no proven matches)
-   - `filesystem` + matches → `DATASET_AVAILABLE` + `ASSESSED` (+ advisories)
-   - `filesystem` + missing path → `DATASET_UNAVAILABLE` + `NOT_ASSESSED` (scan still completes)
+1. **Inventory first**: SCA/SAST/Secrets/DAST ALWAYS produce inventory/findings even with no dataset — honest `NOT_ASSESSED`/`NO_DATA_LOADED` when nothing loaded.
+2. **Provider seams**: 
+   - SCA: `assess(coordinates)` receives only `{ ecosystem, name, version?, dependencyId }`
+   - SAST/Secrets: engine receives merged rule list (`DG-*` + `DPK-*`) per scan (dataset packs validated, ReDoS-linted, compiled to RegExp; failures fail-closed)
+   - DAST: built-in 8 checks + dataset pack checks evaluated per response
+   - Lessons: merged catalog, `answerIndex` stripped for public projection (same as embedded)
+3. **Honest states** for every category: `AVAILABLE` (loaded, count), `UNAVAILABLE` (path wrong), `NOT_CONFIGURED` (provider `none`). Scans still COMPLETE with `NOT_ASSESSED` when unavailable — never fabricate.
 
-See `docs/SCA.md` and the dataset repo's `docs/PROVIDER_MAPPING.md`.
+See `docs/SCA.md`, `docs/SAST.md`, `docs/SECRETS.md`, `docs/DAST.md` and dataset's `docs/PROVIDER_MAPPING.md`/`PACKS.md`/`AUDIENCES.md`.
 
 ## Local Development — 3 Steps
 
 ### 1. Clone the dataset as a sibling (one time)
 
 ```bash
-# From the Drobon repo root:
 node scripts/sync-dataset.mjs
 # → clones https://github.com/mdraselislam0101-design/Drobon-Dataset.git to ../Drobon-Dataset
-
-# Or custom path:
+# Or custom:
 node scripts/sync-dataset.mjs --path /opt/drobon-dataset
-
 # Verify:
 node scripts/sync-dataset.mjs --check
-node scripts/sync-dataset.mjs --path /opt/drobon-dataset --check
 ```
 
-This does NOT modify the app repo's git index — the dataset is outside, ignored by `.gitignore` (`.data/`).
+Does NOT modify app repo git index — outside, ignored by `.gitignore`.
 
 ### 2. Configure the app to use it
-
-Copy `.env.example` to `.env`, then set:
 
 ```bash
 VULN_INTEL_PROVIDER=filesystem
 DATASET_PATH=../Drobon-Dataset
-# or absolute:
-DATASET_PATH=/opt/drobon-dataset
 ```
 
-- `VULN_INTEL_PROVIDER` must be `none` or `filesystem` (any other value fails fast at startup with `ConfigError`).
-- `DATASET_PATH` is only allowed when provider is `filesystem` (fail-closed).
-- In `production`, `:memory:` stores are rejected but `filesystem` provider is allowed — it just needs a real path.
+- Must be `none` or `filesystem` (any other fails fast)
+- `DATASET_PATH` only allowed when `filesystem` (fail-closed)
+- In `production`, `:memory:` stores rejected but filesystem provider allowed
 
 ### 3. Run
 
 ```bash
 npm ci
-npm run dev   # API :3001 + Web :5173
+npm run dev
 # or
 VULN_INTEL_PROVIDER=filesystem DATASET_PATH=../Drobon-Dataset npm run dev:api
 ```
 
-Create a project, upload a snapshot containing a vulnerable package, run an SCA scan:
+Verify:
+- `GET /api/v1/dataset/status` → all `AVAILABLE` with counts 100/950/97/263/1310/68/6/3/2
+- `GET /api/v1/student/lessons` → 10 (4 embedded + 6 dataset)
+- SCA: `fast-jwt@6.2.4` → 6 advisories ASSESSED/DATASET_AVAILABLE
+- SAST: `eval(userInput)` → `DPK-SAST-001` finding
+- Secrets: `AKIA...` → `DPK-SEC-001` finding
 
-- `fast-jwt@6.2.4` (npm) → should match 6 advisories (VEC-001)
-- `handlebars@4.7.9` (npm) → 3 advisories (VEC-003)
-- `django@5.2.16` (pypi) → 1 advisory (VEC-009)
-
-Check the scan detail → SCA section → `DATASET_AVAILABLE` + advisories. With no dataset, the same scan shows `NOT_ASSESSED` / `NO_DATA_LOADED` — honest absence.
+Without dataset: same calls → `NOT_CONFIGURED`/`NO_DATA_LOADED` + embedded-only findings (4 lessons, 50 SAST rules) — honest absence.
 
 ## Production Options
 
 | Mode | Setup | Pros |
 |------|-------|------|
-| **Sidecar volume** | Mount Drobon-Dataset at `/opt/drobon-dataset` in the API container | Simple, no network; use `DATASET_PATH=/opt/drobon-dataset` |
-| **Shared NFS/EFS** | Mount once, share to all API replicas | One pull, many readers |
-| **HTTP provider (future)** | Implement `createHttpIntelligenceProvider` fetching `GET /vuln-intel?ecosystem=&name=&version=` | Scales independently; add `VULN_INTEL_PROVIDER=http` + `DATASET_URL` |
+| **Sidecar volume** | Mount at `/opt/drobon-dataset` in API container | Simple, no network |
+| **Shared NFS/EFS** | One mount, many replicas | One pull |
+| **HTTP provider (future)** | `createHttpIntelligenceProvider` → `GET /vuln-intel?...` | Independent scaling |
 
-The current `filesystem` provider is read-only, bounded, and side-effect-free — it never executes dataset content, installs packages, or writes.
+All providers read-only, bounded, side-effect-free — never execute dataset content.
 
 ## Updating the dataset
 
 ```bash
-# Pull latest vetted advisories:
-node scripts/sync-dataset.mjs
-# or
-git -C ../Drobon-Dataset pull --ff-only
-
-# No app rebuild needed — provider loads on next assess (lazy, cached per process).
-# Restart the API to reload: npm run dev:api
+node scripts/sync-dataset.mjs  # pull --ff-only
+# No rebuild needed — next assess/scan loads via lazy cache; restart to force reload
 ```
-
-The dataset repo is the source of truth for `FORMAT.md`, `range.mjs`, and `provider-vectors.json`. The app's `range.ts` is a copy — when the dataset repo updates range semantics, copy `scripts/range.mjs` → `apps/api/src/scans/sca/range.ts`.
 
 ## Verification
 
 ```bash
-# App-side:
-npm run check:boundaries   # PASS — no dataset files in app repo
-npm run test --workspace @drobon/api -- sca  # provider honnesty + inventory tests
-
-# Dataset-side (in ../Drobon-Dataset):
-npm test                   # advisories + packs + vectors
-npm run test:vectors       # provider interop vectors (16 must pass)
-node scripts/check-vectors.mjs
-
-# End-to-end honesty:
-# 1. Without dataset: SCA → NOT_ASSESSED / NO_DATA_LOADED (inventory still complete)
-# 2. With dataset, non-vuln package: SCA → NOT_ASSESSED / DATASET_AVAILABLE (checked, no matches)
-# 3. With dataset, vuln package: SCA → ASSESSED / DATASET_AVAILABLE + advisories
+npm run check:boundaries   # PASS
+npm run test --workspace @drobon/api  # 812/812
+npm run test --workspace @drobon/shared # 183/183
+GET /api/v1/dataset/status --auth   # counts validated
+GET /api/v1/student/lessons --auth  # 10 when configured
 ```
-
-## What NOT to do
-
-- ❌ `cp -r ../Drobon-Dataset/vuln-intel ./vuln-intel` — violates `check-boundaries` and `check-repo-integrity` (commit will be rejected in CI).
-- ❌ Add `ghsa`/`cve` packages to `package.json` — denied dependencies.
-- ❌ Set `VULN_INTEL_PROVIDER=filesystem` without `DATASET_PATH` — startup fails.
-- ❌ Commit `.env` with `DATASET_PATH` — it contains no secret but is gitignored; use `.env.example` as template.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `ConfigError: VULN_INTEL_PROVIDER must be one of none, filesystem` | Typo like `fileSystem` | Lowercase `filesystem` |
-| `DATASET_PATH must be set when ...filesystem` | Missing env | Set `DATASET_PATH=../Drobon-Dataset` |
-| `DATASET_PATH is only allowed when ...filesystem` | Leftover path with `none` | Unset `DATASET_PATH` or switch to `filesystem` |
-| Scan shows `DATASET_UNAVAILABLE` | Path wrong or no `vuln-intel/` | `node scripts/sync-dataset.mjs --check` |
-| Scan shows `NO_DATA_LOADED` | Provider still `none` | `VULN_INTEL_PROVIDER=filesystem` |
+| Symptom | Fix |
+|---|---|
+| `VULN_INTEL_PROVIDER must be one of none, filesystem` | lowercase `filesystem` |
+| `DATASET_PATH must be set when ...filesystem` | Set `DATASET_PATH` |
+| `DATASET_UNAVAILABLE` | `node scripts/sync-dataset.mjs --check` |
+| `NO_DATA_LOADED` | Switch to `filesystem` |
 
 ## Related docs
 
-- `docs/SCA.md` — SCA engine, limits, honesty
-- `docs/SECURITY.md` — threat model, SSRF, redaction
-- Dataset repo: `docs/FORMAT.md` (record shape), `docs/PROVIDER_MAPPING.md` (field mapping), `docs/HONESTY.md` (no-fabrication rules)
+- `docs/SCA.md`, `SAST.md`, `SECRETS.md`, `DAST.md`
+- Dataset: `docs/FORMAT.md`, `PROVIDER_MAPPING.md`, `PACKS.md`, `AUDIENCES.md`, `HONESTY.md`

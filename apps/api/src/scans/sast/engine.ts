@@ -10,6 +10,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchRuleLine, sastRuleById, SAST_RULES, type SastRule } from './rules.js';
+import type { DatasetService } from '../../external/service.js';
 import { detectLanguageFamily, isAnalyzedMaturity } from './languages.js';
 import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
 import { findingFingerprint } from '../findingIdentity.js';
@@ -113,6 +114,10 @@ export interface SastEngineOptions {
   limits?: Partial<SastLimits>;
   /** Clock for the deadline (tests). */
   now?: () => number;
+  /** Optional dataset pack rules merged with built-in rules (server-side dataset integration). */
+  rules?: readonly SastRule[];
+  /** Optional dataset service for dynamic pack loading (merged per scan). */
+  dataset?: DatasetService;
 }
 
 /** Deterministic file ordering: path byte-order ASC. */
@@ -230,6 +235,14 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
   return {
     scanType: 'SAST',
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
+      // Dataset-aware rule merging (honest: if dataset unavailable, fallback to embedded)
+      let effectiveRules: readonly SastRule[] = options.rules ?? SAST_RULES;
+      if (options.dataset?.configured) {
+        try {
+          const { getMergedSastRules } = await import('../../external/packIntegration.js');
+          effectiveRules = await getMergedSastRules(options.dataset);
+        } catch {}
+      }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
       if (snapshot === undefined) {
@@ -304,7 +317,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
             };
           }
           const line = lines[index] ?? '';
-          for (const rule of SAST_RULES) {
+          for (const rule of effectiveRules) {
             // LANGUAGE GATING (v2): a family-scoped rule runs only on
             // files of its own families; universal rules run on every
             // analyzed file.
@@ -352,7 +365,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
         // identity, same caps; the deadline is honored here too.
         let flowRules = flowRulesByFamily.get(file.family);
         if (flowRules === undefined) {
-          flowRules = flowRulesForFamily(file.family, SAST_RULES);
+          flowRules = flowRulesForFamily(file.family, options.rules ?? SAST_RULES);
           flowRulesByFamily.set(file.family, flowRules);
         }
         if (flowRules.length > 0) {

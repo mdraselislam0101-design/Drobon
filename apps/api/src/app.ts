@@ -57,6 +57,8 @@ import { createScaEngine } from './scans/sca/engine.js';
 import { createSecretsEngine } from './scans/secrets/engine.js';
 import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createFilesystemIntelligenceProvider } from './scans/sca/filesystemProvider.js';
+import { createDatasetService } from './external/service.js';
+import { createDatasetRoutes } from './external/routes.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
@@ -321,13 +323,15 @@ export function createApp(deps: AppDeps): App {
     config.vulnIntelProvider === 'filesystem' && config.datasetPath !== undefined
       ? createFilesystemIntelligenceProvider({ datasetPath: config.datasetPath, logger })
       : createNullIntelligenceProvider();
+  const datasetService = createDatasetService({ datasetPath: config.datasetPath, providerId: config.vulnIntelProvider, logger });
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
-      createSastEngine({ sources: sourceStore }),
+      createSastEngine({ sources: sourceStore, dataset: datasetService }),
       createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
-      createSecretsEngine({ sources: sourceStore }),
+      createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
       createDastEngine({
         targetPolicy: dastTargetPolicy,
+        dataset: datasetService,
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
       }),
     ],
@@ -358,7 +362,8 @@ export function createApp(deps: AppDeps): App {
     ...createAdminRoutes({ config, users, projects: projectStore, scans: scanStore, payments, scanProcessor, paymentConfig, entitlements }),
     ...createUsageRoutes({ config, users, usage }),
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
-    ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock }),
+    ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock, dataset: datasetService }),
+    ...createDatasetRoutes({ config, dataset: datasetService }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({

@@ -366,7 +366,7 @@ export function isFindingSeverity(value: unknown): value is FindingSeverity {
  * Rule identifiers: `DG-SAST-###` — stable, documented in docs/SAST.md,
  * never reused. `DG` is the product prefix (Drobon).
  */
-export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
+export const SAST_RULE_ID_PATTERN = /^(?:DG|DPK)-SAST-[0-9]{3}$/;
 
 /**
  * The finding rule-id family pattern (Pump 10): every engine's rules
@@ -374,7 +374,7 @@ export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^DG-(?:SAST|SEC|DAST)-[0-9]{3}$/;
+export const FINDING_RULE_ID_PATTERN = /^(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is
@@ -533,10 +533,10 @@ export function isFinding(value: unknown): value is Finding {
   ) return false;
   if (record['cwe'] !== undefined && (typeof record['cwe'] !== 'string' || !FINDING_CWE_PATTERN.test(record['cwe']))) return false;
 
-  const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-');
+  const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-');
   if (dast) {
     if (
-      record['scanner'] !== 'DAST' || !/^DG-DAST-[0-9]{3}$/.test(record['ruleId']) ||
+      record['scanner'] !== 'DAST' || !/^(?:DG|DPK)-DAST-[0-9]{3,}$/.test(record['ruleId']) ||
       typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']) ||
       !isSafeDastUrl(record['targetUrl']) || !isSafeDastUrl(record['endpoint']) ||
       record['method'] !== 'GET' ||
@@ -562,7 +562,7 @@ export function isFinding(value: unknown): value is Finding {
 
   if (
     record['scanner'] !== undefined && record['scanner'] !== 'SAST' && record['scanner'] !== 'SECRETS' ||
-    record['ruleId'].startsWith('DG-DAST-') ||
+    (record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-')) ||
     typeof record['file'] !== 'string' || !isValidSourcePath(record['file']) ||
     typeof record['line'] !== 'number' || !Number.isInteger(record['line']) || record['line'] < 1 ||
     typeof record['column'] !== 'number' || !Number.isInteger(record['column']) || record['column'] < 1 ||
@@ -582,8 +582,8 @@ export function isFinding(value: unknown): value is Finding {
  */
 export function findingScanner(finding: Finding): ScanType | undefined {
   if (finding.scanner !== undefined) return finding.scanner;
-  if (finding.ruleId.startsWith('DG-SAST-')) return 'SAST';
-  if (finding.ruleId.startsWith('DG-SEC-')) return 'SECRETS';
+  if (finding.ruleId.startsWith('DG-SAST-') || finding.ruleId.startsWith('DPK-SAST-')) return 'SAST';
+  if (finding.ruleId.startsWith('DG-SEC-') || finding.ruleId.startsWith('DPK-SEC-')) return 'SECRETS';
   return undefined;
 }
 

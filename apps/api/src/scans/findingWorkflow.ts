@@ -84,7 +84,7 @@ export function createInitialFindingWorkflow(finding: Finding, scan: WorkflowSca
     projectId: scan.projectId,
     findingId: finding.id,
     fingerprint: finding.fingerprint,
-    scanner: finding.scanner ?? (finding.ruleId.startsWith('DG-SEC-') ? 'SECRETS' : 'SAST'),
+    scanner: finding.scanner ?? (finding.ruleId.startsWith('DG-SEC-') || finding.ruleId.startsWith('DPK-SEC-') ? 'SECRETS' : 'SAST'),
     ruleId: finding.ruleId,
     state: 'OPEN',
     firstObservedScanId: scan.id,

@@ -150,7 +150,7 @@ export function isStudentLessonPublic(value: unknown): value is StudentLessonPub
   const starterFiles = practiceRecord['starterFiles'];
   return isBoundedText(practiceRecord['instruction'], 600) &&
     typeof practiceRecord['targetRuleId'] === 'string' &&
-    /^DG-[A-Z]+-[0-9]{3}$/.test(practiceRecord['targetRuleId'] as string) &&
+    /^(?:DG|DPK)-[A-Z]+-[0-9]{3,}$/.test(practiceRecord['targetRuleId'] as string) &&
     Array.isArray(starterFiles) && starterFiles.length >= 1 &&
     starterFiles.length <= STUDENT_PRACTICE_FILES_MAX &&
     starterFiles.every((file) => isStudentPracticeFile(file)) &&

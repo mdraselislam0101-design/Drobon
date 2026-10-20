@@ -243,7 +243,7 @@ export function isAdminFindingSummary(value: unknown): value is AdminFindingSumm
   return isRecord(value) && hasExactKeys(value, ['findingNumber', 'scanId', 'projectId', 'scanner', 'ruleId', 'severity', 'lifecycleState', 'observedAt']) && typeof value['findingNumber'] === 'number' && Number.isSafeInteger(value['findingNumber']) && value['findingNumber'] >= 1 && value['findingNumber'] <= 200 &&
     typeof value['scanId'] === 'string' && /^scan_[0-9a-f-]{36}$/.test(value['scanId']) &&
     typeof value['projectId'] === 'string' && PROJECT_ID_PATTERN.test(value['projectId']) &&
-    isScanType(value['scanner']) && typeof value['ruleId'] === 'string' && /^DG-(?:SAST|SEC|DAST)-[0-9]{3}$/.test(value['ruleId']) &&
+    isScanType(value['scanner']) && typeof value['ruleId'] === 'string' && /^(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3,}$/.test(value['ruleId']) &&
     (FINDING_SEVERITIES as readonly unknown[]).includes(value['severity']) &&
     (FINDING_LIFECYCLE_STATES as readonly unknown[]).includes(value['lifecycleState']) && isoTime(value['observedAt']);
 }

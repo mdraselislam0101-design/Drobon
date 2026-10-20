@@ -9,6 +9,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
 import { evaluateDastObservation, type DastRuleMatch } from './rules.js';
+import type { DatasetService } from '../../external/service.js';
 import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type ResolvedDastTarget } from './target.js';
 import { findingFingerprint } from '../findingIdentity.js';
 
@@ -27,6 +28,9 @@ export interface DastEngineOptions {
   maxRequests?: number;
   maxRedirects?: number;
   maxResponseBytes?: number;
+  /** Optional dataset DAST pack rules (evaluated alongside built-in rules). */
+  packRules?: readonly { id: string; title: string; description: string; severity: import('@drobon/shared').FindingSeverity; cwe?: string; remediation: string; check: any }[];
+  dataset?: DatasetService;
 }
 
 function statusCounts(findings: readonly Finding[]): Record<FindingSeverity, number> {
@@ -296,6 +300,23 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         });
         for (const rule of ruleMatches) {
           findings.push(buildFinding(record, configuredUrl, endpoint, response, rule, observedAt));
+        }
+        // Dataset DAST packs (honest extension — same finding model, same caps)
+        let allPackRules: typeof options.packRules = options.packRules as any;
+        if (options.dataset?.configured) {
+          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length > 0) allPackRules = ds as any; } catch {}
+        }
+        if (allPackRules && allPackRules.length > 0) {
+          const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
+          for (const packRule of allPackRules) {
+            let matched = false;
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType }); } catch {}
+            if (matched) {
+              const packMatch = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
+              findings.push(buildFinding(record, configuredUrl, endpoint, response, packMatch, observedAt));
+              if (findings.length > MAX_FINDINGS_PER_SCAN) break;
+            }
+          }
         }
         if (response.bodyTruncated) {
           partialReason = 'The response body reached the configured inspection limit and was truncated.';
