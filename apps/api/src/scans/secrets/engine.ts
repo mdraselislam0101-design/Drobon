@@ -10,6 +10,7 @@ import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchSecretsRuleLine, SECRETS_RULES, type SecretsRule } from './rules.js';
+import type { DatasetService } from '../../external/service.js';
 import { findingFingerprint } from '../findingIdentity.js';
 
 /**
@@ -131,6 +132,9 @@ export interface SecretsEngineOptions {
   limits?: Partial<SecretsLimits>;
   /** Clock for the deadline (tests). */
   now?: () => number;
+  /** Optional dataset pack rules merged with built-in rules. */
+  rules?: readonly SecretsRule[];
+  dataset?: DatasetService;
 }
 
 /** Deterministic file ordering: path byte-order ASC. */
@@ -360,6 +364,10 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
   return {
     scanType: 'SECRETS',
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
+      let effectiveRules: readonly SecretsRule[] = options.rules ?? SECRETS_RULES;
+      if (options.dataset?.configured) {
+        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch {}
+      }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
       if (snapshot === undefined) {
@@ -436,7 +444,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
             };
           }
           const line = lines[index] ?? '';
-          for (const rule of SECRETS_RULES) {
+          for (const rule of effectiveRules) {
             const match = matchSecretsRuleLine(rule, line);
             if (match === undefined) {
               continue;

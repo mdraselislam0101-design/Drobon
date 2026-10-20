@@ -137,16 +137,13 @@ describe('static safety', () => {
   });
 
   test('process.env is read only in config.ts', () => {
-    // `student/lessons.ts` is the one additional reader of the TEXT
-    // `process.env` (Phase 22): its hard-coded-secrets lesson names the
-    // remediation inside a fixture string. It is not a runtime read —
-    // the lesson-data structural test below proves the module has no
-    // runtime imports and that `process.env` occurs only inside string
-    // literals.
+    // Paid-tool parity: lesson fixtures now live in Drobon-Dataset,
+    // not in app code — student/lessons.ts is pure engine with no
+    // process.env references. Only config.ts reads the environment.
     const readers = sources()
       .filter(({ content }) => content.includes('process.env'))
       .map(({ file }) => file);
-    expect(readers.sort()).toEqual(['config.ts', 'student/lessons.ts']);
+    expect(readers.sort()).toEqual(['config.ts']);
   });
 
   test('no source imports a database, dataset or shell module', () => {

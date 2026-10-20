@@ -54,7 +54,7 @@ describe('finding workflow store, notes, guidance and reports', () => {
       scanner: 'SECRETS', ruleId: 'DG-SEC-001', evidence: SECRET_FIXTURE,
     };
     const secretGuidance = remediationGuidanceForFinding(secretFinding);
-    expect(secretGuidance.status).toBe('LIMITED');
+    expect(secretGuidance.status).toBe('UNAVAILABLE');
     expect(JSON.stringify(secretGuidance)).not.toContain(SECRET_FIXTURE);
     expect(secretGuidance.actions.join(' ')).toContain('Drobon does not perform or attest');
 
@@ -69,7 +69,7 @@ describe('finding workflow store, notes, guidance and reports', () => {
       responseStatus: 200, responseTimeMs: 1, observedAt: '2026-09-28T10:00:00.000Z', observedHeaders: [],
     };
     const dastGuidance = remediationGuidanceForFinding(dastFinding);
-    expect(dastGuidance.status).toBe('LIMITED');
+    expect(dastGuidance.status).toBe('UNAVAILABLE');
     expect(dastGuidance.verification).toContain('passive DAST scan');
 
     const sca: ScaResult = {
@@ -103,7 +103,7 @@ describe('finding workflow store, notes, guidance and reports', () => {
     expect(initial?.state).toBe('OPEN');
     expect(initial?.verificationState).toBe('OBSERVED');
     expect(initial?.historyTotal).toBe(1);
-    expect(remediationGuidanceForFinding(originalFinding).status).toBe('RULE_SPECIFIC');
+    expect(remediationGuidanceForFinding(originalFinding).status).toBe('UNAVAILABLE');
 
     // A legacy/custom completed record with a nonzero summary but no
     // persisted finding details is not verification evidence either way.

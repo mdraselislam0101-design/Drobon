@@ -113,6 +113,8 @@ export const SCAN_FAILURE_CODES = [
   'DAST_REQUEST_FAILED',
   'DAST_REQUEST_TIMEOUT',
   'DAST_SCAN_TIMEOUT',
+  'DAST_ACTIVE_CONSENT_REQUIRED',
+  'DAST_ACTIVE_NOT_ALLOWED',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -253,10 +255,10 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   if (record['directDependencies'] !== undefined && !isCount(record['directDependencies'])) {
     return false;
   }
-  if (record['requestsMade'] !== undefined && (!isCount(record['requestsMade']) || record['requestsMade'] > 3)) {
+  if (record['requestsMade'] !== undefined && (!isCount(record['requestsMade']) || record['requestsMade'] > 20)) {
     return false;
   }
-  if (record['redirectsFollowed'] !== undefined && (!isCount(record['redirectsFollowed']) || record['redirectsFollowed'] > 2)) {
+  if (record['redirectsFollowed'] !== undefined && (!isCount(record['redirectsFollowed']) || record['redirectsFollowed'] > 5)) {
     return false;
   }
   if (record['partial'] !== undefined && typeof record['partial'] !== 'boolean') {
@@ -300,6 +302,8 @@ export interface Scan {
   assessmentId?: string;
   /** Canonical target, present only for DAST scans. */
   targetUrl?: string;
+  /** DAST mode: PASSIVE (default, ≤3 req) or ACTIVE_SAFE (crawl+injection, ≤20 req, consent required). */
+  dastMode?: 'PASSIVE' | 'ACTIVE_SAFE';
   /** Set on a terminal status (COMPLETED, FAILED, or TIMED_OUT). */
   completedAt?: string;
   /** Terminal failure classification (FAILED or TIMED_OUT only). */
@@ -366,7 +370,7 @@ export function isFindingSeverity(value: unknown): value is FindingSeverity {
  * Rule identifiers: `DG-SAST-###` — stable, documented in docs/SAST.md,
  * never reused. `DG` is the product prefix (Drobon).
  */
-export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
+export const SAST_RULE_ID_PATTERN = /^(?:DG|DPK)-SAST-[0-9]{3}$/;
 
 /**
  * The finding rule-id family pattern (Pump 10): every engine's rules
@@ -374,7 +378,7 @@ export const SAST_RULE_ID_PATTERN = /^DG-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^DG-(?:SAST|SEC|DAST)-[0-9]{3}$/;
+export const FINDING_RULE_ID_PATTERN = /^(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is
@@ -533,10 +537,10 @@ export function isFinding(value: unknown): value is Finding {
   ) return false;
   if (record['cwe'] !== undefined && (typeof record['cwe'] !== 'string' || !FINDING_CWE_PATTERN.test(record['cwe']))) return false;
 
-  const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-');
+  const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-');
   if (dast) {
     if (
-      record['scanner'] !== 'DAST' || !/^DG-DAST-[0-9]{3}$/.test(record['ruleId']) ||
+      record['scanner'] !== 'DAST' || !/^(?:DG|DPK)-DAST-[0-9]{3,}$/.test(record['ruleId']) ||
       typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']) ||
       !isSafeDastUrl(record['targetUrl']) || !isSafeDastUrl(record['endpoint']) ||
       record['method'] !== 'GET' ||
@@ -562,7 +566,7 @@ export function isFinding(value: unknown): value is Finding {
 
   if (
     record['scanner'] !== undefined && record['scanner'] !== 'SAST' && record['scanner'] !== 'SECRETS' ||
-    record['ruleId'].startsWith('DG-DAST-') ||
+    (record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-')) ||
     typeof record['file'] !== 'string' || !isValidSourcePath(record['file']) ||
     typeof record['line'] !== 'number' || !Number.isInteger(record['line']) || record['line'] < 1 ||
     typeof record['column'] !== 'number' || !Number.isInteger(record['column']) || record['column'] < 1 ||
@@ -582,8 +586,8 @@ export function isFinding(value: unknown): value is Finding {
  */
 export function findingScanner(finding: Finding): ScanType | undefined {
   if (finding.scanner !== undefined) return finding.scanner;
-  if (finding.ruleId.startsWith('DG-SAST-')) return 'SAST';
-  if (finding.ruleId.startsWith('DG-SEC-')) return 'SECRETS';
+  if (finding.ruleId.startsWith('DG-SAST-') || finding.ruleId.startsWith('DPK-SAST-')) return 'SAST';
+  if (finding.ruleId.startsWith('DG-SEC-') || finding.ruleId.startsWith('DPK-SEC-')) return 'SECRETS';
   return undefined;
 }
 
@@ -715,6 +719,7 @@ export function isScan(value: unknown): value is Scan {
     'status',
     'assessmentId',
     'targetUrl',
+    'dastMode',
     'createdAt',
     'updatedAt',
     'startedAt',
@@ -742,6 +747,7 @@ export function isScan(value: unknown): value is Scan {
   if (record['targetUrl'] !== undefined && (record['scanType'] !== 'DAST' || !isSafeDastUrl(record['targetUrl']))) {
     return false;
   }
+  if (record['dastMode'] !== undefined && (record['scanType'] !== 'DAST' || (record['dastMode'] !== 'PASSIVE' && record['dastMode'] !== 'ACTIVE_SAFE'))) return false;
   if (
     record['scanType'] === 'DAST' &&
     (record['status'] === 'QUEUED' || record['status'] === 'RUNNING' || record['status'] === 'COMPLETED') &&

@@ -344,6 +344,7 @@ export interface ApiClient {
     idempotencyKey: string,
     signal?: AbortSignal,
     assessmentId?: string,
+    dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean },
   ): Promise<ScanResponse>;
   /**
    * One scan's detail (Pump 8): the scan AND its real findings (bounded,
@@ -926,6 +927,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       idempotencyKey: string,
       signal?: AbortSignal,
       assessmentId?: string,
+      dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean },
     ): Promise<ScanResponse> =>
       authRequest<ScanResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
@@ -935,7 +937,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             'content-type': 'application/json',
             'idempotency-key': idempotencyKey,
           },
-          body: JSON.stringify({ scanType, ...(assessmentId === undefined ? {} : { assessmentId }) }),
+          body: JSON.stringify({ scanType, ...(assessmentId === undefined ? {} : { assessmentId }), ...(dastOptions?.dastMode === undefined ? {} : { dastMode: dastOptions.dastMode }), ...(dastOptions?.dastActiveConsent === undefined ? {} : { dastActiveConsent: dastOptions.dastActiveConsent }) }),
           ...(signal === undefined ? {} : { signal }),
         },
         isScanResponse,

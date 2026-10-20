@@ -12,6 +12,7 @@ import {
   type StudentQuizFeedback,
 } from '@drobon/shared';
 import { findStudentLesson, studentLessonCatalogPublic } from '../student/lessons.js';
+import type { DatasetService } from '../external/service.js';
 import type { StudentStore } from '../student/store.js';
 
 export interface StudentRouteDeps {
@@ -20,6 +21,7 @@ export interface StudentRouteDeps {
   scans: ScanStore;
   student: StudentStore;
   now: () => number;
+  dataset?: DatasetService;
 }
 
 /**
@@ -90,9 +92,17 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
     if ([...url.searchParams.keys()].length > 0) throw badRequest('Unsupported query parameter.');
   };
 
-  const requireLesson = (rawLessonId: unknown) => {
+  const requireLesson = async (rawLessonId: unknown) => {
     if (typeof rawLessonId !== 'string' || rawLessonId.length > 64 || !STUDENT_LESSON_ID_PATTERN.test(rawLessonId)) {
       throw notFound('Lesson not found.');
+    }
+    if (deps.dataset?.configured) {
+      try {
+        const { getMergedLessons, findLessonInMerged } = await import('../external/lessonProvider.js');
+        const merged = await getMergedLessons(deps.dataset);
+        const lesson = findLessonInMerged(merged, rawLessonId);
+        if (lesson !== undefined) return lesson;
+      } catch {}
     }
     const lesson = findStudentLesson(rawLessonId);
     if (lesson === undefined) throw notFound('Lesson not found.');
@@ -127,6 +137,15 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
       handler: async (req, res, ctx): Promise<void> => {
         if (ctx.user === undefined) throw unauthorized();
         rejectUnknownQueryParameters(req);
+        if (deps.dataset?.configured) {
+          try {
+            const { getMergedLessons } = await import('../external/lessonProvider.js');
+            const { studentLessonPublic } = await import('../student/lessons.js');
+            const merged = await getMergedLessons(deps.dataset);
+            sendSuccess(res, ctx, { lessons: merged.map(studentLessonPublic) });
+            return;
+          } catch {}
+        }
         sendSuccess(res, ctx, { lessons: studentLessonCatalogPublic() });
       },
     },
@@ -150,7 +169,7 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         rejectUnknownQueryParameters(req);
-        const lesson = requireLesson(ctx.params['lessonId']);
+        const lesson = await requireLesson(ctx.params['lessonId']);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) });
         const parsed = v.object({}).parse(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
@@ -166,7 +185,7 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         rejectUnknownQueryParameters(req);
-        const lesson = requireLesson(ctx.params['lessonId']);
+        const lesson = await requireLesson(ctx.params['lessonId']);
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) });
         const answersSchema = v.object({ answers: quizAnswersSchema(lesson.quiz.length, Math.max(...lesson.quiz.map((question) => question.options.length))) });
         const parsedAnswers = answersSchema.parse(raw);
@@ -193,7 +212,7 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
         const actor = ctx.user;
         if (actor === undefined) throw unauthorized();
         rejectUnknownQueryParameters(req);
-        const lesson = requireLesson(ctx.params['lessonId']);
+        const lesson = await requireLesson(ctx.params['lessonId']);
         const stage = ctx.params['stage'];
         if (typeof stage !== 'string' || !PRACTICE_STAGES.has(stage)) throw notFound('Practice stage not found.');
         const raw = await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) });

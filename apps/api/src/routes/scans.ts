@@ -108,6 +108,8 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
   const createSchema = v.object({
     scanType: v.string({ maxLength: 16, trim: true }),
     assessmentId: v.optional(v.string({ maxLength: 64, trim: true })),
+    dastMode: v.optional(v.string({ maxLength: 16, trim: true })),
+    dastActiveConsent: v.optional(v.boolean()),
   });
 
   /**
@@ -197,6 +199,24 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         // consumption. Each engine repeats its target safety checks when
         // execution begins to close the preflight race window.
         let targetUrl: string | undefined;
+        let dastMode: 'PASSIVE' | 'ACTIVE_SAFE' | undefined;
+        let dastActiveConsent: boolean | undefined;
+        if (parsed.value.dastMode !== undefined || parsed.value.dastActiveConsent !== undefined) {
+          if (scanType !== 'DAST') throw validationError([{ path: 'dastMode', message: 'dastMode only allowed for DAST scans.' }]);
+        }
+        if (parsed.value.dastMode !== undefined) {
+          if (parsed.value.dastMode !== 'PASSIVE' && parsed.value.dastMode !== 'ACTIVE_SAFE') {
+            throw validationError([{ path: 'dastMode', message: 'dastMode must be PASSIVE or ACTIVE_SAFE.' }]);
+          }
+          dastMode = parsed.value.dastMode as 'PASSIVE' | 'ACTIVE_SAFE';
+        }
+        if (parsed.value.dastActiveConsent !== undefined) {
+          if (parsed.value.dastActiveConsent !== true) throw validationError([{ path: 'dastActiveConsent', message: 'Active DAST requires explicit consent (true).' }]);
+          dastActiveConsent = true;
+        }
+        if (dastMode === 'ACTIVE_SAFE' && dastActiveConsent !== true) {
+          throw validationError([{ path: 'dastActiveConsent', message: 'Active DAST requires dastActiveConsent: true.' }]);
+        }
         if (scanType === 'DAST') {
           if (project.dastTargetUrl === undefined) {
             throw conflict('Configure a DAST target on this project before requesting a scan.');
@@ -254,6 +274,8 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           scanType,
           ...(assessmentId === undefined ? {} : { assessmentId }),
           ...(targetUrl === undefined ? {} : { targetUrl }),
+          ...(dastMode === undefined ? {} : { dastMode }),
+          ...(dastActiveConsent === undefined ? {} : { dastActiveConsent }),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
           consume: () => usage.consumeScan(record, deviceHash),
         });

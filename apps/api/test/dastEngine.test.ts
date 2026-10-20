@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { TEST_DAST_RULES } from './fixtures/testData.js';
 import type { ScanRecord } from '../src/scans/store.js';
 import { createDastEngine, DAST_MAX_RESPONSE_BYTES } from '../src/scans/dast/engine.js';
 import { DastHttpError, type DastProbeOptions, type DastProbeResponse, type DastTransport } from '../src/scans/dast/http.js';
@@ -75,6 +76,7 @@ describe('bounded passive DAST engine', () => {
       targetPolicy: targetPolicy(),
       transport: fixture.transport,
       now: () => FIXED_TIME,
+      packRules: TEST_DAST_RULES as any,
     });
     const first = await engine.execute(scanRecord(), context());
     const second = await engine.execute(scanRecord(), context());

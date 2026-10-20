@@ -102,6 +102,11 @@ import {
  * That is the documented pre-database posture of this repository.
  */
 
+/** DAST mode: passive (default) or active with safe payloads (opt-in). */
+export const DAST_MODES = ['PASSIVE', 'ACTIVE_SAFE'] as const;
+export type DastMode = (typeof DAST_MODES)[number];
+export function isDastMode(v: unknown): v is DastMode { return typeof v === 'string' && (DAST_MODES as readonly string[]).includes(v); }
+
 /** The stored record — includes the owner; the API response never does. */
 export interface ScanRecord {
   id: string;
@@ -113,6 +118,10 @@ export interface ScanRecord {
   status: ScanStatus;
   /** Canonical target URL, only for DAST scans; never contains credentials/query/fragment. */
   dastTargetUrl?: string;
+  /** DAST mode — PASSIVE (default) or ACTIVE_SAFE (crawl+injection, consent required). */
+  dastMode?: DastMode;
+  /** Explicit user consent for active probing (timestamp of declaration). */
+  dastActiveConsent?: boolean;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -176,6 +185,9 @@ export interface CreateScanInput {
   assessmentId?: string;
   /** Preflight-validated canonical target, required for new DAST scans. */
   targetUrl?: string;
+  /** DAST mode for this scan (PASSIVE default). */
+  dastMode?: DastMode;
+  dastActiveConsent?: boolean;
   /**
    * Optional idempotency key (already format-validated by the route).
    * Scoped to (ownerId, key) inside the store — cross-account key
@@ -391,6 +403,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     (status === 'QUEUED' || status === 'RUNNING' || status === 'COMPLETED') &&
     record['dastTargetUrl'] === undefined
   ) return undefined;
+  if (record['dastMode'] !== undefined && record['dastMode'] !== 'PASSIVE' && record['dastMode'] !== 'ACTIVE_SAFE') return undefined;
+  if (record['dastActiveConsent'] !== undefined && typeof record['dastActiveConsent'] !== 'boolean') return undefined;
+  if (record['dastMode'] === 'ACTIVE_SAFE' && record['dastActiveConsent'] !== true) return undefined;
   if (record['startedAt'] !== undefined && typeof record['startedAt'] !== 'string') {
     return undefined;
   }
@@ -512,6 +527,8 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     status,
     createdAt: record['createdAt'],
     ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
+    ...(record['dastMode'] === 'ACTIVE_SAFE' ? { dastMode: 'ACTIVE_SAFE' as const } : record['dastMode'] === 'PASSIVE' ? { dastMode: 'PASSIVE' as const } : {}),
+    ...(record['dastActiveConsent'] === true ? { dastActiveConsent: true as const } : {}),
     updatedAt: record['updatedAt'],
   };
   if (typeof record['startedAt'] === 'string') {
@@ -933,6 +950,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           scanType: input.scanType,
           ...(input.assessmentId === undefined ? {} : { assessmentId: input.assessmentId }),
           ...(input.targetUrl === undefined ? {} : { dastTargetUrl: input.targetUrl }),
+          ...(input.dastMode === undefined ? {} : { dastMode: input.dastMode }),
+          ...(input.dastActiveConsent === true ? { dastActiveConsent: true as const } : {}),
           status: 'QUEUED',
           createdAt: now,
           updatedAt: now,
@@ -1533,13 +1552,14 @@ export function toScanDetailResponse(record: ScanRecord): ScanDetail {
 
 /** The public scan shape (no ownerId, no internals) for API responses. */
 export function toScanResponse(record: ScanRecord): Scan {
-  return {
+  const sharedScan: any = {
     id: record.id,
     projectId: record.projectId,
     scanType: record.scanType,
     status: record.status,
     ...(record.assessmentId === undefined ? {} : { assessmentId: record.assessmentId }),
     ...(record.dastTargetUrl === undefined ? {} : { targetUrl: record.dastTargetUrl }),
+    ...(record.dastMode === undefined ? {} : { dastMode: record.dastMode }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
@@ -1548,4 +1568,5 @@ export function toScanResponse(record: ScanRecord): Scan {
     ...(record.failureMessage === undefined ? {} : { failureMessage: record.failureMessage }),
     ...(record.resultSummary === undefined ? {} : { resultSummary: record.resultSummary }),
   };
+  return sharedScan as Scan;
 }

@@ -206,7 +206,7 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
       `### ${escapeMarkdown(finding.title)}`,
       '',
       `- Severity: ${finding.severity}`,
-      `- Scanner: ${finding.scanner ?? (finding.ruleId.startsWith('DG-SEC-') ? 'SECRETS' : 'SAST')}`,
+      `- Scanner: ${finding.scanner ?? (finding.ruleId.startsWith('DG-SEC-') || finding.ruleId.startsWith('DPK-SEC-') ? 'SECRETS' : 'SAST')}`,
       `- Rule: ${finding.ruleId}`,
       `- Location: ${escapeMarkdown(source)}`,
       `- Finding ID: \`${finding.id}\``,

@@ -97,7 +97,7 @@ describe('authorized finding remediation lifecycle API', () => {
     expect(detailResponse.status).toBe(200);
     const detail = await data<{ finding: Record<string, unknown>; workflow: { state: string }; guidance: { status: string } }>(detailResponse);
     expect(detail.workflow.state).toBe('OPEN');
-    expect(detail.guidance.status).toBe('RULE_SPECIFIC');
+    expect(detail.guidance.status).toBe('UNAVAILABLE');
 
     expect((await fetch(`${server.baseUrl}${lifecyclePath}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: 'ACKNOWLEDGED' }) })).status).toBe(401);
     expect((await sendState('ACKNOWLEDGED', other)).status).toBe(403);

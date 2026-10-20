@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { isFinding, isScanResultSummary, type Finding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
+import { TEST_SECRETS_RULES } from './fixtures/testData.js';
 import {
   createSecretsEngine,
   DEFAULT_SECRETS_LIMITS,
@@ -71,7 +72,7 @@ function providerFor(record: SourceSnapshotRecord | undefined): SourceSnapshotPr
 const ctx = { signal: new AbortController().signal };
 
 function engineWith(record: SourceSnapshotRecord | undefined, limits?: Parameters<typeof createSecretsEngine>[0]['limits']) {
-  return createSecretsEngine({ sources: providerFor(record), ...(limits === undefined ? {} : { limits }) });
+  return createSecretsEngine({ sources: providerFor(record), rules: TEST_SECRETS_RULES as any, ...(limits === undefined ? {} : { limits }) });
 }
 
 type Completed = Extract<Awaited<ReturnType<ReturnType<typeof createSecretsEngine>['execute']>>, { kind: 'completed' }>;
@@ -393,7 +394,7 @@ describe('secrets engine: adversarial redaction (the long-line edge)', () => {
 
 describe('secrets engine: failure modes fail closed', () => {
   test('no snapshot → SECRETS_TARGET_NOT_FOUND', async () => {
-    const engine = createSecretsEngine({ sources: providerFor(undefined) });
+    const engine = createSecretsEngine({ sources: providerFor(undefined), rules: TEST_SECRETS_RULES as any });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toMatchObject({ kind: 'failed', failureCode: 'SECRETS_TARGET_NOT_FOUND' });
   });
@@ -401,7 +402,7 @@ describe('secrets engine: failure modes fail closed', () => {
   test('owner mismatch (defense in depth) → SECRETS_INPUT_INVALID', async () => {
     const record = snapshot([{ path: 'a.ts', content: 'x = 1;\n' }]);
     const foreign: SourceSnapshotRecord = { ...record, ownerId: 'usr_00000000-0000-4000-8000-000000000099' };
-    const engine = createSecretsEngine({ sources: providerFor(foreign) });
+    const engine = createSecretsEngine({ sources: providerFor(foreign), rules: TEST_SECRETS_RULES as any });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toMatchObject({ kind: 'failed', failureCode: 'SECRETS_INPUT_INVALID' });
   });

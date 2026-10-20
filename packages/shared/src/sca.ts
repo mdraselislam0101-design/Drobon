@@ -104,8 +104,12 @@ export function isScaManifestStatus(value: unknown): value is ScaManifestStatus 
  * is the locked default (the Null provider); `DATASET_UNAVAILABLE`
  * is the explicit no-external-dataset state a future real provider
  * reports when its source is configured but not reachable/loaded.
+ * `DATASET_AVAILABLE` is the filesystem provider state when the
+ * external Drobon-Dataset corpus is loaded (even if no advisory
+ * matched this scan — absence is reported as NOT_ASSESSED, never
+ * as zero vulnerabilities).
  */
-export const SCA_DATASET_STATUSES = ['NO_DATA_LOADED', 'DATASET_UNAVAILABLE'] as const;
+export const SCA_DATASET_STATUSES = ['NO_DATA_LOADED', 'DATASET_UNAVAILABLE', 'DATASET_AVAILABLE'] as const;
 export type ScaDatasetStatus = (typeof SCA_DATASET_STATUSES)[number];
 
 export function isScaDatasetStatus(value: unknown): value is ScaDatasetStatus {

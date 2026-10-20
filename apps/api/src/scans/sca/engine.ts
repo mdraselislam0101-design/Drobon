@@ -309,27 +309,44 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       });
 
       // Consult the (optional) intelligence provider.
-      const coordinates = inventory.dependencies.map((dependency) => ({
-        ecosystem: dependency.ecosystem,
-        name: dependency.name,
-        ...(dependency.resolvedVersion === undefined
-          ? {}
-          : { version: dependency.resolvedVersion }),
-        dependencyId: dependency.dependencyId,
-      }));
+      // Version for matching: prefer the lockfile/resolved version when present;
+      // fall back to a declared version that looks like a concrete version
+      // (exact pins such as "6.2.4" or "5.2.16" — not range specs like
+      // "^6.2.4" or ">=1.0"). This keeps package.json-only projects
+      // honest without guessing ranges, and mirrors the SBOM version rule.
+      const coordinates = inventory.dependencies.map((dependency) => {
+        const versionForAssessment =
+          dependency.resolvedVersion ??
+          (dependency.declaredVersion !== undefined &&
+          /^[0-9][A-Za-z0-9._+-]*$/.test(dependency.declaredVersion)
+            ? dependency.declaredVersion
+            : undefined);
+        return {
+          ecosystem: dependency.ecosystem,
+          name: dependency.name,
+          ...(versionForAssessment === undefined ? {} : { version: versionForAssessment }),
+          dependencyId: dependency.dependencyId,
+        };
+      });
       const assessment = await provider.assess(coordinates);
 
       const dependencyById = new Map(
-        inventory.dependencies.map((dependency) => [
-          dependency.dependencyId,
-          {
-            ecosystem: dependency.ecosystem,
-            name: dependency.name,
-            ...(dependency.resolvedVersion === undefined
-              ? {}
-              : { version: dependency.resolvedVersion }),
-          },
-        ]),
+        inventory.dependencies.map((dependency) => {
+          const versionForAdvisory =
+            dependency.resolvedVersion ??
+            (dependency.declaredVersion !== undefined &&
+            /^[0-9][A-Za-z0-9._+-]*$/.test(dependency.declaredVersion)
+              ? dependency.declaredVersion
+              : undefined);
+          return [
+            dependency.dependencyId,
+            {
+              ecosystem: dependency.ecosystem,
+              name: dependency.name,
+              ...(versionForAdvisory === undefined ? {} : { version: versionForAdvisory }),
+            },
+          ];
+        }),
       );
       const advisories: ScaAdvisory[] = [];
       for (const advisory of assessment.advisories) {
