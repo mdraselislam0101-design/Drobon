@@ -193,5 +193,5 @@ Finding-এর evidence-এ শুধু **advisory id + component + version + l
 
 1. **৮টি বাকি document reader** → SCA declaration pack-এর বাকি ৫৬৮ rule-ও scan-এ চলবে।
 2. **Feed adapter seam** → operator যখন licensed advisory feed দেবেন, সেটা সরাসরি pack-এ sync করা যাবে (এখনও owner/license সিদ্ধান্ত বাকি)।
-3. **Authorization/engagement record** → অন্যের site scan-এর লিখিত scope + audit log (`USER_DECLARED` কে আরও স্পষ্ট করা)।
+3. ✅ **Authorization/engagement record** → **সম্পন্ন** — append-only engagement + scan gate; বিস্তারিত [`ENGAGEMENTS.md`](ENGAGEMENTS.md)।
 4. ✅ **Deep SAST (AST)** → **সম্পন্ন** — bounded, data-driven AST/dataflow engine, কোনো নতুন dependency ছাড়াই। বিস্তারিত: [`DEEP_SAST.md`](DEEP_SAST.md)।

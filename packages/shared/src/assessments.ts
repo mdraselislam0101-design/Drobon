@@ -13,6 +13,14 @@ export const ASSESSMENT_SCOPE_NOTES_MAX_LENGTH = 1000;
 export const ASSESSMENT_EVENTS_MAX_COUNT = 100;
 export const ASSESSMENT_DECLARATIONS_MAX_COUNT = 50;
 export const ASSESSMENT_LIST_MAX_COUNT = 30;
+/** Pump 17 — bounded third-party engagement/authorization records. */
+export const ASSESSMENT_ENGAGEMENTS_MAX_COUNT = 20;
+export const ENGAGEMENT_ID_PATTERN = /^eng_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const ENGAGEMENT_CLIENT_MAX_LENGTH = 120;
+export const ENGAGEMENT_STATEMENT_MAX_LENGTH = 2000;
+export const ENGAGEMENT_PATHS_MAX_COUNT = 20;
+export const ENGAGEMENT_PATH_MAX_LENGTH = 200;
+export const ENGAGEMENT_ACTOR_MAX_LENGTH = 64;
 
 export const ASSESSMENT_STATUSES = ['PLANNED', 'ACTIVE', 'COMPLETED', 'CANCELLED'] as const;
 export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
@@ -37,6 +45,40 @@ export interface AssessmentAuthorizationDeclaration {
   declaredAt: string;
 }
 
+/**
+ * Pump 17 — an OWNER-ATTESTED engagement record for assessing a
+ * third-party target. This is an auditable workspace record, NOT legal
+ * verification: Drobon cannot confirm a client's signature, authority or
+ * permission. `statement` is the operator's own written assertion.
+ */
+export type EngagementState = 'DECLARED' | 'WITHDRAWN';
+export type EngagementStatus = 'ACTIVE' | 'NOT_YET_VALID' | 'EXPIRED' | 'WITHDRAWN';
+
+export interface AssessmentEngagement {
+  id: string;
+  clientName: string;
+  targetUrl: string;
+  /** Exact hostnames; subdomains are never inherited. */
+  inScopeHosts: string[];
+  /** Optional URL path prefixes (e.g. `/api/`); empty means all paths. */
+  scopePaths: string[];
+  allowedScanTypes: ScanType[];
+  validFrom: string;
+  validUntil: string;
+  statement: string;
+  declaredBy: string;
+  declaredAt: string;
+  state: EngagementState;
+  withdrawnAt?: string;
+}
+
+export interface EngagementView extends AssessmentEngagement {
+  status: EngagementStatus;
+}
+
+export interface EngagementsResponse { engagements: EngagementView[] }
+export interface EngagementResponse { engagement: EngagementView }
+
 export interface AssessmentEvent {
   id: string;
   type: AssessmentEventType;
@@ -58,6 +100,8 @@ export interface Assessment {
   completedAt?: string;
   cancelledAt?: string;
   authorizationDeclarations: AssessmentAuthorizationDeclaration[];
+  /** Optional, additive: absent on all pre-Pump-17 records. */
+  engagements?: AssessmentEngagement[];
   history: AssessmentEvent[];
 }
 
@@ -125,7 +169,7 @@ export function isAssessmentScope(value: unknown): value is AssessmentScope {
 export function isAssessment(value: unknown): value is Assessment {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
-  const allowed = ['id', 'projectId', 'title', 'objectives', 'scope', 'status', 'createdAt', 'updatedAt', 'startedAt', 'completedAt', 'cancelledAt', 'authorizationDeclarations', 'history'];
+  const allowed = ['id', 'projectId', 'title', 'objectives', 'scope', 'status', 'createdAt', 'updatedAt', 'startedAt', 'completedAt', 'cancelledAt', 'authorizationDeclarations', 'engagements', 'history'];
   if (Object.keys(record).some((key) => !allowed.includes(key)) ||
       typeof record['id'] !== 'string' || !ASSESSMENT_ID_PATTERN.test(record['id']) ||
       typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']) ||
@@ -136,6 +180,7 @@ export function isAssessment(value: unknown): value is Assessment {
       !validDate(record['createdAt']) || !validDate(record['updatedAt']) ||
       !Array.isArray(record['authorizationDeclarations']) || record['authorizationDeclarations'].length > ASSESSMENT_DECLARATIONS_MAX_COUNT ||
       !record['authorizationDeclarations'].every(isAssessmentAuthorizationDeclaration) ||
+      (record['engagements'] !== undefined && (!Array.isArray(record['engagements']) || record['engagements'].length > ASSESSMENT_ENGAGEMENTS_MAX_COUNT || !record['engagements'].every(isAssessmentEngagement))) ||
       !Array.isArray(record['history']) || record['history'].length < 1 || record['history'].length > ASSESSMENT_EVENTS_MAX_COUNT ||
       !record['history'].every(isAssessmentEvent)) return false;
   if (record['startedAt'] !== undefined && !validDate(record['startedAt'])) return false;
@@ -161,6 +206,102 @@ function isAssessmentAuthorizationDeclaration(value: unknown): value is Assessme
   const record = value as Record<string, unknown>;
   return exactKeys(record, ['targetUrl', 'state', 'declaredAt']) && isSafeDastUrl(record['targetUrl']) &&
     (record['state'] === 'USER_DECLARED' || record['state'] === 'WITHDRAWN') && validDate(record['declaredAt']);
+}
+
+function isEngagementScopePath(value: unknown): value is string {
+  return boundedText(value, ENGAGEMENT_PATH_MAX_LENGTH) && value.startsWith('/') && !value.includes('..') && !value.includes(' ');
+}
+
+export function isAssessmentEngagement(value: unknown): value is AssessmentEngagement {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  const allowed = ['id', 'clientName', 'targetUrl', 'inScopeHosts', 'scopePaths', 'allowedScanTypes', 'validFrom', 'validUntil', 'statement', 'declaredBy', 'declaredAt', 'state', 'withdrawnAt'];
+  if (Object.keys(record).some((key) => !allowed.includes(key)) ||
+      typeof record['id'] !== 'string' || !ENGAGEMENT_ID_PATTERN.test(record['id']) ||
+      !boundedText(record['clientName'], ENGAGEMENT_CLIENT_MAX_LENGTH) ||
+      !isSafeDastUrl(record['targetUrl']) ||
+      !Array.isArray(record['inScopeHosts']) || record['inScopeHosts'].length < 1 ||
+      record['inScopeHosts'].length > ASSESSMENT_HOSTS_MAX_COUNT || !record['inScopeHosts'].every(isAssessmentHostname) ||
+      new Set(record['inScopeHosts'] as string[]).size !== (record['inScopeHosts'] as string[]).length ||
+      !Array.isArray(record['scopePaths']) || record['scopePaths'].length > ENGAGEMENT_PATHS_MAX_COUNT || !record['scopePaths'].every(isEngagementScopePath) ||
+      !Array.isArray(record['allowedScanTypes']) || record['allowedScanTypes'].length < 1 ||
+      record['allowedScanTypes'].length > 4 || !record['allowedScanTypes'].every(isScanType) ||
+      new Set(record['allowedScanTypes'] as string[]).size !== (record['allowedScanTypes'] as string[]).length ||
+      !validDate(record['validFrom']) || !validDate(record['validUntil']) ||
+      !boundedText(record['statement'], ENGAGEMENT_STATEMENT_MAX_LENGTH) ||
+      !boundedText(record['declaredBy'], ENGAGEMENT_ACTOR_MAX_LENGTH) ||
+      !validDate(record['declaredAt']) ||
+      (record['state'] !== 'DECLARED' && record['state'] !== 'WITHDRAWN')) return false;
+  const from = Date.parse(record['validFrom'] as string);
+  const until = Date.parse(record['validUntil'] as string);
+  if (!(until > from) || until - from > 366 * 24 * 60 * 60 * 1000) return false;
+  if (record['state'] === 'WITHDRAWN') return validDate(record['withdrawnAt']);
+  return record['withdrawnAt'] === undefined;
+}
+
+/** Time-derived state. Pure and deterministic; `nowIso` is injected in tests. */
+export function engagementStatus(engagement: AssessmentEngagement, nowIso: string): EngagementStatus {
+  if (engagement.state === 'WITHDRAWN') return 'WITHDRAWN';
+  const now = Date.parse(nowIso);
+  if (now < Date.parse(engagement.validFrom)) return 'NOT_YET_VALID';
+  if (now >= Date.parse(engagement.validUntil)) return 'EXPIRED';
+  return 'ACTIVE';
+}
+
+/**
+ * The authorization GATE. When no engagement exists the caller keeps the
+ * legacy `UNVERIFIED` behaviour (no silent upgrade, no hidden block).
+ * Once an engagement is declared it becomes the authority for linked scans.
+ */
+export function engagementAllowsScan(
+  engagements: readonly AssessmentEngagement[] | undefined,
+  options: { scanType: ScanType; hostname?: string; path?: string; nowIso: string },
+): { allowed: true; engagementId?: string } | { allowed: false; reason: string } {
+  const records = engagements ?? [];
+  if (records.length === 0) return { allowed: true };
+  const active = records.filter((item) =>
+    item.state === 'DECLARED' && engagementStatus(item, options.nowIso) === 'ACTIVE' && item.allowedScanTypes.includes(options.scanType));
+  if (active.length === 0) return { allowed: false, reason: 'No active engagement authorizes this scan type.' };
+  if (options.hostname !== undefined) {
+    const host = options.hostname.toLowerCase();
+    const inHost = active.filter((item) => item.inScopeHosts.includes(host));
+    if (inHost.length === 0) return { allowed: false, reason: 'No active engagement covers this target hostname.' };
+    if (options.path !== undefined) {
+      const inPath = inHost.filter((item) => item.scopePaths.length === 0 || item.scopePaths.some((prefix) => (options.path ?? '/').startsWith(prefix)));
+      if (inPath.length === 0) return { allowed: false, reason: 'The target path is outside the engagement scope.' };
+      const picked = inPath[0]?.id;
+      return picked === undefined ? { allowed: true } : { allowed: true, engagementId: picked };
+    }
+    const picked = inHost[0]?.id;
+    return picked === undefined ? { allowed: true } : { allowed: true, engagementId: picked };
+  }
+  const picked = active[0]?.id;
+  return picked === undefined ? { allowed: true } : { allowed: true, engagementId: picked };
+}
+
+export function isEngagementsResponse(value: unknown): value is EngagementsResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return exactKeys(record, ['engagements']) && Array.isArray(record['engagements']) && record['engagements'].length <= ASSESSMENT_ENGAGEMENTS_MAX_COUNT && record['engagements'].every(isEngagementView);
+}
+
+export function isEngagementResponse(value: unknown): value is EngagementResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return exactKeys(record, ['engagement']) && isEngagementView(record['engagement']);
+}
+
+function isEngagementView(value: unknown): value is EngagementView {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record['status'] !== 'string' ||
+      !(['ACTIVE', 'NOT_YET_VALID', 'EXPIRED', 'WITHDRAWN'] as readonly string[]).includes(record['status'])) return false;
+  const rest: Record<string, unknown> = { ...record };
+  delete rest['status'];
+  if (!isAssessmentEngagement(rest)) return false;
+  const keys = ['id', 'clientName', 'targetUrl', 'inScopeHosts', 'scopePaths', 'allowedScanTypes', 'validFrom', 'validUntil', 'statement', 'declaredBy', 'declaredAt', 'state', 'status'];
+  if (rest['withdrawnAt'] !== undefined) keys.push('withdrawnAt');
+  return exactKeys(record, keys);
 }
 
 function isAssessmentEvent(value: unknown): value is AssessmentEvent {

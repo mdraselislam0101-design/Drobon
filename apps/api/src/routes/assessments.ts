@@ -5,9 +5,16 @@ import {
   ASSESSMENT_OBJECTIVE_MAX_LENGTH,
   ASSESSMENT_SCOPE_NOTES_MAX_LENGTH,
   ASSESSMENT_TITLE_MAX_LENGTH,
+  ENGAGEMENT_CLIENT_MAX_LENGTH,
+  ENGAGEMENT_ID_PATTERN,
+  ENGAGEMENT_PATHS_MAX_COUNT,
+  ENGAGEMENT_PATH_MAX_LENGTH,
+  ENGAGEMENT_STATEMENT_MAX_LENGTH,
+  engagementStatus,
   isAssessmentHostname,
   isAssessmentScope,
   isAssessmentStatus,
+  isScanType,
   isSafeDastUrl,
   type Assessment,
   type AssessmentDetailResponse,
@@ -18,7 +25,11 @@ import {
   type AssessmentSummaryResponse,
   type AssessmentSummaryScanLine,
   type AssessmentsResponse,
+  type EngagementResponse,
+  type EngagementsResponse,
+  type EngagementView,
   type FindingSeverity,
+  type ScanType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
 import { conflict, internal, notFound, projectArchived, unauthorized, validationError } from '../errors.js';
@@ -116,6 +127,22 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
   };
   const statusSchema = v.object({ status: v.string({ maxLength: 16, trim: true }) });
   const authorizationSchema = v.object({ action: v.string({ maxLength: 16, trim: true }), confirm: v.boolean() });
+  // Pump 17 — bounded, owner-attested third-party engagement record.
+  const engagementSchema = v.object({
+    clientName: v.string({ minLength: 3, maxLength: ENGAGEMENT_CLIENT_MAX_LENGTH, trim: true }),
+    targetUrl: v.string({ minLength: 8, maxLength: 400, trim: true }),
+    inScopeHosts: v.array(v.string({ minLength: 4, maxLength: 253, trim: true }), { minLength: 1, maxLength: ASSESSMENT_HOSTS_MAX_COUNT }),
+    scopePaths: v.optional(v.array(v.string({ minLength: 1, maxLength: ENGAGEMENT_PATH_MAX_LENGTH, trim: true }), { maxLength: ENGAGEMENT_PATHS_MAX_COUNT })),
+    allowedScanTypes: v.array(v.string({ minLength: 3, maxLength: 16, trim: true }), { minLength: 1, maxLength: 4 }),
+    validFrom: v.string({ minLength: 20, maxLength: 32, trim: true }),
+    validUntil: v.string({ minLength: 20, maxLength: 32, trim: true }),
+    statement: v.string({ minLength: 10, maxLength: ENGAGEMENT_STATEMENT_MAX_LENGTH, trim: true }),
+    confirm: v.boolean(),
+  });
+  const withdrawSchema = v.object({ confirm: v.boolean() });
+  const view = (engagement: NonNullable<Assessment['engagements']>[number]): EngagementView => ({
+    ...engagement, status: engagementStatus(engagement, at()),
+  });
 
   return [
     {
@@ -314,6 +341,102 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
         if (outcome.outcome === 'history-limit') throw conflict('Assessment history is full; no declaration was recorded.');
         if (outcome.assessment === undefined) throw internal('Authorization declaration returned no record.');
         const response: AssessmentResponse = { assessment: outcome.assessment };
+        sendSuccess(res, ctx, response);
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId/engagements', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
+        const response: EngagementsResponse = { engagements: (assessment.engagements ?? []).map(view) };
+        sendSuccess(res, ctx, response);
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/engagements', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
+        if (project.status === 'ARCHIVED') throw projectArchived();
+        if (assessment.status !== 'ACTIVE') throw conflict('Engagements can be declared only during an active assessment.');
+        const parsed = engagementSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 8192) }));
+        if (!parsed.ok) throw validationError(parsed.issues);
+        if (parsed.value.confirm !== true) throw validationError([{ path: 'confirm', message: 'Confirm that you are permitted to assess this target.' }]);
+        const targetUrl = normalizeText(parsed.value.targetUrl);
+        if (!isSafeDastUrl(targetUrl) || !targetHostInScope(assessment, targetUrl)) {
+          throw conflict('The engagement target must be a safe URL whose host is explicitly inside the assessment scope.');
+        }
+        const hosts = [...new Set(parsed.value.inScopeHosts.map((host) => normalizeText(host).toLowerCase()))];
+        const paths = [...new Set((parsed.value.scopePaths ?? []).map((item) => normalizeText(item)))];
+        const scanTypes = [...new Set(parsed.value.allowedScanTypes)] as ScanType[];
+        const targetHost = new URL(targetUrl).hostname.toLowerCase();
+        const from = Date.parse(parsed.value.validFrom);
+        const until = Date.parse(parsed.value.validUntil);
+        if (!hosts.every((host) => isAssessmentHostname(host) && assessment.scope.inScopeHosts.includes(host) && !assessment.scope.outOfScopeHosts.includes(host)) ||
+            !hosts.includes(targetHost)) {
+          throw validationError([{ path: 'inScopeHosts', message: 'Every engagement host must be an in-scope assessment hostname, including the target host.' }]);
+        }
+        if (paths.some((item) => !item.startsWith('/') || item.includes('..') || item.includes(' '))) {
+          throw validationError([{ path: 'scopePaths', message: 'Scope paths must be absolute URL prefixes without traversal or spaces.' }]);
+        }
+        if (scanTypes.length === 0 || !scanTypes.every(isScanType)) {
+          throw validationError([{ path: 'allowedScanTypes', message: 'Choose one or more supported scan types.' }]);
+        }
+        if (!Number.isFinite(from) || !Number.isFinite(until) || new Date(from).toISOString() !== parsed.value.validFrom ||
+            new Date(until).toISOString() !== parsed.value.validUntil || until <= from || until <= now() ||
+            until - from > 366 * 24 * 60 * 60 * 1000) {
+          throw validationError([{ path: 'validUntil', message: 'Provide valid ISO timestamps where validUntil is in the future and within one year of validFrom.' }]);
+        }
+        const outcome = await assessments.recordEngagement({
+          ownerId: actor.id, projectId: project.id, assessmentId: assessment.id, now: at(), action: 'DECLARE',
+          engagement: {
+            clientName: normalizeText(parsed.value.clientName), targetUrl,
+            inScopeHosts: hosts, scopePaths: paths, allowedScanTypes: scanTypes,
+            validFrom: parsed.value.validFrom, validUntil: parsed.value.validUntil,
+            statement: normalizeText(parsed.value.statement),
+          },
+        });
+        if (outcome.outcome === 'not-found') throw notFound('Assessment not found.');
+        if (outcome.outcome === 'inactive') throw conflict('Engagements can be declared only during an active assessment.');
+        if (outcome.outcome === 'invalid') throw validationError([{ path: 'body', message: 'The engagement record failed validation.' }]);
+        if (outcome.outcome === 'engagements-limit') throw conflict('The engagement record limit has been reached.');
+        if (outcome.outcome === 'history-limit') throw conflict('Assessment history is full; no engagement was recorded.');
+        if (outcome.assessment === undefined) throw internal('Engagement declaration returned no record.');
+        const created = (outcome.assessment.engagements ?? []).at(-1);
+        if (created === undefined) throw internal('Engagement declaration returned no engagement.');
+        const response: EngagementResponse = { engagement: view(created) };
+        sendSuccess(res, ctx, response);
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/projects/:projectId/assessments/:assessmentId/engagements/:engagementId/withdraw', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        const actor = ctx.user;
+        if (actor === undefined) throw unauthorized();
+        const { project, assessment } = await ownedAssessment(ctx.params['projectId'], ctx.params['assessmentId'], actor.id);
+        if (project.status === 'ARCHIVED') throw projectArchived();
+        const parsed = withdrawSchema.parse(await readJsonBody(req, { maxBytes: Math.min(config.bodyMaxBytes, 1024) }));
+        if (!parsed.ok) throw validationError(parsed.issues);
+        if (parsed.value.confirm !== true) throw validationError([{ path: 'confirm', message: 'Confirm the withdrawal.' }]);
+        const engagementId = ctx.params['engagementId'];
+        if (engagementId === undefined || !ENGAGEMENT_ID_PATTERN.test(engagementId)) throw notFound('Engagement not found.');
+        const outcome = await assessments.recordEngagement({
+          ownerId: actor.id, projectId: project.id, assessmentId: assessment.id, now: at(), action: 'WITHDRAW', engagementId,
+        });
+        if (outcome.outcome === 'not-found') throw notFound('Assessment not found.');
+        if (outcome.outcome === 'inactive') throw conflict('Engagements can be changed only during an active or planned assessment.');
+        if (outcome.outcome === 'invalid' || outcome.outcome === 'not-declared') throw notFound('Engagement not found.');
+        if (outcome.outcome === 'history-limit') throw conflict('Assessment history is full; no withdrawal was recorded.');
+        if (outcome.assessment === undefined) throw internal('Engagement withdrawal returned no record.');
+        const updated = (outcome.assessment.engagements ?? []).find((item) => item.id === engagementId);
+        if (updated === undefined) throw internal('Engagement withdrawal returned no engagement.');
+        const response: EngagementResponse = { engagement: view(updated) };
         sendSuccess(res, ctx, response);
       },
     },

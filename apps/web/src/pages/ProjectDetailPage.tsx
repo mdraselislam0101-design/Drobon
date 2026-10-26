@@ -6,6 +6,7 @@ import {
   ASSISTANT_QUESTION_MAX_LENGTH,
   SCAN_TYPES,
   isAssessmentHostname,
+  engagementStatus,
   type Assessment,
   type AssessmentDetailResponse,
   type AssessmentScope,
@@ -629,6 +630,8 @@ function AssessmentsSection({
   const targetHost = dastTargetUrl === undefined ? '' : (() => { try { return new URL(dastTargetUrl).hostname.toLowerCase(); } catch { return ''; } })();
   const targetInScope = detail !== null && targetHost.length > 0 && isAssessmentHostname(targetHost) && detail.assessment.scope.inScopeHosts.includes(targetHost) && !detail.assessment.scope.outOfScopeHosts.includes(targetHost);
   const canDeclare = projectStatus === 'ACTIVE' && detail?.assessment.status === 'ACTIVE' && dastTargetUrl !== undefined && targetInScope;
+  const engagements = detail?.assessment.engagements ?? [];
+  const engagementNow = new Date().toISOString();
   const canComplete = detail !== null && detail.assessment.status === 'ACTIVE' && detail.progress.activeScans === 0 && detail.progress.completedScans > 0;
   const canCancel = detail !== null && (detail.assessment.status === 'PLANNED' || detail.assessment.status === 'ACTIVE') && detail.progress.activeScans === 0;
   const readOnly = projectStatus !== 'ACTIVE' || (selected !== undefined && selected.status !== 'PLANNED');
@@ -682,6 +685,22 @@ function AssessmentsSection({
                   )}
                 </div>
               )}
+              <div className="assessment-authorization" data-testid="assessment-engagement">
+                <h4>Third-party engagement record</h4>
+                {engagements.length === 0 ? (
+                  <p data-testid="assessment-engagement-status">NO ENGAGEMENT — target authorization remains UNVERIFIED.</p>
+                ) : (
+                  <ul className="assessment-scan-list">
+                    {engagements.map((item) => (
+                      <li key={item.id} data-testid="assessment-engagement-status">
+                        <strong>{item.state} · {engagementStatus(item, engagementNow)}</strong> · {item.clientName} · {item.allowedScanTypes.join(', ')} · {item.inScopeHosts.join(', ')} · valid until {item.validUntil}
+                        {item.withdrawnAt === undefined ? '' : ` · withdrawn ${item.withdrawnAt}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="muted">An engagement is the operator's own written attestation (client, exact hosts, allowed scan types, validity window and path scope). Drobon stores it as an append-only audit record and gates linked scans on it — it does not independently verify legal permission, signatures or client authority.</p>
+              </div>
               <h4>Linked scan and report history</h4>
               {detail.progress.recentScans.length === 0 ? <p className="muted">No scans are linked yet. Start this assessment and select it when requesting a scan.</p> : <ul className="assessment-scan-list">{detail.progress.recentScans.map((scan) => <li key={scan.id}><strong>{scan.scanType} · {scan.status}</strong> · {scan.findingsTotal ?? 0} findings{scan.reportAvailable ? ' · report saved' : ''} · <a href={`#scan-${scan.id}`} data-testid={`assessment-linked-scan-${scan.id}`}>Open linked scan and its finding/remediation/report workflow</a></li>)}</ul>}
               <p className="field-hint">Finding remediation state, notes, rescan verification and persisted reports remain in the existing scan/finding/report workflows. These assessment links do not duplicate scanner data.</p>

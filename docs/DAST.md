@@ -30,6 +30,13 @@ The write routes reuse existing authentication, project ownership, validation, a
 
 The server enforces URL and address policy when configuring a target and again immediately before each request. Only HTTP(S), canonical URLs without credentials, query strings, fragments, or custom ports are accepted. Loopback, private, link-local, carrier-grade NAT, documentation, multicast, reserved, unspecified, IPv4-mapped private, local/internal, and metadata destinations are blocked. All DNS answers must be public; the resolver is bounded and mixed public/private answers fail closed. IP literals are evaluated as literals and cannot be replaced by resolver output. The HTTP socket uses a vetted address directly (DNS pinning), while preserving the hostname for HTTP Host and TLS verification. Redirects are resolved and validated independently, must retain the original hostname, and cannot downgrade HTTPS to HTTP. DNS is rechecked before every request to reduce rebinding risk.
 
+**Pump 17 addendum:** an owner may now attach a bounded, append-only
+**engagement record** to an assessment (exact hosts, allowed scan types,
+validity window, path scope and a written statement). Once at least one
+engagement exists it gates every linked scan *before quota consumption*.
+This is an auditable workspace record, NOT independent legal verification —
+see [`ENGAGEMENTS.md`](ENGAGEMENTS.md).
+
 The project UI explicitly displays target authorization as `UNVERIFIED`. Drobon verifies project ownership and network destination safety, not engagement letters or third-party legal permission. The owner must configure only targets they are permitted to assess; saving a URL does not change that state or create an authorization claim.
 
 Pump 22 assessments can record bounded engagement metadata and a user-authored target declaration, but do not change this authorization boundary. A DAST scan associated with an assessment must have the exact configured target hostname explicitly listed in that assessment's in-scope hostnames (and not excluded); subdomains are not inherited. The assessment does not grant project/target/DAST access and does not relax any network policy. The owner may append a timestamped `USER_DECLARED` statement for the exact currently configured target URL, or withdraw it; Drobon has no independent mechanism to verify third-party permission. Without a current exact-URL statement the UI remains `UNVERIFIED`, and even `USER_DECLARED` is not verified authorization. A linked DAST scan is not gated on that statement, matching the existing project DAST behavior; ordinary authenticated ownership, quota, target and passive-scan controls still apply. See `SECURITY_PROFESSIONAL.md` for the assessment lifecycle, store bounds and API workflow.
