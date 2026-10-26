@@ -76,6 +76,7 @@ describe('bounded passive DAST engine', () => {
       targetPolicy: targetPolicy(),
       transport: fixture.transport,
       now: () => FIXED_TIME,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       packRules: TEST_DAST_RULES as any,
     });
     const first = await engine.execute(scanRecord(), context());

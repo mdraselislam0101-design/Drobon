@@ -17,10 +17,13 @@ import { remediationGuidanceForFinding, scaInventoryGuidance } from '../scans/re
 import { buildAssistantContext, type AssistantContextBuild } from './context.js';
 import { redactAssistantText } from './redaction.js';
 import type { AssistantProvider } from './provider.js';
+import type { GuidanceLookup } from '../external/guidance.js';
 
 export interface AssistantServiceDeps {
   scans: ScanStore;
   provider: AssistantProvider;
+  /** Optional external dataset resolver (absent → honest UNAVAILABLE guidance). */
+  guidance?: GuidanceLookup;
 }
 
 type Intent = 'TOP_FINDINGS' | 'EXPLAIN_FINDING' | 'REMEDIATION' | 'SCANNER' | 'LIFECYCLE' |
@@ -119,10 +122,12 @@ function isPartial(scans: readonly ScanRecord[], context: AssistantContextBuild)
 export class AssistantService {
   private readonly scans: ScanStore;
   private readonly provider: AssistantProvider;
+  private readonly guidance: GuidanceLookup | undefined;
 
   constructor(deps: AssistantServiceDeps) {
     this.scans = deps.scans;
     this.provider = deps.provider;
+    this.guidance = deps.guidance;
   }
 
   status(): AssistantStatusResponse {
@@ -245,7 +250,8 @@ export class AssistantService {
     }
 
     if (intent === 'REMEDIATION' && finding !== undefined) {
-      const guidance = remediationGuidanceForFinding(finding);
+      const entry = this.guidance === undefined ? undefined : await this.guidance(finding.ruleId);
+      const guidance = remediationGuidanceForFinding(finding, entry);
       const facts = [`Rule ${finding.ruleId} from ${findingScanner(finding) ?? 'an unidentified scanner'} produced this finding.`];
       const interpretations = [finding.remediation];
       const recommendations = [...guidance.actions, guidance.verification];

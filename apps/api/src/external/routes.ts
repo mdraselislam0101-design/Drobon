@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- external dataset JSON is untrusted and shape-checked before use. */
 /**
  * Dataset status routes — honest visibility into what's loaded from Drobon-Dataset.
  * Read-only, no secrets, bounded.
@@ -37,14 +38,16 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
       handler: async (_req, res, ctx) => {
         if (ctx.user === undefined) throw unauthorized();
         const kind = ctx.params['kind'];
-        if (kind !== 'sast' && kind !== 'secrets' && kind !== 'dast') throw new Error('Unsupported pack kind');
+        if (kind !== 'sast' && kind !== 'secrets' && kind !== 'dast' && kind !== 'sca') throw new Error('Unsupported pack kind');
         let rules: unknown[] = [];
         if (kind === 'sast') rules = await dataset.sastPacks();
         else if (kind === 'secrets') rules = await dataset.secretsPacks();
         else if (kind === 'dast') rules = await dataset.dastPacks();
+        else rules = await dataset.scaPacks();
+        const pack = await dataset.packMetadata(kind);
         // Return bounded summary (no regex source truncation, but limited fields)
         const list = (rules as any[]).slice(0, 50).map(r => ({ id: r.id, title: r.title, severity: r.severity, category: r.category }));
-        sendSuccess(res, ctx, { kind, count: (rules as any[]).length, rules: list });
+        sendSuccess(res, ctx, { kind, count: (rules as any[]).length, ...(pack === undefined ? {} : { pack }), rules: list });
       },
     },
     {

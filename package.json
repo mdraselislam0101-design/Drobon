@@ -30,7 +30,8 @@
     "release:evidence": "node scripts/release-evidence.mjs",
     "verify": "node scripts/verify.mjs",
     "sync:dataset": "node scripts/sync-dataset.mjs",
-    "check:dataset": "node scripts/sync-dataset.mjs --check"
+    "check:dataset": "node scripts/sync-dataset.mjs --check",
+    "verify:dataset": "node --import tsx scripts/verify-dataset.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",

@@ -5,6 +5,7 @@ import {
   type ScanFailureCode,
   type ScanResultSummary,
 } from '@drobon/shared';
+import { INSPECTED_RESPONSE_HEADERS } from './observedHeaders.js';
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
@@ -30,6 +31,7 @@ export interface DastEngineOptions {
   maxRedirects?: number;
   maxResponseBytes?: number;
   /** Optional dataset DAST pack rules (evaluated alongside built-in rules). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   packRules?: readonly { id: string; title: string; description: string; severity: import('@drobon/shared').FindingSeverity; cwe?: string; remediation: string; check: any }[];
   dataset?: DatasetService;
 }
@@ -50,11 +52,7 @@ function responseHeader(response: DastProbeResponse, name: string): string | und
   return typeof value === 'string' ? value : undefined;
 }
 
-const INSPECTED_RESPONSE_HEADERS = new Set([
-  'content-type', 'strict-transport-security', 'x-content-type-options', 'x-frame-options',
-  'content-security-policy', 'access-control-allow-origin', 'access-control-allow-credentials',
-  'server', 'x-powered-by', 'set-cookie', 'location',
-]);
+
 
 function boundedResponseHeaders(headers: DastProbeResponse['headers']): DastProbeResponse['headers'] {
   const bounded: DastProbeResponse['headers'] = {};
@@ -187,6 +185,7 @@ function isRedirect(status: number): boolean {
 export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
   // If active mode requested, delegate to the safe active engine (bounded crawl+injection).
   // Keeps one scanType (DAST) with mode flag — passive is default, active requires consent.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   const activeDelegate = createActiveDastEngine(options as any);
 
   const policy = options.targetPolicy ?? createDastTargetPolicy();
@@ -311,16 +310,20 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           findings.push(buildFinding(record, configuredUrl, endpoint, response, rule, observedAt));
         }
         // Dataset DAST packs (honest extension — same finding model, same caps)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
         let allPackRules: typeof options.packRules = options.packRules as any;
         if (options.dataset?.configured) {
-          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length > 0) allPackRules = ds as any; } catch {}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length > 0) allPackRules = ds as any; } catch { /* fail closed: optional path */ }
         }
         if (allPackRules && allPackRules.length > 0) {
           const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
           for (const packRule of allPackRules) {
             let matched = false;
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch {}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch { /* fail closed: optional path */ }
             if (matched) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const packMatch = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
               findings.push(buildFinding(record, configuredUrl, endpoint, response, packMatch, observedAt));
               if (findings.length > MAX_FINDINGS_PER_SCAN) break;

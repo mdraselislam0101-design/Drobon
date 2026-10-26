@@ -9,7 +9,7 @@ import {
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
-import { matchRuleLine, sastRuleById, SAST_RULES, type SastRule } from './rules.js';
+import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
 import { detectLanguageFamily, isAnalyzedMaturity } from './languages.js';
 import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
@@ -175,7 +175,7 @@ interface DiscoveryResult {
 
 type DiscoveryFailure = { kind: 'input-invalid' } | { kind: 'file-limit' } | { kind: 'too-large' };
 
-function discover(snapshot: SourceSnapshotRecord, limits: SastLimits): DiscoveryResult | DiscoveryFailure {
+function discover(snapshot: SourceSnapshotRecord, limits: SastLimits, ruleFamilies: ReadonlySet<string>): DiscoveryResult | DiscoveryFailure {
   const scannable: Array<{ path: string; content: string; family: string }> = [];
   let skipped = 0;
   let totalBytes = 0;
@@ -188,12 +188,16 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits): Discovery
     if (!isValidSourcePath(file.path)) {
       return { kind: 'input-invalid' };
     }
-    // UNIVERSAL DETECTION: a file is analyzed only when the catalog
-    // detects it as a family with real analysis (PARTIAL or
-    // CONFIG_ANALYSIS). Unknown, SYNTAX_ONLY and UNSUPPORTED files are
-    // skipped and counted — never guessed at, never claimed as scanned.
+    // UNIVERSAL DETECTION: a file is analyzed when the catalog says the
+    // family has real analysis (PARTIAL / CONFIG_ANALYSIS), OR when a
+    // LOADED rule explicitly targets that family. The dataset ships
+    // pattern rules for families the bare app marks SYNTAX_ONLY /
+    // UNSUPPORTED (clojure, haskell, fortran, html, …); with those rules
+    // loaded the same bounded lexical engine runs on those files instead
+    // of silently dropping them (GAP-040). With no rule for a family the
+    // file is still skipped and counted — never guessed at.
     const detection = detectLanguageFamily(file.path, file.content.slice(0, 8192));
-    if (detection === undefined || !isAnalyzedMaturity(detection.maturity) || isIgnoredDir(file.path)) {
+    if (detection === undefined || (!isAnalyzedMaturity(detection.maturity) && !ruleFamilies.has(detection.family)) || isIgnoredDir(file.path)) {
       skipped += 1;
       continue;
     }
@@ -241,7 +245,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
         try {
           const { getMergedSastRules } = await import('../../external/packIntegration.js');
           effectiveRules = await getMergedSastRules(options.dataset);
-        } catch {}
+        } catch { /* fail closed: optional path */ }
       }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
@@ -263,7 +267,9 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           failureMessage: 'The scan target is inconsistent with the scan owner.',
         };
       }
-      const discovery = discover(snapshot, limits);
+      const ruleFamilies = new Set<string>();
+      for (const rule of effectiveRules) for (const family of rule.languages ?? []) ruleFamilies.add(family);
+      const discovery = discover(snapshot, limits, ruleFamilies);
       if (discovery.kind === 'input-invalid') {
         return {
           kind: 'failed',
@@ -294,6 +300,11 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       // (the registry is a compile-time constant; this is a cache, not
       // state that can change).
       const flowRulesByFamily = new Map<string, ReturnType<typeof flowRulesForFamily>>();
+      // The production registry is intentionally empty (data lives in the
+      // external dataset). Flow findings must therefore resolve their rule
+      // metadata from the SAME effective rule set that produced the flow
+      // refs — otherwise every flow finding is silently dropped.
+      const rulesById = new Map<string, SastRule>(effectiveRules.map((rule) => [rule.id, rule]));
 
       outer: for (const file of discovery.files) {
         // Deadline checkpoints: between files…
@@ -379,7 +390,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           const maskedLines = maskLiterals(file.content, file.family).split('\n');
           const flowCandidates = analyzeFileFlows(file.family, maskedLines, flowRules, lines);
           for (const candidate of flowCandidates) {
-            const rule = sastRuleById(candidate.ruleId);
+            const rule = rulesById.get(candidate.ruleId);
             const originalLine = lines[candidate.lineIndex] ?? '';
             if (rule === undefined) continue;
             const evidence = evidenceFromLine(rule, originalLine, candidate.column);

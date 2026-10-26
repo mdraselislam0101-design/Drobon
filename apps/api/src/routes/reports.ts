@@ -36,12 +36,14 @@ import { buildSecurityReport, canonicalJson, renderSbomExport, renderSecurityRep
 import { prepareFindingNote } from '../scans/findingWorkflow.js';
 import { remediationGuidanceForFinding } from '../scans/remediationGuidance.js';
 import * as v from '../lib/validate.js';
+import type { GuidanceLookup } from '../external/guidance.js';
 
 export interface ReportsRouteDeps {
   config: ApiConfig;
   projects: ProjectStore;
   scans: ScanStore;
   now?: () => number;
+  guidance?: GuidanceLookup;
 }
 
 const emptyBodySchema = v.object({});
@@ -204,7 +206,7 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
           scan: toScanResponse(scan),
           finding,
           workflow,
-          guidance: remediationGuidanceForFinding(finding),
+          guidance: remediationGuidanceForFinding(finding, deps.guidance === undefined ? undefined : await deps.guidance(finding.ruleId)),
         };
         sendSuccess(res, ctx, result);
       },

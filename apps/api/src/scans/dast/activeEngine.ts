@@ -5,6 +5,7 @@ import {
   type ScanFailureCode,
   type ScanResultSummary,
 } from '@drobon/shared';
+import { INSPECTED_RESPONSE_HEADERS } from './observedHeaders.js';
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
@@ -50,6 +51,7 @@ export interface ActiveDastEngineOptions {
   maxRedirects?: number;
   maxResponseBytes?: number;
   throttleMs?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   packRules?: readonly { id: string; title: string; description: string; severity: FindingSeverity; cwe?: string; remediation: string; check: any }[];
   dataset?: DatasetService;
 }
@@ -70,15 +72,11 @@ function responseHeader(response: DastProbeResponse, name: string): string | und
   return typeof v === 'string' ? v : undefined;
 }
 
-const INSPECTED_HEADERS = new Set([
-  'content-type', 'strict-transport-security', 'x-content-type-options', 'x-frame-options',
-  'content-security-policy', 'access-control-allow-origin', 'access-control-allow-credentials',
-  'server', 'x-powered-by', 'set-cookie', 'location',
-]);
+
 
 function boundedHeaders(headers: DastProbeResponse['headers']): DastProbeResponse['headers'] {
   const b: DastProbeResponse['headers'] = {};
-  for (const n of INSPECTED_HEADERS) {
+  for (const n of INSPECTED_RESPONSE_HEADERS) {
     const v = headers[n];
     if (typeof v === 'string') b[n] = v.slice(0, 2048);
     else if (Array.isArray(v)) b[n] = v.slice(0, 5).map((e) => e.slice(0, 2048));
@@ -251,16 +249,20 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           if (activeMatch) findings.push(buildFinding(record, configuredUrl, endpoint, resp, activeMatch, observedAt));
         }
         // Dataset packs
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
         let allPackRules: typeof options.packRules = options.packRules as any;
         if (options.dataset?.configured) {
-          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length>0) allPackRules = ds as any; } catch {}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length>0) allPackRules = ds as any; } catch { /* fail closed: optional path */ }
         }
         if (allPackRules && allPackRules.length>0) {
           const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
           for (const packRule of allPackRules) {
             let matched=false;
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch {}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch { /* fail closed: optional path */ }
             if (matched) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const pm = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
               findings.push(buildFinding(record, configuredUrl, endpoint, resp, pm, observedAt));
               if (findings.length > MAX_FINDINGS_PER_SCAN) break;

@@ -6,7 +6,14 @@ export interface DastPackCheck {
   directive?: string;
   flag?: string;
   valuePattern?: string;
+  /** Optional scheme scope for header/body match checks (`http` | `https`). */
   requireScheme?: string;
+}
+
+/** Dataset pack.json identity, surfaced in scan metadata (loader checklist #6). */
+export interface DastPackMetadata {
+  packId: string;
+  version: string;
 }
 
 export interface DastRule {

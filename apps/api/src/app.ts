@@ -59,6 +59,7 @@ import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createFilesystemIntelligenceProvider } from './scans/sca/filesystemProvider.js';
 import { createDatasetService } from './external/service.js';
 import { createDatasetRoutes } from './external/routes.js';
+import { createGuidanceLookup } from './external/guidance.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
@@ -324,6 +325,10 @@ export function createApp(deps: AppDeps): App {
       ? createFilesystemIntelligenceProvider({ datasetPath: config.datasetPath, logger })
       : createNullIntelligenceProvider();
   const datasetService = createDatasetService({ datasetPath: config.datasetPath, providerId: config.vulnIntelProvider, logger });
+  // One shared, cached resolver so assistant / finding-detail / reports all
+  // surface the same dataset-backed guidance for a rule (or the same honest
+  // UNAVAILABLE fallback when no dataset is configured).
+  const guidance = createGuidanceLookup(datasetService);
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore, dataset: datasetService }),
@@ -378,8 +383,8 @@ export function createApp(deps: AppDeps): App {
       dastTargetPolicy,
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
-    ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock }),
-    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore }),
+    ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock, guidance }),
+    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore, guidance }),
     ...(deps.extraRoutes ?? []),
   ];
 

@@ -6,6 +6,7 @@
 import { STUDENT_LESSON_CATALOG, type StudentLessonInternal } from '../student/lessons.js';
 import type { DatasetService } from './service.js';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
 function convertDatasetLesson(raw: any): StudentLessonInternal | undefined {
   if (raw?.schemaVersion !== 'drobon.learning.lesson/v1') return undefined;
   if (typeof raw.id !== 'string' || !/^lsn_[a-z0-9_]{3,40}$/.test(raw.id)) return undefined;
@@ -24,6 +25,7 @@ function convertDatasetLesson(raw: any): StudentLessonInternal | undefined {
       fixInstruction: raw.practice?.fixInstruction ?? '',
       fixedFiles: Array.isArray(raw.practice?.fixedFiles) ? raw.practice.fixedFiles : [],
     },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     quiz: raw.quiz.map((q: any) => ({
       prompt: q.prompt ?? '',
       options: Array.isArray(q.options) ? q.options : [],
@@ -41,7 +43,7 @@ export async function getMergedLessons(dataset: DatasetService): Promise<readonl
       const conv = convertDatasetLesson(r);
       if (conv && !base.some(b => b.id === conv.id)) base.push(conv);
     }
-  } catch {}
+  } catch { /* fail closed: optional path */ }
   return base;
 }
 

@@ -118,6 +118,14 @@ export const SAST_LANGUAGE_CATALOG: readonly SastLanguageFamily[] = [
   { id: 'github-actions', label: 'GitHub Actions YAML', maturity: 'CONFIG_ANALYSIS', platforms: ['infra'], note: 'Content tie-break from YAML (`runs-on:` + `jobs:`/`on:` — snapshot paths cannot contain `.github` dotfile segments). Dangerous `permissions: write-all`.' },
   { id: 'android-manifest', label: 'AndroidManifest.xml', maturity: 'CONFIG_ANALYSIS', platforms: ['mobile'], filenames: ['androidmanifest.xml'], note: 'Exported-component detection.' },
 
+  // ---- Dataset configuration formats (GAP-040 reachability) ----
+  // One shared family for the 60+ daemon/template ids used by the external
+  // Drobon-Dataset packs. CONFIG_ANALYSIS keeps these files analyzed by the
+  // same bounded, lexical engine; the pack rule's own pattern decides whether
+  // it fires. Detection is by exact filename or a non-conflicting extension,
+  // so existing family detection is unchanged.
+  { id: 'config-file', label: 'Dataset configuration formats', maturity: 'CONFIG_ANALYSIS', platforms: ['config', 'infra'], extensions: ['.ini', '.conf', '.cfg', '.properties', '.tcl', '.bas', '.pas', '.vba', '.awk', '.bat', '.cmd', '.asp', '.cfm', '.gradle', '.service', '.socket', '.timer'], filenames: ['nginx.conf', 'httpd.conf', 'sshd_config', 'my.cnf', 'postgresql.conf', 'redis.conf', 'named.conf', 'smb.conf', 'docker-compose.yml', 'docker-compose.yaml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'jenkinsfile', 'vault.hcl', 'grafana.ini', 'logrotate.conf', 'rsyslog.conf', 'squid.conf', 'traefik.toml', 'supervisord.conf', 'sudoers', 'login.defs', 'proftpd.conf', 'unbound.conf', 'caddyfile', 'mongod.conf', 'haproxy.cfg', 'postfix.cf'], note: 'Shared family for dataset-tagged server/template config ids; rules are gated by their own patterns, never by a claimed parser.' },
+
   // ---- Optional / honestly unsupported (audited, refused) ----
   { id: 'assembly', label: 'Assembly', maturity: 'UNSUPPORTED', platforms: ['native'], extensions: ['.s', '.asm'], note: 'Detected and counted; source-only SAST cannot make memory-safety claims here.' },
   { id: 'matlab', label: 'MATLAB', maturity: 'UNSUPPORTED', platforms: ['data'], note: '`.m` defaults to Objective-C unless MATLAB markers win the content tie-break; then still UNSUPPORTED (no rules).' },

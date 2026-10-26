@@ -330,11 +330,13 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
   // let the app's dataset service provide DPK rules instead.
   const effectiveDastTargetPolicy = dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] });
   const effectiveDastTransport = dastTransport ?? FIXTURE_DAST_TRANSPORT;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   const hasRealDataset = (configOverrides as any).datasetPath !== undefined || overrides.vulnIntelProvider === 'filesystem';
   const effectiveScanEngines = scanEngines ?? (hasRealDataset ? undefined : [
     createSastEngine({ sources: resolvedSourceStore, rules: TEST_SAST_RULES }),
     createScaEngine({ sources: resolvedSourceStore, provider: createNullIntelligenceProvider() }),
     createSecretsEngine({ sources: resolvedSourceStore, rules: TEST_SECRETS_RULES }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, packRules: TEST_DAST_RULES as any }),
   ]);
   const started: StartedServer = await startServer({

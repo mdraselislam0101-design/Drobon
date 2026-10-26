@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { isFinding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
-import { TEST_SAST_RULES } from './fixtures/testData.js';
+import { ALL_TEST_SAST_RULES } from './fixtures/testData.js';
 import {
   createSastEngine,
   type SourceSnapshotProvider,
@@ -14,7 +14,6 @@ import {
   MAX_FLOW_VARS,
   flowRulesForFamily,
 } from '../src/scans/sast/semantic.js';
-import { SAST_RULES } from '../src/scans/sast/rules.js';
 
 /**
  * Bounded semantic layer tests (deep-semantic pump).
@@ -69,16 +68,16 @@ describe('literal masking', () => {
 });
 
 describe('bounded flow analysis (unit)', () => {
-  const flowRules = flowRulesForFamily('javascript', SAST_RULES);
-  const pyFlowRules = flowRulesForFamily('python', SAST_RULES);
+  const flowRules = flowRulesForFamily('javascript', ALL_TEST_SAST_RULES);
+  const pyFlowRules = flowRulesForFamily('python', ALL_TEST_SAST_RULES);
 
-  test('flow rules are registered for the right families (fixtures have none — dataset provides them)', () => {
+  test('flow rules are registered for the right families (test-only flow fixtures)', () => {
     const jsIds = flowRules.map((r) => r.id).sort();
     expect(jsIds).toEqual(['DG-SAST-048', 'DG-SAST-049', 'DG-SAST-050']);
     const pyIds = pyFlowRules.map((r) => r.id).sort();
     expect(pyIds).toEqual(['DG-SAST-048', 'DG-SAST-049', 'DG-SAST-050']);
     // A config family has no flow rules at all.
-    expect(flowRulesForFamily('yaml', SAST_RULES)).toEqual([]);
+    expect(flowRulesForFamily('yaml', ALL_TEST_SAST_RULES)).toEqual([]);
   });
 
   test('positive: source → variable → sink across lines fires at the SINK line', () => {
@@ -254,7 +253,7 @@ function providerFor(record: SourceSnapshotRecord | undefined): SourceSnapshotPr
 const ctx = { signal: new AbortController().signal };
 
 async function scan(files: Array<{ path: string; content: string }>): Promise<ReturnType<ReturnType<typeof createSastEngine>['execute']>> {
-  const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(files)) });
+  const engine = createSastEngine({ rules: ALL_TEST_SAST_RULES, sources: providerFor(snapshot(files)) });
   return engine.execute(scanRecord(), ctx);
 }
 

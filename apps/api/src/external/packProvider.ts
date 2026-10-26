@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- external dataset JSON is untrusted and shape-checked before use. */
 /**
  * Pack providers — convert Drobon-Dataset pack JSON (data) into engine-ready rules.
  * Each pack rule is validated minimally and compiled to RegExp where needed.
@@ -7,6 +8,11 @@
 import type { SastRule } from '../scans/sast/rules.js';
 import type { SecretsRule } from '../scans/secrets/rules.js';
 import type { DastRule } from '../scans/dast/packTypes.js';
+import { SAST_LANGUAGE_CATALOG } from '../scans/sast/languages.js';
+import { resolvePackLanguages } from './languageAliases.js';
+import { DAST_CHECK_TYPES } from './evaluator.js';
+
+const APP_CATALOG_IDS: ReadonlySet<string> = new Set(SAST_LANGUAGE_CATALOG.map((family) => family.id));
 
 function compilePattern(source: string, flags?: string): RegExp | undefined {
   try {
@@ -43,7 +49,7 @@ export function convertSastPackToRule(raw: any): SastRule | undefined {
     remediation: typeof raw.remediation === 'string' ? raw.remediation : '',
     limitation: typeof raw.limitation === 'string' ? raw.limitation : '',
     patterns,
-    languages: Array.isArray(raw.languages) ? raw.languages : undefined,
+    languages: resolvePackLanguages(raw.languages, APP_CATALOG_IDS),
   } as unknown as SastRule;
 }
 
@@ -97,6 +103,9 @@ export function convertDastPackToRule(raw: any): DastRule | undefined {
   if (raw?.schemaVersion !== 'drobon.pack.dast/v1') return undefined;
   if (typeof raw.id !== 'string' || !/^DPK-DAST-\d+$/.test(raw.id)) return undefined;
   if (!raw.check || typeof raw.check.type !== 'string') return undefined;
+  // Fail closed on an unknown check type: a silent `false` would let a pack
+  // claim coverage it cannot deliver (loader checklist step 1).
+  if (!DAST_CHECK_TYPES.includes(raw.check.type)) return undefined;
   return {
     id: raw.id,
     title: raw.title,

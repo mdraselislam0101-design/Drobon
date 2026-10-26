@@ -11,6 +11,24 @@ SCA (Pump 9), SECRETS (Pump 10), and limited passive DAST (Pump 11)
 are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
 `docs/DAST.md`).
 
+> **CURRENT STATE (2026-10-26) — read this first.** The embedded `DG-SAST-*`
+> rule catalog described in the historical sections below was **removed** by
+> the dataset-decoupling work. `apps/api/src/scans/sast/rules.ts` now exports
+> an empty registry; all 1,000 SAST rules come from the external
+> `Drobon-Dataset` `packs/sast/v1/rules/*.json` at runtime (see
+> `docs/DATASET_CONNECTION.md`). With no dataset configured the engine
+> produces **0 findings** and startup logs a warning — it does not silently
+> fall back to the 50 rules described below. Sections that enumerate
+> `DG-SAST-###` ids are kept as design history for the engine/flow layer,
+> not as a description of shipped data.
+>
+> Loader conformance: every pack rule is closed-field validated, ReDoS-linted
+> and its declared tests are executed before it reaches the engine
+> (`apps/api/src/external/conformance.ts`). Pack language ids are resolved
+> through `apps/api/src/external/languageAliases.ts`; files of a catalog
+> family marked `SYNTAX_ONLY`/`UNSUPPORTED` are analyzed **only when a loaded
+> dataset rule targets that family** (see `engine.ts` `ruleFamilies`).
+
 ## Threat model (why the design looks this way)
 
 The uploaded snapshot is **attacker-controlled input**. Every design
@@ -105,11 +123,11 @@ states the truthful maturity of every family:
 | -------- | ------- | -------- |
 | `FULL` | parser + AST + semantic/dataflow depth | **0** (reached by none) |
 | `PARTIAL` | real deterministic security rules + evidence + fingerprint + remediation + retest + report/SARIF + tests (pattern depth) | 32: JavaScript, TypeScript, JSX, TSX, Python, Java, Kotlin, Groovy, Scala, C, C++, Objective-C, Objective-C++, C#, VB.NET, PHP, Go, Rust, Ruby, Swift, Dart, Lua, Perl, Solidity, Bash, POSIX Shell, PowerShell, Apex, Elixir, Erlang, R, Julia |
-| `CONFIG_ANALYSIS` | configuration security analysis in the same pipeline | 8: SQL, XML, YAML, JSON, Dockerfile, Terraform/HCL, GitHub Actions YAML, AndroidManifest.xml |
-| `SYNTAX_ONLY` | detected and catalogued; no rules; skipped and counted | 2: HTML, CSS |
-| `UNSUPPORTED` | honest refusal; skipped and counted, never guessed | 11: Clojure, Haskell, OCaml, Assembly, MATLAB, Fortran, COBOL, Crystal, Zig, Nim, V |
+| `CONFIG_ANALYSIS` | configuration security analysis in the same pipeline | 9: SQL, XML, YAML, JSON, Dockerfile, Terraform/HCL, GitHub Actions YAML, AndroidManifest.xml, `config-file` (shared family for 60+ dataset config ids) |
+| `SYNTAX_ONLY` | detected and catalogued; no built-in rules; skipped unless a loaded dataset rule targets the family | 2: HTML, CSS |
+| `UNSUPPORTED` | honest refusal with no built-in rules; skipped unless a loaded dataset rule targets the family | 11: Clojure, Haskell, OCaml, Assembly, MATLAB, Fortran, COBOL, Crystal, Zig, Nim, V |
 
-**Total: 53 language/configuration families across web / backend /
+**Total: 54 language/configuration families across web / backend /
 mobile / desktop / native / config / infra / data platforms.** Counts
 are DERIVED from the catalog (`sastMaturityCounts()`), never
 hand-written.

@@ -81,6 +81,9 @@ describe('scan vocabulary', () => {
       'DAST_REQUEST_FAILED',
       'DAST_REQUEST_TIMEOUT',
       'DAST_SCAN_TIMEOUT',
+      // Bounded active-DAST consent gates (apps/api/src/scans/dast/activeEngine.ts).
+      'DAST_ACTIVE_CONSENT_REQUIRED',
+      'DAST_ACTIVE_NOT_ALLOWED',
     ]);
   });
 

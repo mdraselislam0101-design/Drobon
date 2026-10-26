@@ -180,6 +180,7 @@ function evidenceFromLine(
   rule: SecretsRule,
   rawLine: string,
   match: { column: number; text: string },
+  activeRules: readonly SecretsRule[],
 ): string {
   if (rule.matchOnlyEvidence === true) {
     // Safe by contract: the match text carries no secret material.
@@ -206,7 +207,7 @@ function evidenceFromLine(
   // span ANY rule resolved on this line, so the evidence cannot leak
   // the neighbours either.
   const spans: Array<{ start: number; end: number }> = [{ start: absStart, end: absEnd }];
-  for (const other of SECRETS_RULES) {
+  for (const other of activeRules) {
     if (other.matchOnlyEvidence === true) {
       continue; // Header-only rules match safe text, never material.
     }
@@ -264,7 +265,7 @@ function evidenceFromLine(
   // catches a second, DIFFERENT value of the same rule on one line
   // (its matcher returns the first match only, so the neighbour was
   // not blanked above) — the whole evidence fails closed.
-  for (const other of SECRETS_RULES) {
+  for (const other of activeRules) {
     if (other.matchOnlyEvidence === true) {
       continue;
     }
@@ -366,7 +367,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
       let effectiveRules: readonly SecretsRule[] = options.rules ?? SECRETS_RULES;
       if (options.dataset?.configured) {
-        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch {}
+        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch { /* fail closed: optional path */ }
       }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
@@ -454,7 +455,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
               continue;
             }
             seenRuleLine.add(dedupeKey);
-            const evidence = evidenceFromLine(rule, line, match);
+            const evidence = evidenceFromLine(rule, line, match, effectiveRules);
             const fingerprint = findingFingerprint({
               scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
               location: file.path, line: index + 1, evidence,

@@ -1552,6 +1552,7 @@ export function toScanDetailResponse(record: ScanRecord): ScanDetail {
 
 /** The public scan shape (no ownerId, no internals) for API responses. */
 export function toScanResponse(record: ScanRecord): Scan {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   const sharedScan: any = {
     id: record.id,
     projectId: record.projectId,

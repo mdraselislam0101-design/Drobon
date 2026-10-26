@@ -93,7 +93,7 @@ export function createFilesystemIntelligenceProvider(
 ): VulnerabilityIntelligenceProvider {
   const { datasetPath, logger } = options;
   let loaded = false;
-  let records: DatasetRecord[] = [];
+  const records: DatasetRecord[] = [];
   let loadError: string | null = null;
 
   async function ensureLoaded(): Promise<void> {

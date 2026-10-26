@@ -791,6 +791,7 @@ function ScansSection({
           ? crypto.randomUUID()
           : `web-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
       const dastOpts = scanType === 'DAST' ? { dastMode, ...(dastMode === 'ACTIVE_SAFE' ? { dastActiveConsent: dastConsent } : {}) } : undefined;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       await client.createScan(projectId, scanType, key, undefined, assessmentId.length === 0 ? undefined : assessmentId, dastOpts as any);
       await load();
     } catch (error: unknown) {
@@ -849,8 +850,8 @@ function ScansSection({
           {scanType === 'DAST' && dastTargetUrl !== undefined && (
             <div className="field" style={{ border: '1px solid var(--border)', padding: '0.75rem', borderRadius: '8px', background: dastMode === 'ACTIVE_SAFE' ? 'var(--bg-caution, #fff8e1)' : undefined }}>
               <label htmlFor="dast-mode">DAST mode</label>
-              <select id="dast-mode" value={dastMode} onChange={(event) => setDastMode(event.target.value as any)} data-testid="dast-mode-select">
-                <option value="PASSIVE">Passive — bounded GET + header checks (≤3 requests, safe)</option>
+              <select id="dast-mode" value={dastMode} onChange={(event) => setDastMode(event.target.value as 'PASSIVE' | 'ACTIVE_SAFE')} data-testid="dast-mode-select">
+                <option value="PASSIVE">Passive — bounded GET requests + header checks (≤3 requests, safe)</option>
                 <option value="ACTIVE_SAFE">Active Safe — crawl + safe injection probes (≤20 requests, consent required)</option>
               </select>
               <p className="field-hint">Passive: no crawl/injection, headers/body only. Active Safe: same-host crawl (≤10 links) + 1 safe payload per param (XSS/SQLi/redirect/traversal/CRLF) via GET query param; throttled 200ms; public-address &amp; HTTPS downgrade blocked; ≤10 injections.</p>
@@ -882,7 +883,7 @@ function ScansSection({
           </button>
           <p className="muted">
             SAST, Secrets and SCA analyze the uploaded source snapshot; files are never executed, credentials are never verified, and secret evidence is redacted before persistence.
-            SCA advisories remain not assessed without a vulnerability dataset. DAST Passive: bounded GET + header checks (≤3). DAST Active Safe: same-host crawl (≤10) + safe GET injection probes (≤10) with 200ms throttle; reflected-payload observations only — not proof of exploitability; absence is not proof of safety.
+            SCA advisories remain not assessed without a vulnerability dataset. DAST Passive: bounded GET requests + header checks (≤3). DAST Active Safe: same-host crawl (≤10) + safe GET injection probes (≤10) with 200ms throttle; reflected-payload observations only — not proof of exploitability; absence is not proof of safety.
             It does not use a browser, execute JavaScript, authenticate, crawl, fuzz, or exploit. Configure a target above to enable DAST.
           </p>
           {formError !== null && (

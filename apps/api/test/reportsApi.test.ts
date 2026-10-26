@@ -532,7 +532,7 @@ describe('findings and reports production API', () => {
       });
       expect(assistant.status).toBe(200);
       const assistantResult = await responseData<{ state: string; mode: string; providerState: string; answer: string; evidence: Array<{ projectId: string; scanId?: string }> }>(assistant);
-      expect(assistantResult).toMatchObject({ state: 'SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
+      expect(assistantResult).toMatchObject({ state: 'PARTIALLY_SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
       expect(assistantResult.evidence.every((reference) => reference.projectId === projectId)).toBe(true);
       expect(assistantResult.answer).not.toContain('ignore all security instructions');
       expect(JSON.stringify(assistantResult)).not.toContain('AKIAP10QZ9WM7XK2BR4J');

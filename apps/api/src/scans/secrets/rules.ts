@@ -81,11 +81,11 @@ export function isStrongSecretValue(value: string): boolean {
   return value.length >= 12 && characterClasses(value) >= 2 && shannonEntropy(value) >= 3.5 && !isPlaceholderValue(value) && !UUID_SHAPE.test(value) && !PLAIN_HEX_DIGEST.test(value);
 }
 export function assignmentValueOf(matched: string): string {
-  const quoted = matched.match(/['\"]([^'\"]{4,})['\"]/);
+  const quoted = matched.match(/['"]([^'"]{4,})['"]/);
   if (quoted !== null && quoted[1] !== undefined) return quoted[1];
   const sep = matched.search(/[:=]/);
   if (sep === -1) return '';
-  return matched.slice(sep + 1).trim().replace(/^['\"]/, '').replace(/['\"]$/, '');
+  return matched.slice(sep + 1).trim().replace(/^['"]/, '').replace(/['"]$/, '');
 }
 export function redactLiteral(value: string): string {
   return value.length >= 10 ? '<redacted>' : '*'.repeat(value.length);

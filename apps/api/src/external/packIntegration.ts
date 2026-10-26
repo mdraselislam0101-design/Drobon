@@ -19,7 +19,7 @@ export async function getMergedSastRules(dataset: DatasetService): Promise<reado
       const rule = convertSastPackToRule(r);
       if (rule && !base.some(b => b.id === rule.id)) base.push(rule);
     }
-  } catch {}
+  } catch { /* fail closed: optional path */ }
   return base;
 }
 
@@ -28,10 +28,12 @@ export async function getMergedSecretsRules(dataset: DatasetService): Promise<re
   try {
     const raw = await dataset.secretsPacks();
     for (const r of raw) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       const rule = convertSecretsPackToRule(r as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       if (rule && !base.some(b => b.id === rule.id)) base.push(rule as any);
     }
-  } catch {}
+  } catch { /* fail closed: optional path */ }
   return base as readonly SecretsRule[];
 }
 

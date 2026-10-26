@@ -1,148 +1,162 @@
-# Dataset Connection — Main App ↔ Drobon-Dataset (Full Unlock)
+# Dataset Connection — Main App ↔ Drobon-Dataset
 
-This document explains how the **main app** (`mdraselislam0101-design/Drobon`) connects to the **external dataset repo** (`mdraselislam0101-design/Drobon-Dataset`) **without ever committing dataset files into the app repo**.
+**Verified 2026-10-26** against App branch `arena/5bb07bd8-drobon` and
+`mdraselislam0101-design/Drobon-Dataset` @ `3986082`. Machine-readable evidence:
+[`DATASET_INTEGRATION_EVIDENCE.json`](DATASET_INTEGRATION_EVIDENCE.json) (counts only,
+no dataset bytes). Full analysis: [`DATASET_INTEGRATION_AUDIT_2026-10-26.md`](DATASET_INTEGRATION_AUDIT_2026-10-26.md).
 
-The app repo enforces an absolute dataset lock: no `cve/nvd/ghsa/osv/cve` files may be committed (checked by `scripts/check-boundaries.mjs`). The dataset lives in its own repo; the app only *reads* it at runtime via server-side filesystem providers.
+The app enforces an **absolute dataset lock**: no advisory, rule, remediation or
+lesson *data* is committed here (`scripts/check-boundaries.mjs`,
+`scripts/check-repo-integrity.mjs`). The data lives in its own repo; this app only
+**reads** it at runtime from a server-side filesystem path. Code (engines,
+evaluators, validators, resolvers) lives here — that split is the product design.
 
-## What is now unlocked (all UserTypes)
+## What is actually loaded (measured, not assumed)
 
-A single env switch unlocks **all** dataset-backed categories. `VULN_INTEL_PROVIDER` was the original SCA lock; it now gates the entire external content surface (SCA + packs + knowledge + audiences) — one mount, one honesty model.
+| Category | Dataset path | App consumer | Loaded | Runtime status |
+|---|---|---|---:|---|
+| SCA vuln-intel | `vuln-intel/{npm,pypi}/*.json` | `scans/sca/filesystemProvider.ts` | 100 files / 84 identity items / 78 advisory ids | `DATASET_AVAILABLE` |
+| SAST packs | `packs/sast/v1/rules/*.json` | `external/conformance.ts` → `packIntegration.ts` → `SastEngine` | 1,000 | `AVAILABLE` (`drobon-sast-starter@1.0.0`) |
+| Secrets packs | `packs/secrets/v1/rules/*.json` | same → `SecretsEngine` | 1,000 | `AVAILABLE` (`drobon-secrets-starter@1.0.0`) |
+| DAST packs | `packs/dast/v1/rules/*.json` | same → `DastEngine` / active engine | 1,007 | `AVAILABLE` (`drobon-dast-starter@1.0.0`) |
+| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` (status + inspection) | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **loaded, not evaluated in scans** |
+| Remediation | `knowledge/remediation/*.json` | `external/guidance.ts` → assistant / finding detail / reports | 4,007 | `AVAILABLE`, surfaced as `RULE_SPECIFIC` |
+| CWE | `knowledge/cwe/*.json` | `external/knowledge.ts` | 102 | `AVAILABLE` |
+| Lessons | `learning/lessons/*.json` | `external/lessonProvider.ts` | 6 (2 `lsn_dev_*`) | `AVAILABLE` |
+| Assessment templates | `assessments/templates/*.json` | dataset status surface | 3 | `AVAILABLE` |
+| Engagement templates | `engagements/*.json` | dataset status surface | 2 | `AVAILABLE` |
 
-| Category | Dataset path | App consumer | UserType | Honest state |
-|---|---|---|---|---|
-| **SCA vuln-intel** | `vuln-intel/{npm, pypi}/*.json` (100 GHSA) | `createFilesystemIntelligenceProvider` → `assess(coordinates)` | All | `DATASET_AVAILABLE`/`UNAVAILABLE`/`NOT_CONFIGURED` |
-| **SAST packs** | `packs/sast/v1/rules/*.json` (950) | `SastEngine` merges `DG-SAST-*` (50 built-in) + `DPK-SAST-*` (dataset) per scan | All (Student/Developer verify via practice) | `AVAILABLE` when 950 loaded else embedded-only |
-| **Secrets packs** | `packs/secrets/v1/rules/*.json` (97) | `SecretsEngine` merges `DG-SEC-*` + `DPK-SEC-*` | All | Same |
-| **DAST packs** | `packs/dast/v1/rules/*.json` (263) | `DastEngine` evaluates built-in 8 DG-DAST-* + dataset checks via `http-url`/`missing-header`/etc. | PENTESTER (passive) | Same |
-| **Remediation** | `knowledge/remediation/*.json` (1310) | `assistant` + `reports` + finding `remediation` (dataset value preferred) | DEVELOPER (primary) | `AVAILABLE` 1310 |
-| **CWE** | `knowledge/cwe/*.json` (68) | CWE reference resolver | All | `AVAILABLE` 68 |
-| **Lessons** | `learning/lessons/*.json` (6; 2 `lsn_dev_*`) | `GET /api/v1/student/lessons` merges 4 embedded + 6 dataset = 10 | STUDENT (6), DEVELOPER (2) | `byUserType: {DEVELOPER:2, STUDENT:6}` |
-| **Assessment templates** | `assessments/templates/*.json` (3) | `GET /api/v1/dataset/status` + future assessment-create template picker | SECURITY_PROFESSIONAL | `AVAILABLE` 3 |
-| **Engagement templates** | `engagements/*.json` (2) | Same status surface | PENTESTER (passive-only) | `AVAILABLE` 2 |
+**There is no built-in fallback.** `SAST_RULES`, `SECRETS_RULES`, the old DAST
+checks and the embedded lesson/remediation catalogs are empty by design. With
+`VULN_INTEL_PROVIDER=none` the app starts — loudly — with 0 scanner rules, 0
+lessons, `UNAVAILABLE` guidance and SCA `NOT_ASSESSED`. Startup log:
 
-Shared status endpoint: `GET /api/v1/dataset/status` (auth required) — honest counts for every category, plus `/api/v1/dataset/packs/:kind` and `/api/v1/dataset/lessons` for inspection.
+```
+[dataset] STARTUP: VULN_INTEL_PROVIDER=none — no external Drobon-Dataset.
+SAST/Secrets/DAST have 0 rules, remediation is UNAVAILABLE, SCA stays NOT_ASSESSED.
+```
+
+That is an honest degraded mode, **not** a silent product that "detects nothing
+but looks fine". Operators must mount the dataset.
 
 ## Architecture
 
 ```
-Drobon/                     (main app — code only, VULN_INTEL_PROVIDER=none by default)
+Drobon/                                   (code only; no dataset bytes)
   apps/api/src/scans/sca/
-    provider.ts            — Null provider (locked default, NO_DATA_LOADED)
-    filesystemProvider.ts  — Filesystem provider (DATASET_AVAILABLE, loads external corpus)
-    range.ts               — npm semver + PEP 440 evaluator (copied from dataset repo)
-  apps/api/src/external/   — Unified dataset service (filesystem, read-only, cached)
-    service.ts             — Loads all categories from DATASET_PATH, exposes status
-    packProvider.ts        — DPK-* → engine rule conversion (validated, ReDoS-linted)
-    lessonProvider.ts      — Merges embedded 4 + dataset 6 lessons
-    evaluator.ts           — 7 DAST pack check types (PACKS.md)
-    knowledge.ts           — Remediation/CWE lookups
-  .env                     — VULN_INTEL_PROVIDER=filesystem + DATASET_PATH=../Drobon-Dataset
+    filesystemProvider.ts                — advisory matches from DATASET_PATH
+    range.ts                             — npm semver / PEP 440 evaluator
+  apps/api/src/external/
+    service.ts                           — one cached loader for all 10 categories
+    conformance.ts                       — closed-field validation, ReDoS lint, declared tests
+    evaluator.ts / setCookie.ts          — browser-accurate DAST check semantics
+    languageAliases.ts                   — 115 pack language ids → App families
+    packProvider.ts / packIntegration.ts — DPK-* → engine rules
+    knowledge.ts / guidance.ts           — remediation + CWE lookups (cached)
+    lessonProvider.ts                    — dataset lesson catalog
+    routes.ts / types.ts                 — honest status surface
+  apps/api/src/scans/dast/observedHeaders.ts — 57 inspected response headers
+  scripts/verify-dataset.mjs            — real integration verification (tsx)
 
-Drobon-Dataset/             (external — never committed to Drobon/)
-  vuln-intel/npm|pypi      — 100 GHSA advisories
-  packs/sast|secrets|dast  — 1310 rules (950/97/263)
-  knowledge/remediation|cwe — 1310 + 68
-  learning/lessons         — 6 (2 dev)
-  assessments/templates    — 3
-  engagements              — 2 (passive-only)
-  interop/provider-vectors — 16 pinned vectors
+Drobon-Dataset/                           (external, never committed here)
+  vuln-intel/ · packs/{sast,secrets,dast,sca}/v1/ · knowledge/ · learning/
+  assessments/ · engagements/ · interop/provider-vectors.json
 ```
 
-In production the dataset can be mounted as a volume, EFS/NFS, or a future DB service — the app only needs a filesystem path. No dataset is ever vendored.
+Status endpoint: `GET /api/v1/dataset/status` (auth required) returns every
+category plus `vulnIntelCounts` (files / identity items / advisory ids), `packs`
+(packId + version per family) and `conformance` (accepted, declared/executed/
+skipped/failed tests, rejected rules). Inspection:
+`GET /api/v1/dataset/packs/:kind` (`sast|secrets|dast|sca`) and
+`GET /api/v1/dataset/lessons`.
 
-## How engines use the dataset
+## Loader contract (fail closed)
 
-1. **Inventory first**: SCA/SAST/Secrets/DAST ALWAYS produce inventory/findings even with no dataset — honest `NOT_ASSESSED`/`NO_DATA_LOADED` when nothing loaded.
-2. **Provider seams**: 
-   - SCA: `assess(coordinates)` receives only `{ ecosystem, name, version?, dependencyId }`
-   - SAST/Secrets: engine receives merged rule list (`DG-*` + `DPK-*`) per scan (dataset packs validated, ReDoS-linted, compiled to RegExp; failures fail-closed)
-   - DAST: built-in 8 checks + dataset pack checks evaluated per response
-   - Lessons: merged catalog, `answerIndex` stripped for public projection (same as embedded)
-3. **Honest states** for every category: `AVAILABLE` (loaded, count), `UNAVAILABLE` (path wrong), `NOT_CONFIGURED` (provider `none`). Scans still COMPLETE with `NOT_ASSESSED` when unavailable — never fabricate.
+1. Every pack file is checked against a **closed field set**, its
+   `schemaVersion`, id pattern, severity and check type. Unknown fields or an
+   unknown check type are refused, not silently evaluated as `false`.
+2. Every regex passes a conservative **static ReDoS lint** and must compile.
+3. Every **declared test** is executed at load time through the same app
+   evaluator used in scans. A rule whose own examples disagree is refused.
+   Measured: SAST 4,043 / secrets 4,660 / DAST 3,673 declared tests, **0
+   failures, 0 rejected rules**.
+4. SCA declaration rules (1,000 / 4,001 declared tests) are **shape-validated
+   but not evaluated**: the app has no declaration-document evaluator. The
+   status surface reports `scaDeclarationEvaluator: "NOT_IMPLEMENTED"` and
+   counts those tests as `skippedTests`, never as passing. This is an open
+   workload, not hidden success.
+5. `pack.json` identity (`packId` + `version`) is surfaced on the status and
+   pack-inspection routes, so a finding's `DPK-*` rule id can be traced to a
+   dataset version. Per-finding stamping still requires a shared-contract
+   change and is listed as remaining work in the audit.
 
-See `docs/SCA.md`, `docs/SAST.md`, `docs/SECRETS.md`, `docs/DAST.md` and dataset's `docs/PROVIDER_MAPPING.md`/`PACKS.md`/`AUDIENCES.md`.
+## Provider status mapping (dataset ↔ scan state)
 
-## Local Development — 3 Steps
+Both repos now state the same table (dataset `interop/APP_CONFORMANCE.md` §5):
 
-### 1. Clone the dataset as a sibling (one time)
+| Provider dataset status | Advisories | Scan state | Honest meaning |
+|---|---|---:|---|---|
+| `NO_DATA_LOADED` (provider `none`) | 0 | `NOT_ASSESSED` | no data was consulted |
+| `DATASET_UNAVAILABLE` (bad path) | 0 | `NOT_ASSESSED` | data not reachable at scan time |
+| `DATASET_AVAILABLE`, coordinate absent | 0 | `NOT_ASSESSED` | not in this corpus — **not** "clean" |
+| `DATASET_AVAILABLE`, version outside every range | 0 | `NOT_ASSESSED` | no advisory in this dataset version applies |
+| `DATASET_AVAILABLE`, range matched | ≥1 | `ASSESSED` | verified match with provenance |
+
+**Counting:** the App's `vulnIntel.count` is the raw **file** count (100).
+`vulnIntelCounts.identityItems` (84) and `advisoryIds` (78) are the canonical
+deduplicated counters defined by the dataset's `docs/COUNTING_POLICY.md`.
+All three are now reported; none is presented as the other.
+
+## Local development
 
 ```bash
-node scripts/sync-dataset.mjs
-# → clones https://github.com/mdraselislam0101-design/Drobon-Dataset.git to ../Drobon-Dataset
-# Or custom:
-node scripts/sync-dataset.mjs --path /opt/drobon-dataset
-# Verify:
-node scripts/sync-dataset.mjs --check
+# 1. One-time: clone the dataset OUTSIDE the app repo
+npm run sync:dataset                      # → ../Drobon-Dataset
+npm run check:dataset                     # verify the checkout
+
+# 2. Configure (or put these in .env)
+export VULN_INTEL_PROVIDER=filesystem
+export DATASET_PATH=../Drobon-Dataset
+
+# 3. Verify the connection with REAL app modules (needs no server, no network)
+npm run verify:dataset -- --path ../Drobon-Dataset --write
+
+# 4. Run the product
+npm ci && npm run dev
 ```
 
-Does NOT modify app repo git index — outside, ignored by `.gitignore`.
+`verify:dataset` prints and (with `--write`) saves a JSON evidence file. Its
+checks: all category counts, loader conformance, DAST declared-test parity,
+DAST header reachability, SAST language reachability, the 16 pinned
+`interop/provider-vectors.json` SCA vectors, and remediation surfacing. It
+exits non-zero on any failure, so it is usable as a CI gate when a dataset
+checkout is available.
 
-### 2. Configure the app to use it
+Verify endpoints (authenticated): `/api/v1/dataset/status`,
+`/api/v1/dataset/packs/dast`, `/api/v1/dataset/lessons`. SCA example:
+`fast-jwt@6.2.4` → 6 advisories, `ASSESSED` / `DATASET_AVAILABLE`.
 
-```bash
-VULN_INTEL_PROVIDER=filesystem
-DATASET_PATH=../Drobon-Dataset
-```
+## Known limits / owner decisions
 
-- Must be `none` or `filesystem` (any other fails fast)
-- `DATASET_PATH` only allowed when `filesystem` (fail-closed)
-- In `production`, `:memory:` stores rejected but filesystem provider allowed
-
-### 3. Run
-
-```bash
-npm ci
-npm run dev
-# or
-VULN_INTEL_PROVIDER=filesystem DATASET_PATH=../Drobon-Dataset npm run dev:api
-```
-
-Verify:
-- `GET /api/v1/dataset/status` → all `AVAILABLE` with counts 100/950/97/263/1310/68/6/3/2
-- `GET /api/v1/student/lessons` → 10 (4 embedded + 6 dataset)
-- SCA: `fast-jwt@6.2.4` → 6 advisories ASSESSED/DATASET_AVAILABLE
-- SAST: `eval(userInput)` → `DPK-SAST-001` finding
-- Secrets: `AKIA...` → `DPK-SEC-001` finding
-
-Without dataset: same calls → `NOT_CONFIGURED`/`NO_DATA_LOADED` + embedded-only findings (4 lessons, 50 SAST rules) — honest absence.
-
-## Production Options
-
-| Mode | Setup | Pros |
-|------|-------|------|
-| **Sidecar volume** | Mount at `/opt/drobon-dataset` in API container | Simple, no network |
-| **Shared NFS/EFS** | One mount, many replicas | One pull |
-| **HTTP provider (future)** | `createHttpIntelligenceProvider` → `GET /vuln-intel?...` | Independent scaling |
-
-All providers read-only, bounded, side-effect-free — never execute dataset content.
-
-## Updating the dataset
-
-```bash
-node scripts/sync-dataset.mjs  # pull --ff-only
-# No rebuild needed — next assess/scan loads via lazy cache; restart to force reload
-```
-
-## Verification
-
-```bash
-npm run check:boundaries   # PASS
-npm run test --workspace @drobon/api  # 812/812
-npm run test --workspace @drobon/shared # 183/183
-GET /api/v1/dataset/status --auth   # counts validated
-GET /api/v1/student/lessons --auth  # 10 when configured
-```
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `VULN_INTEL_PROVIDER must be one of none, filesystem` | lowercase `filesystem` |
-| `DATASET_PATH must be set when ...filesystem` | Set `DATASET_PATH` |
-| `DATASET_UNAVAILABLE` | `node scripts/sync-dataset.mjs --check` |
-| `NO_DATA_LOADED` | Switch to `filesystem` |
+- **SCA declaration pack (1,000 rules)**: loaded and validated, 0 rules
+  reachable inside a scan. Wiring it needs a declaration-document evaluator and
+  a parser contract; documented, not silently claimed.
+- **Active DAST** (`apps/api/src/scans/dast/activeEngine.ts`) exists behind a
+  consent gate while both repos' written boundaries say active probing is out
+  of scope (dataset `DROBON_REMAINING_WORK.csv` GAP-045, P0). This is an
+  **owner decision**: revert the feature or authorize it in writing and amend
+  both repos' boundary docs together with consent + rate-limit evidence. No
+  code change here presumes that decision.
+- Widening the DAST header allowlist to 57 names adds **observation surface
+  only**. Values stay clipped to 2,048 chars / 5 array entries, body to 32,768
+  bytes. No new request, payload or crawling capability was added.
+- Language aliases for 60+ config ids share one `config-file` family. A rule
+  tagged `nginx` can therefore also be evaluated on an `sshd_config`; its own
+  pattern decides whether it fires. Per-format families are future work.
 
 ## Related docs
 
 - `docs/SCA.md`, `SAST.md`, `SECRETS.md`, `DAST.md`
-- Dataset: `docs/FORMAT.md`, `PROVIDER_MAPPING.md`, `PACKS.md`, `AUDIENCES.md`, `HONESTY.md`
+- Dataset: `docs/FORMAT.md`, `PROVIDER_MAPPING.md`, `PACKS.md`, `AUDIENCES.md`,
+  `COUNTING_POLICY.md`, `HONESTY.md`, `interop/APP_CONFORMANCE.md`
+- This repo: `docs/DATASET_INTEGRATION_AUDIT_2026-10-26.md`

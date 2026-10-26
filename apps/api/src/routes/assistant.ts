@@ -16,11 +16,13 @@ import { sendSuccess } from '../respond.js';
 import type { ScanStore } from '../scans/store.js';
 import { createNoAssistantProvider } from '../assistant/provider.js';
 import { AssistantService } from '../assistant/service.js';
+import type { GuidanceLookup } from '../external/guidance.js';
 
 export interface AssistantRouteDeps {
   config: ApiConfig;
   projects: ProjectStore;
   scans: ScanStore;
+  guidance?: GuidanceLookup;
 }
 
 const questionSchema = v.object({
@@ -33,7 +35,7 @@ const questionSchema = v.object({
 export function createAssistantRoutes(deps: AssistantRouteDeps): Route[] {
   const { config, projects, scans } = deps;
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
-  const service = new AssistantService({ scans, provider: createNoAssistantProvider() });
+  const service = new AssistantService({ scans, provider: createNoAssistantProvider(), ...(deps.guidance === undefined ? {} : { guidance: deps.guidance }) });
 
   return [
     {

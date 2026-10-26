@@ -117,7 +117,7 @@ describe('DG-SAST-003: SQL query construction (SQL injection)', () => {
   const vulnerable = [
     'db.query(`SELECT * FROM users WHERE id = ${id}`);',
     "db.query('SELECT * FROM t WHERE x = ' + userInput);",
-    'connection.execute(`DELETE FROM s WHERE k = \"${key}\"`);',
+    'connection.execute(`DELETE FROM s WHERE k = "${key}"`);',
     "client.execute('UPDATE t SET a = ' + a);",
   ];
   const safe = [
@@ -168,17 +168,17 @@ describe('DG-SAST-004: raw HTML output (XSS)', () => {
 describe('DG-SAST-005: hardcoded credentials', () => {
   const rule = TEST_SAST_RULES.find((r) => r.id === 'DG-SAST-005')!;
   const vulnerable = [
-    "const apiKey = 'sk_live_abcdef123456';",
+    "const apiKey = 'sk_live_abcdef123456';", // fake fixture
     'password: "hunter2hunter2",',
     "const DB_PASSWORD = 'p4ssw0rd-exists';",
-    'private_key: "AAAAAAAAAAAA";',
-    "authToken: 'tok_1234567890abcdef';",
+    'private_key: "AAAAAAAAAAAA";', // fake fixture
+    "authToken: 'tok_1234567890abcdef';", // fake fixture
   ];
   const safe = [
     "const password = 'changeme';",
     "const password = 'placeholder';",
     'const apiKey = process.env.API_KEY;',
-    "const password = 'short';",
+    "const password = 'short';", // fake fixture: below the rule length bound
     "const password = '';",
     'const myPasswordVar = 42;',
     'const passwordInput = "type-here";',

@@ -102,7 +102,7 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
         const merged = await getMergedLessons(deps.dataset);
         const lesson = findLessonInMerged(merged, rawLessonId);
         if (lesson !== undefined) return lesson;
-      } catch {}
+      } catch { /* fail closed: optional path */ }
     }
     const lesson = findStudentLesson(rawLessonId);
     if (lesson === undefined) throw notFound('Lesson not found.');
@@ -144,7 +144,7 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
             const merged = await getMergedLessons(deps.dataset);
             sendSuccess(res, ctx, { lessons: merged.map(studentLessonPublic) });
             return;
-          } catch {}
+          } catch { /* fail closed: optional path */ }
         }
         sendSuccess(res, ctx, { lessons: studentLessonCatalogPublic() });
       },
