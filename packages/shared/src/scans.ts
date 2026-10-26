@@ -189,6 +189,10 @@ export interface ScanResultSummary {
   declarationRulesEvaluated?: number;
   /** SCA declaration rules not evaluated (artifact absent or parser not readable yet). */
   declarationRulesNotEvaluated?: number;
+  /** Files analyzed by the bounded AST/dataflow pass (Pump 16). */
+  astFilesAnalyzed?: number;
+  /** Findings produced by the bounded AST/dataflow pass. */
+  astFlowsFound?: number;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -210,6 +214,9 @@ const SUMMARY_ALLOWED_KEYS = [
   // SCA declaration evaluator (Pump 14): honest per-scan coverage.
   'declarationRulesEvaluated',
   'declarationRulesNotEvaluated',
+  // Bounded AST/dataflow pass (Pump 16): honest coverage counters.
+  'astFilesAnalyzed',
+  'astFlowsFound',
 ] as const;
 
 function isCount(value: unknown): value is number {
@@ -291,6 +298,12 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
     return false;
   }
   if (record['declarationRulesNotEvaluated'] !== undefined && !isCount(record['declarationRulesNotEvaluated'])) {
+    return false;
+  }
+  if (record['astFilesAnalyzed'] !== undefined && !isCount(record['astFilesAnalyzed'])) {
+    return false;
+  }
+  if (record['astFlowsFound'] !== undefined && !isCount(record['astFlowsFound'])) {
     return false;
   }
   return true;
@@ -391,7 +404,9 @@ export const SAST_RULE_ID_PATTERN = /^(?:DG|DPK)-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^(?:(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}|DPK-SCA-[0-9]{3,6}|ADV-[0-9]{4,})$/;
+// Dataset packs legitimately ship 4-digit ids (DPK-SAST-1000 …). The
+// scanner family is still closed: no free-form rule ids, no client input.
+export const FINDING_RULE_ID_PATTERN = /^(?:(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3,6}|DPK-SCA-[0-9]{3,6}|ADV-[0-9]{4,})$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is

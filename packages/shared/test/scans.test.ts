@@ -332,7 +332,10 @@ describe('findings (Pump 8)', () => {
     expect(isFinding({ ...finding, id: 'scan_' + 'a'.repeat(24) })).toBe(false);
     expect(isFinding({ ...finding, fingerprint: 'z'.repeat(64) })).toBe(false);
     expect(isFinding({ ...finding, ruleId: 'SAST-001' })).toBe(false);
-    expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(false);
+    // Pump 16: dataset packs legitimately ship 4-digit ids (DPK-SAST-1000…).
+    // The FAMILY stays closed; only the digit count widened to 3..6.
+    expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(true);
+    expect(isFinding({ ...finding, ruleId: 'DG-SAST-1234567' })).toBe(false);
     // Pump 10: the rule-id FAMILY pattern (DG-SAST-### | DG-SEC-###).
     expect(isFinding({ ...finding, ruleId: 'DG-SEC-001' })).toBe(true);
     expect(isFinding({ ...finding, ruleId: 'DG-SECRETS-001' })).toBe(false);

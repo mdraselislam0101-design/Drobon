@@ -11,9 +11,10 @@ import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
-import { detectLanguageFamily, isAnalyzedMaturity } from './languages.js';
+import { detectLanguageFamily, isAnalyzedMaturity, supportsBoundedAst } from './languages.js';
 import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
 import { findingFingerprint } from '../findingIdentity.js';
+import { analyzeAstFile, astReporterRules, type AstReporterMap } from './astAnalyzer.js';
 
 /**
  * THE REAL SAST ENGINE (Pump 8).
@@ -305,6 +306,12 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       // metadata from the SAME effective rule set that produced the flow
       // refs — otherwise every flow finding is silently dropped.
       const rulesById = new Map<string, SastRule>(effectiveRules.map((rule) => [rule.id, rule]));
+      // Pump 16: bounded AST/dataflow reporters are chosen ONCE per family
+      // from the same effective (dataset-backed) rule set. No rule → no AST
+      // finding: the engine never invents a vulnerability rule.
+      const astReportersByFamily = new Map<string, AstReporterMap>();
+      let astFilesAnalyzed = 0;
+      let astFlowsFound = 0;
 
       outer: for (const file of discovery.files) {
         // Deadline checkpoints: between files…
@@ -422,6 +429,75 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
             }
           }
         }
+
+        // ---- BOUNDED AST / DATAFLOW PASS (Pump 16, ADDITIVE) ----
+        // Same finding model, same identity, same caps. Rules stay in the
+        // dataset; this pass only decides WHERE a loaded rule's class is
+        // actually reachable from untrusted input.
+        if (supportsBoundedAst(file.family)) {
+          if (now() > deadline || ctx.signal.aborted) {
+            return {
+              kind: 'failed',
+              failureCode: 'SAST_SCAN_TIMEOUT',
+              failureMessage: 'The SAST engine exceeded its processing deadline.',
+            };
+          }
+          let reporters = astReportersByFamily.get(file.family);
+          if (reporters === undefined) {
+            reporters = astReporterRules(effectiveRules, file.family);
+            astReportersByFamily.set(file.family, reporters);
+          }
+          const astResult = analyzeAstFile({
+            family: file.family,
+            content: file.content,
+            reporters,
+            shouldStop: () => now() > deadline || ctx.signal.aborted,
+          });
+          astFilesAnalyzed += 1;
+          if (astResult.truncated) truncated = true;
+          // One finding per (rule, line): lexical + flow + AST share this set.
+          const already = new Set<string>();
+          for (const existing of findings) {
+            const line = (existing as { line?: number }).line;
+            if (typeof line === 'number') already.add(`${existing.ruleId}\n${line}`);
+          }
+          for (const candidate of astResult.candidates) {
+            const rule = rulesById.get(candidate.ruleId);
+            if (rule === undefined) continue;
+            const key = `${rule.id}\n${candidate.lineIndex + 1}`;
+            if (already.has(key)) continue;
+            already.add(key);
+            const originalLine = lines[candidate.lineIndex] ?? '';
+            const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+            const fingerprint = findingFingerprint({
+              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+              location: file.path, line: candidate.lineIndex + 1, evidence,
+            });
+            findings.push({
+              id: `fnd_${fingerprint.slice(0, 24)}`,
+              scanId: record.id,
+              ruleId: rule.id,
+              scanner: 'SAST',
+              projectId: record.projectId,
+              severity: rule.severity,
+              title: rule.title,
+              description: rule.description,
+              ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
+              file: file.path,
+              line: candidate.lineIndex + 1,
+              column: candidate.column,
+              evidence,
+              remediation: rule.remediation,
+              fingerprint,
+            });
+            findingsBySeverity[rule.severity] += 1;
+            astFlowsFound += 1;
+            if (findings.length >= limits.maxFindings) {
+              truncated = true;
+              break outer;
+            }
+          }
+        }
       }
 
       const resultSummary: ScanResultSummary = {
@@ -430,6 +506,8 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
         filesScanned: discovery.files.length,
         filesSkipped: discovery.skipped,
         truncated,
+        astFilesAnalyzed,
+        astFlowsFound,
       };
       return {
         kind: 'completed',

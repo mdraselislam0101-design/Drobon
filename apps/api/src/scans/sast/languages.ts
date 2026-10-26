@@ -34,6 +34,8 @@ import type { FindingSeverity } from '@drobon/shared';
  * docs/SAST.md).
  */
 
+import { AST_SUPPORTED_FAMILIES } from './astProfiles.js';
+
 export type SastMaturity = 'FULL' | 'PARTIAL' | 'SYNTAX_ONLY' | 'CONFIG_ANALYSIS' | 'UNSUPPORTED';
 
 export type SastPlatform =
@@ -314,3 +316,13 @@ export function sastMaturityCounts(): SastMaturityCounts {
 }
 
 export type { FindingSeverity };
+
+
+/**
+ * Pump 16: families with a bounded shallow-AST/dataflow profile.
+ * This does NOT change `maturity` — a BOUNDED AST is still PARTIAL, never
+ * FULL. It only says an extra structural pass is available for the family.
+ */
+export function supportsBoundedAst(family: string): boolean {
+  return AST_SUPPORTED_FAMILIES.includes(family);
+}

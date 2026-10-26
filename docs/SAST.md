@@ -22,6 +22,13 @@ are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
 > `DG-SAST-###` ids are kept as design history for the engine/flow layer,
 > not as a description of shipped data.
 >
+> **Pump 16 (2026-10-26):** an additive **bounded AST/dataflow pass** now
+> runs on 11 language families (JS/TS, Python, PHP, Java, Go, C#, Ruby …).
+> It tokenizes code, drops comments/strings, follows source→variable→sink
+> chains and suppresses sanitizers/parameterized SQL. It is a SHALLOW
+> structural analyzer, not a full grammar — every family stays `PARTIAL`.
+> See [`DEEP_SAST.md`](DEEP_SAST.md) for scope, bounds and limits.
+>
 > Loader conformance: every pack rule is closed-field validated, ReDoS-linted
 > and its declared tests are executed before it reaches the engine
 > (`apps/api/src/external/conformance.ts`). Pack language ids are resolved

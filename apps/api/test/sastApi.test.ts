@@ -586,6 +586,9 @@ describe('SAST scans: the real engine over HTTP', () => {
         filesScanned: 3, // README.md is unsupported → skipped
         filesSkipped: 1,
         truncated: false,
+        // Pump 16: bounded AST/dataflow pass runs on the supported families.
+        astFilesAnalyzed: 3,
+        astFlowsFound: 0,
       });
       expect(detail.data.scan.findings).toEqual([]);
       expect(detail.data.scan.failureCode).toBeUndefined();
@@ -769,6 +772,8 @@ describe('SAST scans: the real engine over HTTP', () => {
         filesScanned: 2,
         filesSkipped: 0,
         truncated: false,
+        astFilesAnalyzed: 2,
+        astFlowsFound: 0,
       });
     } finally {
       await server.stop();
