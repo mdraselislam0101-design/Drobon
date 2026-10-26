@@ -19,7 +19,7 @@ evaluators, validators, resolvers) lives here — that split is the product desi
 | SAST packs | `packs/sast/v1/rules/*.json` | `external/conformance.ts` → `packIntegration.ts` → `SastEngine` | 1,000 | `AVAILABLE` (`drobon-sast-starter@1.0.0`) |
 | Secrets packs | `packs/secrets/v1/rules/*.json` | same → `SecretsEngine` | 1,000 | `AVAILABLE` (`drobon-secrets-starter@1.0.0`) |
 | DAST packs | `packs/dast/v1/rules/*.json` | same → `DastEngine` / active engine | 1,007 | `AVAILABLE` (`drobon-dast-starter@1.0.0`) |
-| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` → `external/scaDeclaration.ts` → `scans/sca/declarationScan.ts` → `ScaEngine` | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **evaluated** (all 4,001 declared tests; 432 JSON-parser rules reachable in real scans) |
+| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` → `external/scaDeclaration.ts` → `scans/sca/declarationScan.ts` → `ScaEngine` | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **evaluated** (all 4,001 declared tests; all 9 parser kinds readable, 1,000 rules scan-reachable) |
 | Remediation | `knowledge/remediation/*.json` | `external/guidance.ts` → assistant / finding detail / reports | 4,007 | `AVAILABLE`, surfaced as `RULE_SPECIFIC` |
 | CWE | `knowledge/cwe/*.json` | `external/knowledge.ts` | 102 | `AVAILABLE` |
 | Lessons | `learning/lessons/*.json` | `external/lessonProvider.ts` | 6 (2 `lsn_dev_*`) | `AVAILABLE` |
@@ -84,11 +84,13 @@ skipped/failed tests, rejected rules). Inspection:
    `external/scaDeclaration.ts` evaluator (six closed predicates, bounded
    path/name walks). Status now reports
    `scaDeclarationEvaluator: "AVAILABLE"`, `scaDeclarationScanParsers:
-   ["json"]`, `scaDeclarationScanReachableRules: 432`. Real SCA scans evaluate
-   432 JSON-parser rules against matching artifacts and emit persisted
-   `scanner: "SCA"` findings; the other 568 rules (TOML/YAML/XML/INI/text/Gradle
-   /requirements/lockfile-text) are counted as `declarationRulesNotEvaluated`
-   rather than pretended. See [`SCA_DECLARATION_ENGINE.md`](SCA_DECLARATION_ENGINE.md).
+   all 9 kinds]`, `scaDeclarationScanReachableRules: 1000`. Pump 18 added
+   bounded readers for the eight remaining kinds (TOML/YAML/XML/INI/properties/
+   Gradle/requirements/lockfile-text) — see [`SCA_READERS.md`](SCA_READERS.md).
+   Real SCA scans now evaluate non-JSON manifests too; a shape the bounded
+   reader cannot represent is counted as `declarationRulesNotEvaluated`, never
+   pretended. Dotfile artifacts (`.npmrc`, `.yarnrc.yml` …) remain blocked by
+   the source-path policy and are reported separately in the evidence JSON.
 5. `pack.json` identity (`packId` + `version`) is surfaced on the status and
    pack-inspection routes, so a finding's `DPK-*` rule id can be traced to a
    dataset version. Per-finding stamping still requires a shared-contract
@@ -150,10 +152,11 @@ Verify endpoints (authenticated): `/api/v1/dataset/status`,
   feed + refresh cadence is still an owner/licence decision (GAP-001..004).
 - **SCA declaration pack (1,000 rules)**: the evaluator now exists in the app
   and all 4,001 declared tests execute at load time. Scan-time coverage is
-  honest but partial: 432 rules whose artifact is a JSON document are
-  evaluated; 568 rules need additional document readers (TOML, YAML, XML, INI,
-  properties, Gradle, requirements, lockfile-text). No new parser was faked —
-  see [`SCA_DECLARATION_ENGINE.md`](SCA_DECLARATION_ENGINE.md).
+  all nine parser kinds now have bounded readers (`SCA_READERS.md`). Residual
+  limits: ~95% round-trip verdict parity on dataset-declared shapes and 41
+  rules whose artifact is a dotfile that the upload policy cannot accept —
+  both reported in `DATASET_INTEGRATION_EVIDENCE.json` and counted honestly
+  per scan.
 - **Active DAST** (`apps/api/src/scans/dast/activeEngine.ts`) exists behind a
   consent gate while both repos' written boundaries say active probing is out
   of scope (dataset `DROBON_REMAINING_WORK.csv` GAP-045, P0). This is an

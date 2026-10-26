@@ -41,8 +41,14 @@ export const SCA_PARSERS = [
 ] as const;
 export type ScaParser = (typeof SCA_PARSERS)[number];
 
-/** Parser kinds the current scan-time reader can turn into a document. */
-export const SCA_READABLE_PARSERS: readonly ScaParser[] = ['json'];
+/**
+ * Parser kinds with a bounded scan-time reader. Pump 18 added the eight
+ * non-JSON readers (`scans/sca/declarationReaders.ts`); all nine kinds the
+ * dataset declares are now readable. Readers are SUBSET parsers — a rule
+ * whose artifact cannot be represented is counted as not evaluated, never
+ * silently passed.
+ */
+export const SCA_READABLE_PARSERS: readonly ScaParser[] = [...SCA_PARSERS];
 
 const SEVERITIES: readonly FindingSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 const CWE_PATTERN = /^CWE-[1-9][0-9]{0,5}$/;

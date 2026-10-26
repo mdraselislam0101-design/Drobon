@@ -34,8 +34,8 @@ import {
 } from '@drobon/shared';
 import { findingFingerprint } from '../findingIdentity.js';
 import type { ScanRecord } from '../store.js';
+import { parseDeclarationDocument, DECLARATION_READER_PARSERS } from './declarationReaders.js';
 import {
-  SCA_READABLE_PARSERS,
   compileScaDeclarationRules,
   findScaMatch,
   type CompiledScaDeclarationRule,
@@ -113,9 +113,6 @@ function isIgnoredPath(path: string): boolean {
   return segments.some((segment) => (IGNORED_DIR_SEGMENTS as readonly string[]).includes(segment));
 }
 
-function parseJsonDocument(content: string): unknown | undefined {
-  try { return JSON.parse(content) as unknown; } catch { return undefined; }
-}
 
 function buildFinding(
   compiled: CompiledScaDeclarationRule,
@@ -174,7 +171,7 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
   if (compiled.length === 0) return outcome;
 
   const maxFindings = Math.min(options.maxFindings ?? MAX_FINDINGS_PER_SCAN, MAX_FINDINGS_PER_SCAN);
-  const readable = SCA_READABLE_PARSERS as readonly string[];
+  const readable = DECLARATION_READER_PARSERS as readonly string[];
 
   // Rules whose parser the scan layer cannot read are honestly not evaluated.
   const unreadable = compiled.filter((entry) => !readable.includes(entry.rule.parser));
@@ -202,7 +199,11 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
   outer: for (const file of candidates) {
     const basename = file.path.split('/').pop() ?? '';
     const rules = byArtifact.get(basename) ?? [];
-    const document = parseJsonDocument(file.content);
+    // One document per FILE (parser is fixed by the artifact's rules). All
+    // rules for a basename share the same declared parser in the dataset;
+    // parse once and reuse. Unparseable text → no rule is evaluated.
+    const parserForFile = rules[0]?.rule.parser;
+    const document = parserForFile === undefined ? undefined : parseDeclarationDocument(parserForFile, basename, file.content);
     for (const entry of rules) {
       if (evaluations >= MAX_DECLARATION_EVALUATIONS || (options.shouldStop?.() ?? false)) {
         stopped = true;

@@ -106,7 +106,7 @@ Assessment panel-এ নতুন **"Third-party engagement record"** ব্ল�
 | `apps/web/src/pages/ProjectDetailPage.tsx` | read-only engagement status ব্লক |
 | `apps/api/test/engagements.test.ts` | ৭টি নতুন test (contract + store + API + gate) |
 
-**Verify:** `npm run verify` **PASS ১১/১১** · `npm test` **PASS ১,৩৫৫** (shared ১৮৩ + api ৮৭৮ + worker ২৮ + web ২৬৬) · `verify:dataset` PASS · lint/typecheck/builds/boundaries/secrets/repo-integrity সব PASS।
+**Verify:** `npm run verify` **PASS ১১/১১** · `npm test` **PASS ১,৩৬৭** (shared ১৮৩ + api ৮৯০ + worker ২৮ + web ২৬৬; Pump 18 reader tests সহ) · `verify:dataset` PASS · lint/typecheck/builds/boundaries/secrets/repo-integrity সব PASS।
 
 ---
 

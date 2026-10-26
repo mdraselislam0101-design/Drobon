@@ -1,6 +1,6 @@
 {
   "schemaVersion": "drobon.integration-evidence/v1",
-  "generatedAt": "2026-10-26T10:29:46.107Z",
+  "generatedAt": "2026-10-26T17:12:54.400Z",
   "app": {
     "repo": "mdraselislam0101-design/Drobon",
     "branch": "arena/5bb07bd8-drobon"
@@ -100,10 +100,98 @@
     "parityMismatches": 0,
     "uncompilable": 0,
     "scanParsers": [
-      "json"
+      "json",
+      "toml",
+      "yaml",
+      "requirements",
+      "xml",
+      "gradle",
+      "properties",
+      "ini",
+      "lockfile-text"
     ],
-    "scanReachableRules": 432,
-    "loadedRules": 1000
+    "scanReachableRules": 1000,
+    "loadedRules": 1000,
+    "readerDeclaredTests": 2273,
+    "readerVerdictMismatches": 111,
+    "readerMismatchBudget": 182,
+    "readerParseFailures": 37,
+    "unuploadableArtifacts": [
+      ".Rprofile",
+      ".cargo/config.toml",
+      ".condarc",
+      ".npmrc",
+      ".pypirc",
+      ".yarnrc",
+      ".yarnrc.yml"
+    ],
+    "rulesWithUnuploadableArtifact": 41,
+    "readerVerdictParityPercent": 95.12,
+    "readers": {
+      "json": {
+        "declaredTests": 0,
+        "rendered": 0,
+        "parsed": 0,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "toml": {
+        "declaredTests": 1016,
+        "rendered": 1016,
+        "parsed": 1016,
+        "verdictMismatches": 4,
+        "parseFailures": 0
+      },
+      "yaml": {
+        "declaredTests": 332,
+        "rendered": 332,
+        "parsed": 332,
+        "verdictMismatches": 8,
+        "parseFailures": 0
+      },
+      "requirements": {
+        "declaredTests": 109,
+        "rendered": 109,
+        "parsed": 85,
+        "verdictMismatches": 5,
+        "parseFailures": 24
+      },
+      "xml": {
+        "declaredTests": 256,
+        "rendered": 256,
+        "parsed": 256,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "gradle": {
+        "declaredTests": 100,
+        "rendered": 100,
+        "parsed": 100,
+        "verdictMismatches": 38,
+        "parseFailures": 0
+      },
+      "properties": {
+        "declaredTests": 12,
+        "rendered": 12,
+        "parsed": 12,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "ini": {
+        "declaredTests": 204,
+        "rendered": 204,
+        "parsed": 203,
+        "verdictMismatches": 2,
+        "parseFailures": 1
+      },
+      "lockfile-text": {
+        "declaredTests": 244,
+        "rendered": 232,
+        "parsed": 232,
+        "verdictMismatches": 54,
+        "parseFailures": 12
+      }
+    }
   },
   "remediation": {
     "sampleRuleIds": [

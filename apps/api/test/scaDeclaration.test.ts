@@ -125,8 +125,11 @@ describe('declaration evaluator: six closed predicates', () => {
     expect(compileScaDeclarationRule(rule('DPK-SCA-9010', { type: 'sca-field-absent', path: 'a', unexpected: true }))).toBeUndefined();
   });
 
-  test('the scan-time reader honestly declares its JSON-only parser coverage', () => {
-    expect(SCA_READABLE_PARSERS).toEqual(['json']);
+  test('every dataset parser kind now has a scan-time reader (Pump 18)', () => {
+    expect(SCA_READABLE_PARSERS).toHaveLength(9);
+    expect(SCA_READABLE_PARSERS).toContain('json');
+    expect(SCA_READABLE_PARSERS).toContain('toml');
+    expect(SCA_READABLE_PARSERS).toContain('lockfile-text');
   });
 });
 

@@ -191,7 +191,7 @@ Finding-এর evidence-এ শুধু **advisory id + component + version + l
 
 ## ৮) পরবর্তী ধাপ (ঐচ্ছিক)
 
-1. **৮টি বাকি document reader** → SCA declaration pack-এর বাকি ৫৬৮ rule-ও scan-এ চলবে।
+1. ✅ **৮টি বাকি document reader** → **সম্পন্ন** (Pump 18); [`SCA_READERS.md`](SCA_READERS.md)।
 2. **Feed adapter seam** → operator যখন licensed advisory feed দেবেন, সেটা সরাসরি pack-এ sync করা যাবে (এখনও owner/license সিদ্ধান্ত বাকি)।
 3. ✅ **Authorization/engagement record** → **সম্পন্ন** — append-only engagement + scan gate; বিস্তারিত [`ENGAGEMENTS.md`](ENGAGEMENTS.md)।
 4. ✅ **Deep SAST (AST)** → **সম্পন্ন** — bounded, data-driven AST/dataflow engine, কোনো নতুন dependency ছাড়াই। বিস্তারিত: [`DEEP_SAST.md`](DEEP_SAST.md)।

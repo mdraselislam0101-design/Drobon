@@ -23,6 +23,8 @@ import { INSPECTED_RESPONSE_HEADERS } from '../apps/api/src/scans/dast/observedH
 import { createGuidanceLookup } from '../apps/api/src/external/guidance.ts';
 import { remediationGuidanceForFinding } from '../apps/api/src/scans/remediationGuidance.ts';
 import { createFilesystemIntelligenceProvider } from '../apps/api/src/scans/sca/filesystemProvider.ts';
+import { parseDeclarationDocument, DECLARATION_READER_PARSERS } from '../apps/api/src/scans/sca/declarationReaders.ts';
+import { renderDeclarationDocument, unwrapXml } from './sca-reader-fixtures.mjs';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const args = process.argv.slice(2);
@@ -114,6 +116,54 @@ for (const rule of scaRules) {
 check(scaUncompilable === 0, `SCA: ${scaUncompilable} rules failed to compile`);
 check(scaParityMismatches === 0, `SCA parity: ${scaParityMismatches} mismatches`);
 
+// ---- 2c. READER ROUND-TRIP (Pump 18): raw text → document → evaluator ----
+// For every non-JSON declared test we render the dataset's PARSED document
+// back into realistic manifest text, parse it with the APP reader, and check
+// the rule still reaches the same verdict. Reports honest per-parser coverage.
+const readerStats = {};
+for (const parser of DECLARATION_READER_PARSERS) {
+  readerStats[parser] = { declaredTests: 0, rendered: 0, parsed: 0, verdictMismatches: 0, parseFailures: 0 };
+}
+for (const rule of scaRules) {
+  if (rule.parser === 'json') continue; // JSON is round-tripped by JSON.parse directly
+  const compiled = compileScaDeclarationRule(rule);
+  const stat = readerStats[rule.parser];
+  if (compiled === undefined || stat === undefined) continue;
+  for (const test of rule.tests ?? []) {
+    stat.declaredTests += 1;
+    const raw = renderDeclarationDocument(rule.parser, rule.artifact, test.document);
+    if (raw === undefined) { stat.parseFailures += 1; continue; }
+    stat.rendered += 1;
+    const text = typeof raw === 'string' ? raw : raw.text;
+    let parsed = parseDeclarationDocument(rule.parser, rule.artifact, text);
+    if (typeof raw !== 'string') parsed = unwrapXml(rule.parser, rule.artifact, test.document, parsed);
+    if (parsed === undefined) { stat.parseFailures += 1; continue; }
+    stat.parsed += 1;
+    const hit = evaluateScaDeclarationCheck(compiled, parsed);
+    if (hit !== test.match) stat.verdictMismatches += 1;
+  }
+}
+const readerParsers = Object.keys(readerStats);
+const readerDeclaredTests = readerParsers.reduce((sum, key) => sum + readerStats[key].declaredTests, 0);
+const readerMismatches = readerParsers.reduce((sum, key) => sum + readerStats[key].verdictMismatches, 0);
+const readerParseFailures = readerParsers.reduce((sum, key) => sum + readerStats[key].parseFailures, 0);
+// The readers are deliberately BOUNDED subset parsers. A small residual of
+// dataset-declared document shapes is richer than those subsets (deeply
+// nested Gradle/lockfile/INI structures). Those shapes are NOT guessed: in a
+// real scan the rule is counted as `declarationRulesNotEvaluated`. This gate
+// is a REGRESSION guard (>=92% verdict parity), not a completeness claim.
+const readerMismatchBudget = Math.ceil(readerDeclaredTests * 0.08);
+check(readerParsers.length === 9, `SCA reader registry: only ${readerParsers.length}/9 parsers registered`);
+check(status.conformance.scaDeclarationScanReachableRules === scaRules.length,
+  `SCA scan-reachable rules ${status.conformance.scaDeclarationScanReachableRules} != ${scaRules.length}`);
+check(readerMismatches <= readerMismatchBudget,
+  `SCA reader round-trip: ${readerMismatches} verdict mismatches exceeds the ${readerMismatchBudget} residual budget`);
+// Honest structural limit: the shared source-path policy rejects dotfiles,
+// so these artifacts can never be uploaded into a snapshot. They are counted,
+// never silently treated as reachable.
+const unuploadableArtifacts = [...new Set(scaRules.filter((rule) => rule.artifact.startsWith('.')).map((rule) => rule.artifact))].sort();
+const rulesWithUnuploadableArtifact = scaRules.filter((rule) => rule.artifact.startsWith('.')).length;
+
 // ---- 3. SAST language reachability through the APP catalog ----
 const catalogIds = new Set(SAST_LANGUAGE_CATALOG.map((f) => f.id));
 const analyzedIds = new Set(SAST_LANGUAGE_CATALOG.filter((f) => isAnalyzedMaturity(f.maturity)).map((f) => f.id));
@@ -177,6 +227,10 @@ const evidence = {
     scanParsers: status.conformance.scaDeclarationScanParsers ?? [],
     scanReachableRules: status.conformance.scaDeclarationScanReachableRules ?? 0,
     loadedRules: scaRules.length,
+    readerDeclaredTests, readerVerdictMismatches: readerMismatches, readerMismatchBudget,
+    readerParseFailures, unuploadableArtifacts, rulesWithUnuploadableArtifact,
+    readerVerdictParityPercent: Number((100 * (1 - readerMismatches / Math.max(1, readerDeclaredTests))).toFixed(2)),
+    readers: readerStats,
   },
   remediation: { sampleRuleIds: sampleIds, surfaced: guidanceSpecific },
   checks: failures.length === 0 ? 'PASS' : 'FAIL',

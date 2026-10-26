@@ -162,4 +162,4 @@ rust: cLike('rust', {
 1. **Cross-file import resolution** — bounded module graph দিয়ে flow এক ফাইল থেকে অন্য ফাইলে নেওয়া।
 2. **Control-flow sensitivity** — branch/loop-aware taint, false positive আরও কমানো।
 3. **Fixpoint (bounded 2–3 iteration)** — recursive call chain।
-4. **বাকি ৮টি document reader** (SCA declaration) — পরবর্তী কাজ। **Authorization/engagement record** ইতিমধ্যে সম্পন্ন ([`ENGAGEMENTS.md`](ENGAGEMENTS.md))।
+4. ✅ **বাকি ৮টি document reader** — **সম্পন্ন** ([`SCA_READERS.md`](SCA_READERS.md))। **Authorization/engagement record** ইতিমধ্যে সম্পন্ন ([`ENGAGEMENTS.md`](ENGAGEMENTS.md))।

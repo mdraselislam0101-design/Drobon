@@ -64,9 +64,9 @@ Path grammar: `a.b`, `a.*`, `a[]`, `a.*[]` — সর্বোচ্চ ১২ s
 
 ---
 
-## ৩) Scan-time coverage — সৎ হিসাব
+## ৩) Scan-time coverage — সৎ হিসাব (Pump 18 আপডেট)
 
-আজকের reader শুধু **`parser: "json"`** পড়তে পারে। Dataset-এ ১,০০০ rule-এর মধ্যে **৪৩২টি** JSON parser-এর (১১টি artifact):
+**Pump 18 আপডেট:** এখন **৯টি parser kind-এরই** bounded reader আছে (`docs/SCA_READERS.md`)। আগে শুধু `json` পড়া যেত (৪৩২ rule); বাকি ৮টি reader যোগ হওয়ায় **১,০০০টি rule-ই scan-reachable**। JSON parser-এর artifact ছিল ১১টি:
 
 ```
 Package.resolved, auth.json, composer.json, composer.lock, conan.lock,
@@ -74,7 +74,7 @@ package-lock.json, package.json, packages.lock.json, renv.lock,
 vcpkg-configuration.json, vcpkg.json
 ```
 
-বাকি **৫৬৮টি** rule-এর parser — `toml`, `yaml`, `xml`, `lockfile-text`, `ini`, `requirements`, `gradle`, `properties` — এখনো reader নেই। এগুলো false "no match" দেয় না; `declarationRulesNotEvaluated`-এ গোনা হয়।
+বাকি ৮ parser-এর reader যোগ হয়েছে; তবে সেগুলো **bounded subset parser** — dataset-এর সব declared document shape ঠিকমতো reproduce করে না (round-trip parity ~৯৫%)। যে shape পড়া যায় না, সেটি false "no match" দেয় না; `declarationRulesNotEvaluated`-এ গোনা হয়। এছাড়া dotfile artifact (`.npmrc`, `.yarnrc.yml` …) source-path policy-তে upload-ই করা যায় না — ৪১টি rule এই কারণে structurally unreachable; evidence JSON-এ আলাদা করে দেখানো হয়।
 
 Status surface (`GET /api/v1/dataset/status` → `data.dataset.conformance`):
 
@@ -83,8 +83,8 @@ Status surface (`GET /api/v1/dataset/status` → `data.dataset.conformance`):
   "sca": { "declaredTests": 4001, "executedTests": 4001, "skippedTests": 0,
            "failedTests": 0, "accepted": 1000 },
   "scaDeclarationEvaluator": "AVAILABLE",
-  "scaDeclarationScanParsers": ["json"],
-  "scaDeclarationScanReachableRules": 432
+  "scaDeclarationScanParsers": ["json","toml","yaml","xml","ini","properties","requirements","gradle","lockfile-text"],
+  "scaDeclarationScanReachableRules": 1000
 }
 ```
 
@@ -144,7 +144,7 @@ Live e2e-এর একটি finding:
 
 ## ৬) এখনো যা করা হয়নি (open, সৎভাবে)
 
-1. **৮টি বাকি document reader** — TOML/YAML/XML/INI/properties/Gradle/requirements/lockfile-text। এগুলো যোগ করলে বাকি ৫৬৮ rule-ও scan-এ চলবে; কিন্তু dataset-এর expected document shape-এর সাথে normalize করতে হবে, তাই তাড়াহুড়ো করে ভুল parser দেওয়া হয়নি।
+1. ✅ **৮টি বাকি document reader** — **সম্পন্ন** (Pump 18)। বিস্তারিত [`SCA_READERS.md`](SCA_READERS.md)।
 2. **Per-finding `packId@version` stamping** — shared contract পরিবর্তন, fingerprint/report সব জায়গায় প্রভাব; আগের থেকেই open।
 3. **Active DAST boundary (GAP-045, P0)** — এটা owner-এর লিখিত সিদ্ধান্ত, engineering নয়; এই কাজে ছোঁয়া হয়নি।
 4. **Database/Postgres** — এই কাজে ইচ্ছাকৃতভাবেই কিছু করা হয়নি (আপনার নির্দেশ: ডেটাবেসের কাজ হবে না)।
