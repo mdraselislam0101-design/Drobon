@@ -19,7 +19,7 @@ evaluators, validators, resolvers) lives here — that split is the product desi
 | SAST packs | `packs/sast/v1/rules/*.json` | `external/conformance.ts` → `packIntegration.ts` → `SastEngine` | 1,000 | `AVAILABLE` (`drobon-sast-starter@1.0.0`) |
 | Secrets packs | `packs/secrets/v1/rules/*.json` | same → `SecretsEngine` | 1,000 | `AVAILABLE` (`drobon-secrets-starter@1.0.0`) |
 | DAST packs | `packs/dast/v1/rules/*.json` | same → `DastEngine` / active engine | 1,007 | `AVAILABLE` (`drobon-dast-starter@1.0.0`) |
-| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` (status + inspection) | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **loaded, not evaluated in scans** |
+| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` → `external/scaDeclaration.ts` → `scans/sca/declarationScan.ts` → `ScaEngine` | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **evaluated** (all 4,001 declared tests; 432 JSON-parser rules reachable in real scans) |
 | Remediation | `knowledge/remediation/*.json` | `external/guidance.ts` → assistant / finding detail / reports | 4,007 | `AVAILABLE`, surfaced as `RULE_SPECIFIC` |
 | CWE | `knowledge/cwe/*.json` | `external/knowledge.ts` | 102 | `AVAILABLE` |
 | Lessons | `learning/lessons/*.json` | `external/lessonProvider.ts` | 6 (2 `lsn_dev_*`) | `AVAILABLE` |
@@ -78,13 +78,17 @@ skipped/failed tests, rejected rules). Inspection:
 2. Every regex passes a conservative **static ReDoS lint** and must compile.
 3. Every **declared test** is executed at load time through the same app
    evaluator used in scans. A rule whose own examples disagree is refused.
-   Measured: SAST 4,043 / secrets 4,660 / DAST 3,673 declared tests, **0
-   failures, 0 rejected rules**.
-4. SCA declaration rules (1,000 / 4,001 declared tests) are **shape-validated
-   but not evaluated**: the app has no declaration-document evaluator. The
-   status surface reports `scaDeclarationEvaluator: "NOT_IMPLEMENTED"` and
-   counts those tests as `skippedTests`, never as passing. This is an open
-   workload, not hidden success.
+   Measured: SAST 4,043 / secrets 4,660 / DAST 3,673 / **SCA 4,001** declared
+   tests — **0 failures, 0 skipped, 0 rejected rules**.
+4. SCA declaration rules (1,000) are compiled by the app's own
+   `external/scaDeclaration.ts` evaluator (six closed predicates, bounded
+   path/name walks). Status now reports
+   `scaDeclarationEvaluator: "AVAILABLE"`, `scaDeclarationScanParsers:
+   ["json"]`, `scaDeclarationScanReachableRules: 432`. Real SCA scans evaluate
+   432 JSON-parser rules against matching artifacts and emit persisted
+   `scanner: "SCA"` findings; the other 568 rules (TOML/YAML/XML/INI/text/Gradle
+   /requirements/lockfile-text) are counted as `declarationRulesNotEvaluated`
+   rather than pretended. See [`SCA_DECLARATION_ENGINE.md`](SCA_DECLARATION_ENGINE.md).
 5. `pack.json` identity (`packId` + `version`) is surfaced on the status and
    pack-inspection routes, so a finding's `DPK-*` rule id can be traced to a
    dataset version. Per-finding stamping still requires a shared-contract
@@ -138,9 +142,12 @@ Verify endpoints (authenticated): `/api/v1/dataset/status`,
 
 ## Known limits / owner decisions
 
-- **SCA declaration pack (1,000 rules)**: loaded and validated, 0 rules
-  reachable inside a scan. Wiring it needs a declaration-document evaluator and
-  a parser contract; documented, not silently claimed.
+- **SCA declaration pack (1,000 rules)**: the evaluator now exists in the app
+  and all 4,001 declared tests execute at load time. Scan-time coverage is
+  honest but partial: 432 rules whose artifact is a JSON document are
+  evaluated; 568 rules need additional document readers (TOML, YAML, XML, INI,
+  properties, Gradle, requirements, lockfile-text). No new parser was faked —
+  see [`SCA_DECLARATION_ENGINE.md`](SCA_DECLARATION_ENGINE.md).
 - **Active DAST** (`apps/api/src/scans/dast/activeEngine.ts`) exists behind a
   consent gate while both repos' written boundaries say active probing is out
   of scope (dataset `DROBON_REMAINING_WORK.csv` GAP-045, P0). This is an

@@ -15,8 +15,20 @@ import type {
   DatasetPackIdentity, VulnIntelCounts,
 } from './types.js';
 import { emptyPackReport, parsePackManifest, validatePackRules, type PackFamily, type PackReport } from './conformance.js';
+import { SCA_READABLE_PARSERS } from './scaDeclaration.js';
 
 const PACK_FAMILIES: readonly PackFamily[] = ['sast', 'secrets', 'dast', 'sca'];
+
+/** Honest coverage: how many loaded declaration rules a REAL scan can read today. */
+function reachableScaRuleCount(rules: readonly unknown[]): number {
+  let count = 0;
+  for (const raw of rules) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const parser = (raw as Record<string, unknown>)['parser'];
+    if (typeof parser === 'string' && (SCA_READABLE_PARSERS as readonly string[]).includes(parser)) count += 1;
+  }
+  return count;
+}
 
 async function collectJsonFiles(dir: string, out: string[] = []): Promise<string[]> {
   let entries: string[];
@@ -181,7 +193,9 @@ export function createDatasetService(options: { datasetPath?: string | undefined
       packs: { ...packs },
       conformance: {
         sast: reports.sast, secrets: reports.secrets, dast: reports.dast, sca: reports.sca,
-        scaDeclarationEvaluator: 'NOT_IMPLEMENTED',
+        scaDeclarationEvaluator: 'AVAILABLE',
+        scaDeclarationScanParsers: SCA_READABLE_PARSERS,
+        scaDeclarationScanReachableRules: reachableScaRuleCount(scaPackRules),
       },
       remediation: mk(remediationRecords.length),
       cwe: mk(cweRecords.length),
@@ -215,7 +229,15 @@ export function createDatasetService(options: { datasetPath?: string | undefined
     vulnIntelCount: async (): Promise<number> => { await ensureLoaded(); return vulnIntelCount; },
     vulnIntelCounts: async (): Promise<VulnIntelCounts> => { await ensureLoaded(); return vulnIntelCounts; },
     packMetadata: async (family: PackFamily): Promise<DatasetPackIdentity | undefined> => { await ensureLoaded(); return packs[family]; },
-    conformance: async () => { await ensureLoaded(); return { ...reports, scaDeclarationEvaluator: 'NOT_IMPLEMENTED' as const }; },
+    conformance: async () => {
+      await ensureLoaded();
+      return {
+        ...reports,
+        scaDeclarationEvaluator: 'AVAILABLE' as const,
+        scaDeclarationScanParsers: SCA_READABLE_PARSERS,
+        scaDeclarationScanReachableRules: reachableScaRuleCount(scaPackRules),
+      };
+    },
   };
 }
 

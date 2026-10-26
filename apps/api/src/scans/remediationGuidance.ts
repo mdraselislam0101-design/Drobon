@@ -42,6 +42,12 @@ function scannerFallback(finding: Finding): { why: string; actions: string[]; ve
         actions: [...shared, 'If the value is real, rotate it and move it to a secret manager; never paste it into a report.'],
         verification: 'Rerun the secrets scan on a clean snapshot and confirm the rotated value is gone.',
       };
+    case 'SCA':
+      return {
+        why: 'No dataset-backed explanation is loaded for this declaration rule. A declaration observation classifies a manifest entry; it does not prove an installed version is affected.',
+        actions: [...shared, 'Review the declared dependency or registry setting in the manifest, then pin or restrict it deliberately.'],
+        verification: 'Rerun the SCA scan after changing the manifest and compare the declaration-rule finding fingerprint.',
+      };
     default:
       return {
         why: 'No dataset-backed explanation is loaded for this rule in the current configuration.',

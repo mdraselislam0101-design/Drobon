@@ -72,7 +72,9 @@ describe('unified dataset service', () => {
     expect(status.sastPacks.version).toBe('2.3.4');
     expect(status.conformance.sast).toMatchObject({ filesSeen: 2, accepted: 1, declaredTests: 2, executedTests: 2, failedTests: 0 });
     expect(status.conformance.sast.rejected[0]?.id).toBe('DPK-SAST-901');
-    expect(status.conformance.scaDeclarationEvaluator).toBe('NOT_IMPLEMENTED');
+    expect(status.conformance.scaDeclarationEvaluator).toBe('AVAILABLE');
+    expect(status.conformance.scaDeclarationScanParsers).toContain('json');
+    expect(status.conformance.scaDeclarationScanReachableRules).toBeGreaterThanOrEqual(0);
     expect(await service.remediation()).toHaveLength(1);
     expect(await service.packMetadata('sast')).toEqual({ packId: 'fixture-sast', version: '2.3.4' });
   });

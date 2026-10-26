@@ -1,6 +1,6 @@
 {
   "schemaVersion": "drobon.integration-evidence/v1",
-  "generatedAt": "2026-10-26T09:16:29.827Z",
+  "generatedAt": "2026-10-26T10:29:46.107Z",
   "app": {
     "repo": "mdraselislam0101-design/Drobon",
     "branch": "arena/5bb07bd8-drobon"
@@ -73,8 +73,8 @@
       "filesSeen": 1000,
       "accepted": 1000,
       "declaredTests": 4001,
-      "executedTests": 0,
-      "skippedTests": 4001,
+      "executedTests": 4001,
+      "skippedTests": 0,
       "failedTests": 0,
       "rejected": 0
     }
@@ -95,7 +95,15 @@
   "sca": {
     "providerVectors": 16,
     "vectorsPassed": 16,
-    "declarationEvaluator": "NOT_IMPLEMENTED"
+    "declarationEvaluator": "AVAILABLE",
+    "declaredTests": 4001,
+    "parityMismatches": 0,
+    "uncompilable": 0,
+    "scanParsers": [
+      "json"
+    ],
+    "scanReachableRules": 432,
+    "loadedRules": 1000
   },
   "remediation": {
     "sampleRuleIds": [

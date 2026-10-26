@@ -16,6 +16,7 @@ import { resolve, join, relative } from 'node:path';
 
 import { createDatasetService } from '../apps/api/src/external/service.ts';
 import { evaluatePackDastCheck } from '../apps/api/src/external/evaluator.ts';
+import { compileScaDeclarationRule, evaluateScaDeclarationCheck } from '../apps/api/src/external/scaDeclaration.ts';
 import { SAST_LANGUAGE_CATALOG, isAnalyzedMaturity } from '../apps/api/src/scans/sast/languages.ts';
 import { resolvePackLanguages, unresolvedPackLanguageIds } from '../apps/api/src/external/languageAliases.ts';
 import { INSPECTED_RESPONSE_HEADERS } from '../apps/api/src/scans/dast/observedHeaders.ts';
@@ -64,7 +65,10 @@ for (const family of ['sast', 'secrets', 'dast', 'sca']) {
   };
   check(r.rejected.length === 0, `${family}: ${r.rejected.length} rules refused`);
   check(r.failedTests === 0, `${family}: ${r.failedTests} declared-test failures`);
+  check(r.skippedTests === 0, `${family}: ${r.skippedTests} skipped declared tests`);
 }
+check(status.conformance.scaDeclarationEvaluator === 'AVAILABLE', 'SCA declaration evaluator not available');
+check(status.conformance.scaDeclarationScanReachableRules > 0, 'no scan-reachable SCA declaration rules');
 
 // ---- 2. DAST declared-test parity through the APP evaluator ----
 const URL_OR_BODY = new Set(['response-body-matches', 'http-url', 'cookie-missing-flag', 'response-header-host-differs']);
@@ -88,6 +92,27 @@ for (const rule of dastRules) {
 }
 check(dastParityMismatches === 0, `DAST parity: ${dastParityMismatches} mismatches`);
 check(dastUnreachable === 0, `DAST reachability: ${dastUnreachable} unreachable rules`);
+
+// ---- 2b. SCA declaration parity through the APP evaluator (Pump 14) ----
+// Re-run every declared test independently of the loader. This proves the
+// app's evaluator reproduces the dataset's check semantics, not merely that
+// the loader counted the tests as executed.
+const scaRules = readdirSync(join(datasetPath, 'packs/sca/v1/rules')).filter((f) => f.endsWith('.json'))
+  .map((f) => JSON.parse(readFileSync(join(datasetPath, 'packs/sca/v1/rules', f), 'utf8')));
+let scaParityTests = 0;
+let scaParityMismatches = 0;
+let scaUncompilable = 0;
+for (const rule of scaRules) {
+  const compiled = compileScaDeclarationRule(rule);
+  if (compiled === undefined) { scaUncompilable += 1; continue; }
+  for (const test of rule.tests ?? []) {
+    const hit = evaluateScaDeclarationCheck(compiled, test.document);
+    scaParityTests += 1;
+    if (hit !== test.match) scaParityMismatches += 1;
+  }
+}
+check(scaUncompilable === 0, `SCA: ${scaUncompilable} rules failed to compile`);
+check(scaParityMismatches === 0, `SCA parity: ${scaParityMismatches} mismatches`);
 
 // ---- 3. SAST language reachability through the APP catalog ----
 const catalogIds = new Set(SAST_LANGUAGE_CATALOG.map((f) => f.id));
@@ -145,7 +170,14 @@ const evidence = {
   conformance,
   dast: { declaredTests: dastParityTests, parityMismatches: dastParityMismatches, unreachable: dastUnreachable, inspectedHeaders: INSPECTED_RESPONSE_HEADERS.size },
   sast: { rules: sastRules.length, unreachable: sastUnreachable, viaDatasetRuleFamily: sastViaDatasetRule, distinctLanguageIds: allPackLanguageIds.length, unresolvedLanguageIds: unresolved },
-  sca: { providerVectors: vectors.length, vectorsPassed, declarationEvaluator: status.conformance.scaDeclarationEvaluator },
+  sca: {
+    providerVectors: vectors.length, vectorsPassed,
+    declarationEvaluator: status.conformance.scaDeclarationEvaluator,
+    declaredTests: scaParityTests, parityMismatches: scaParityMismatches, uncompilable: scaUncompilable,
+    scanParsers: status.conformance.scaDeclarationScanParsers ?? [],
+    scanReachableRules: status.conformance.scaDeclarationScanReachableRules ?? 0,
+    loadedRules: scaRules.length,
+  },
   remediation: { sampleRuleIds: sampleIds, surfaced: guidanceSpecific },
   checks: failures.length === 0 ? 'PASS' : 'FAIL',
   failures,

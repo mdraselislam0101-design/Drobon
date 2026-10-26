@@ -7,16 +7,21 @@
  *
  *  1. closed field/schema/check-type validation (fail closed);
  *  2. conservative static ReDoS lint over every pattern;
- *  3. load-time execution of every DECLARED test for sast/secrets/dast;
+ *  3. load-time execution of every DECLARED test for sast/secrets/dast/sca;
  *  4. honest accounting, so the status surface can show what was refused.
  *
  * This file contains NO dataset bytes: it is application logic that reads the
- * external checkout at runtime. SCA declaration rules are loaded and validated,
- * but their `tests[]` are NOT executed here — the app has no declaration-document
- * evaluator yet. They are counted as `skippedTests`, never as passing.
+ * external checkout at runtime. SCA declaration rules are compiled by the
+ * app's own document evaluator (`scaDeclaration.ts`) and all their declared
+ * tests are executed here — a rule that disagrees is refused, never skipped.
  */
 
 import { DAST_CHECK_TYPES, evaluatePackDastCheck, type PackDastCheckShape } from './evaluator.js';
+import {
+  compileScaDeclarationRule,
+  evaluateScaDeclarationCheck,
+  type CompiledScaDeclarationRule,
+} from './scaDeclaration.js';
 
 export type PackFamily = 'sast' | 'secrets' | 'dast' | 'sca';
 
@@ -72,7 +77,6 @@ const SPECS: Record<PackFamily, Spec> = {
 };
 
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'INFO'];
-const SCA_CHECK_TYPES = ['sca-field-matches', 'sca-field-not-matches', 'sca-field-absent', 'sca-entry-missing-field', 'sca-key-matches', 'sca-name-distance'];
 
 /** Conservative static ReDoS lint (port of the dataset validator's lint). */
 export function lintRedos(source: string): string | null {
@@ -121,11 +125,6 @@ function validateCheck(family: PackFamily, check: unknown): string | null {
     if (type === 'response-header-missing-directive' && typeof check['directive'] !== 'string') return 'check.directive must be a string';
     if (type === 'cookie-missing-flag' && typeof check['flag'] !== 'string') return 'check.flag must be a string';
     if ((type === 'response-header-matches' || type === 'response-body-matches') && typeof check['valuePattern'] !== 'string') return 'check.valuePattern must be a string';
-    return null;
-  }
-  if (family === 'sca') {
-    if (!SCA_CHECK_TYPES.includes(check['type'] as string)) return `unknown SCA check type '${check['type']}'`;
-    if (typeof check['path'] !== 'string' && check['type'] !== 'sca-name-distance') return 'check.path must be a string';
     return null;
   }
   return null;
@@ -178,6 +177,35 @@ function dastTests(rule: Record<string, unknown>): { tests: number; failures: st
   return { tests: tests.length, failures };
 }
 
+/**
+ * Execute the declared tests of one SCA declaration rule through the app's
+ * own evaluator. Tests already carry a PARSED `document`; no parser lives in
+ * the dataset, so the app never has to guess a file format at load time.
+ */
+function scaTests(rule: Record<string, unknown>, compiled: CompiledScaDeclarationRule): { tests: number; failures: string[] } {
+  const tests = Array.isArray(rule['tests']) ? rule['tests'] : [];
+  const failures: string[] = [];
+  let positives = 0;
+  let negatives = 0;
+  for (const [index, test] of tests.entries()) {
+    if (!isRecord(test) || typeof test['match'] !== 'boolean' || !('document' in test)) {
+      failures.push(`test ${index}: malformed document test`);
+      continue;
+    }
+    if (test['match']) positives += 1; else negatives += 1;
+    let hit = false;
+    try {
+      hit = evaluateScaDeclarationCheck(compiled, test['document']);
+    } catch {
+      failures.push(`test ${index}: evaluator threw`);
+      continue;
+    }
+    if (hit !== test['match']) failures.push(`test ${index}: expected ${test['match']}, got ${hit}`);
+  }
+  if (positives === 0 || negatives === 0) failures.push('tests need a positive and a negative example');
+  return { tests: tests.length, failures };
+}
+
 /** Validate + load one family. Rejected rules are dropped (fail closed). */
 export function validatePackRules(rawRules: readonly unknown[], family: PackFamily): PackValidationOutcome {
   const spec = SPECS[family];
@@ -214,18 +242,26 @@ export function validatePackRules(rawRules: readonly unknown[], family: PackFami
         report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
         if (result.failures.length > 0) { reject(`declared tests failed: ${result.failures.slice(0, 2).join('; ')}`); continue; }
       }
-    } else {
+    } else if (family === 'dast') {
       const checkReason = validateCheck(family, raw['check']);
       if (checkReason !== null) { reject(checkReason); continue; }
-      if (family === 'dast') {
-        const result = dastTests(raw);
-        report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
-        if (result.failures.length > 0) { reject(`declared tests failed: ${result.failures.slice(0, 2).join('; ')}`); continue; }
-      } else {
-        // Honest: no declaration-document evaluator in the app yet.
-        report.declaredTests += raw['tests'].length;
-        report.skippedTests += raw['tests'].length;
+      const result = dastTests(raw);
+      report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
+      if (result.failures.length > 0) { reject(`declared tests failed: ${result.failures.slice(0, 2).join('; ')}`); continue; }
+    } else {
+      // SCA: compile the rule through the app's declaration evaluator, then
+      // run EVERY declared test. No skipped tests, no silent acceptance.
+      const compiled = compileScaDeclarationRule(raw);
+      if (compiled === undefined) { reject('invalid SCA declaration rule or check'); continue; }
+      // Step 2 of the loader checklist applies to SCA patterns too.
+      const scaPattern = compiled.rule.check.valuePattern ?? compiled.rule.check.keyPattern;
+      if (scaPattern !== undefined) {
+        const lint = lintRedos(scaPattern);
+        if (lint !== null) { reject(`ReDoS lint: ${lint}`); continue; }
       }
+      const result = scaTests(raw, compiled);
+      report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
+      if (result.failures.length > 0) { reject(`declared tests failed: ${result.failures.slice(0, 2).join('; ')}`); continue; }
     }
     rules.push(raw);
     report.accepted += 1;

@@ -54,6 +54,8 @@ import {
   createNullIntelligenceProvider,
   type VulnerabilityIntelligenceProvider,
 } from './provider.js';
+import { evaluateScaDeclarations } from './declarationScan.js';
+import type { DatasetService } from '../../external/service.js';
 
 /** The engine's hard resource limits (defaults; injectable for tests). */
 export interface ScaLimits {
@@ -111,6 +113,12 @@ export interface ScaEngineOptions {
   sources: SourceSnapshotProvider;
   /** The intelligence provider (defaults to the locked Null provider). */
   provider?: VulnerabilityIntelligenceProvider;
+  /**
+   * Optional dataset service for SCA DECLARATION rules (Pump 14). Additive:
+   * with no dataset configured the engine behaves exactly as before — zero
+   * declaration findings, honest zero coverage counters.
+   */
+  dataset?: DatasetService;
   /** Override the default limits (tests). */
   limits?: Partial<ScaLimits>;
   /** Clock for the deadline (tests). */
@@ -297,6 +305,20 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       const inventory = buildInventory(discovery.manifests, limits.maxDependencies);
       const sbom = buildSbom(inventory);
 
+      // Pump 14 (main-app only): evaluate the dataset's dependency-DECLARATION
+      // rules against the same read-only snapshot. This is additive — no
+      // dataset configured means no rules and therefore no declaration
+      // findings; inventory/SBOM/advisory behaviour is unchanged.
+      const declarationRules = options.dataset?.configured === true
+        ? await options.dataset.scaPacks()
+        : [];
+      const declarations = evaluateScaDeclarations({
+        rawRules: declarationRules,
+        files: snapshot.files.map((file) => ({ path: file.path, content: file.content })),
+        record,
+        shouldStop: () => now() > deadline || ctx.signal.aborted,
+      });
+
       // Manifest results for the response (paths + counts + bounded
       // notes — never manifest content).
       const manifestResults: ScaManifestResult[] = discovery.manifests.map((manifest) => {
@@ -404,17 +426,21 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         truncated: inventory.truncated,
       };
 
-      // The generic scan summary: SCA scans report zero SAST-style
-      // findings (advisories live in the SCA payload, clearly
-      // separated), plus lean dependency metrics for list views.
+      // Generic scan summary: advisories stay in the SCA payload (clearly
+      // separated), while declaration-rule matches are REAL persisted
+      // findings. Coverage counters state honestly how many declaration
+      // rules were evaluated vs. left unevaluated in this scan.
       const resultSummary: ScanResultSummary = {
-        findingsTotal: 0,
+        findingsTotal: declarations.findings.length,
+        findingsBySeverity: declarations.severityCounts,
+        truncated: inventory.truncated || declarations.truncated,
         filesScanned: summary.manifestsAnalyzed + summary.manifestsPartial,
         filesSkipped:
           summary.manifestsUnsupported + summary.manifestsInvalid + discovery.skipped,
-        ...(inventory.truncated ? { truncated: true } : {}),
         dependenciesTotal: inventory.totalUnique,
         directDependencies: inventory.directCount,
+        declarationRulesEvaluated: declarations.rulesEvaluated,
+        declarationRulesNotEvaluated: declarations.rulesNotEvaluated,
       };
 
       const sca: ScaResult = {
@@ -428,7 +454,12 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       if (now() > deadline || ctx.signal.aborted) {
         return deadlineFailure();
       }
-      return { kind: 'completed', resultSummary, sca };
+      return {
+        kind: 'completed',
+        resultSummary,
+        ...(declarations.findings.length === 0 ? {} : { findings: declarations.findings }),
+        sca,
+      };
     },
   };
 }

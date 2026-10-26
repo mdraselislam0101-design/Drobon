@@ -185,6 +185,10 @@ export interface ScanResultSummary {
   partial?: boolean;
   /** Bounded reason for `partial` (never source content). */
   partialReason?: string;
+  /** SCA declaration rules actually evaluated against a parsed artifact in this scan. */
+  declarationRulesEvaluated?: number;
+  /** SCA declaration rules not evaluated (artifact absent or parser not readable yet). */
+  declarationRulesNotEvaluated?: number;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -203,6 +207,9 @@ const SUMMARY_ALLOWED_KEYS = [
   // Secrets engine (Pump 10): explicit partial-scan honesty.
   'partial',
   'partialReason',
+  // SCA declaration evaluator (Pump 14): honest per-scan coverage.
+  'declarationRulesEvaluated',
+  'declarationRulesNotEvaluated',
 ] as const;
 
 function isCount(value: unknown): value is number {
@@ -279,6 +286,12 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
         return false;
       }
     }
+  }
+  if (record['declarationRulesEvaluated'] !== undefined && !isCount(record['declarationRulesEvaluated'])) {
+    return false;
+  }
+  if (record['declarationRulesNotEvaluated'] !== undefined && !isCount(record['declarationRulesNotEvaluated'])) {
+    return false;
   }
   return true;
 }
@@ -378,7 +391,7 @@ export const SAST_RULE_ID_PATTERN = /^(?:DG|DPK)-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}$/;
+export const FINDING_RULE_ID_PATTERN = /^(?:(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}|DPK-SCA-[0-9]{3,6})$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is
@@ -473,9 +486,14 @@ interface FindingBase {
   fingerprint: string;
 }
 
-/** Source-code finding produced by SAST or Secrets. */
+/**
+ * Source/manifest finding produced by SAST, Secrets, or the SCA
+ * declaration evaluator (Pump 14). Declaration findings carry a manifest
+ * path and a 1-based line just like source findings; their evidence never
+ * contains a declared VALUE (registry tokens are withheld).
+ */
 export interface SourceFinding extends FindingBase {
-  scanner?: 'SAST' | 'SECRETS';
+  scanner?: 'SAST' | 'SECRETS' | 'SCA';
   /** Relative path inside the project's source snapshot. */
   file: string;
   /** 1-based source location. */
@@ -565,7 +583,7 @@ export function isFinding(value: unknown): value is Finding {
   }
 
   if (
-    record['scanner'] !== undefined && record['scanner'] !== 'SAST' && record['scanner'] !== 'SECRETS' ||
+    record['scanner'] !== undefined && record['scanner'] !== 'SAST' && record['scanner'] !== 'SECRETS' && record['scanner'] !== 'SCA' ||
     (record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-')) ||
     typeof record['file'] !== 'string' || !isValidSourcePath(record['file']) ||
     typeof record['line'] !== 'number' || !Number.isInteger(record['line']) || record['line'] < 1 ||
@@ -588,6 +606,7 @@ export function findingScanner(finding: Finding): ScanType | undefined {
   if (finding.scanner !== undefined) return finding.scanner;
   if (finding.ruleId.startsWith('DG-SAST-') || finding.ruleId.startsWith('DPK-SAST-')) return 'SAST';
   if (finding.ruleId.startsWith('DG-SEC-') || finding.ruleId.startsWith('DPK-SEC-')) return 'SECRETS';
+  if (finding.ruleId.startsWith('DPK-SCA-')) return 'SCA';
   return undefined;
 }
 

@@ -33,8 +33,15 @@ export interface DatasetConformanceStatus {
   secrets: PackReport;
   dast: PackReport;
   sca: PackReport;
-  /** Declared SCA tests are not evaluated by the app yet (no document evaluator). */
-  scaDeclarationEvaluator: 'NOT_IMPLEMENTED';
+  /**
+   * The app owns a declaration-document evaluator: every declared SCA test
+   * is executed at load time. `NOT_IMPLEMENTED` remains for older fixtures.
+   */
+  scaDeclarationEvaluator: 'AVAILABLE' | 'NOT_IMPLEMENTED';
+  /** Parser kinds the SCAN-TIME declaration reader can turn into a document (v1: JSON). */
+  scaDeclarationScanParsers?: readonly string[];
+  /** Loaded declaration rules whose parser is readable in a real scan. */
+  scaDeclarationScanReachableRules?: number;
 }
 
 export interface DatasetOverallStatus {

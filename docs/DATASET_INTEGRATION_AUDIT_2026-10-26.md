@@ -175,3 +175,24 @@ For the product itself: `VULN_INTEL_PROVIDER=filesystem DATASET_PATH=../Drobon-D
 ---
 
 **Audit conclusion:** the two repositories are now genuinely connected and measured end-to-end. Every App-side engineering gap in the dataset's register is closed except the one that requires an owner decision (active DAST) and the explicitly-declared SCA declaration evaluator. The App no longer reports coverage it cannot deliver, and no dataset byte crossed into the App repository.
+
+---
+
+## 5. Addendum — 2026-10-26 (পরবর্তী main-app কাজ): SCA declaration evaluator
+
+> **দ্রষ্টব্য:** উপরের ১–৪ নম্বর section হলো commit `9270a2c`-এর ঐতিহাসিক অডিট। সেখানে লেখা "SCA declaration pack evaluated হয় না / `NOT_IMPLEMENTED` / 4,001 skippedTests" — সেটি সেই সময়ের অবস্থা। নিচের পরিবর্তন সেই একই ব্রাঞ্চে পরে করা হয়েছে এবং ওই statements-কে supersede করে। `DATASET_CONNECTION.md` current state-এ আপডেট করা হয়েছে; পূর্ণ বিবরণ [`SCA_DECLARATION_ENGINE.md`](SCA_DECLARATION_ENGINE.md)।
+
+**Scope (ব্যবহারকারীর নির্দেশ):** শুধুমাত্র মেইন অ্যাপ `Drobon` — পুরনো কোডের উপর additive update। `Drobon-Dataset` ও `Drobon-Database` repo-তে কোনো edit নেই; কোনো database/migration বা নতুন DB dependency নেই।
+
+| যা ছিল (অডিটে) | এখন |
+|---|---|
+| ১,০০০ SCA rule load + validate, scan-এ ০ evaluate | অ্যাপের নিজস্ব evaluator আছে (`external/scaDeclaration.ts`, `scans/sca/declarationScan.ts`) |
+| ৪,০০১ declared test `skippedTests`, `scaDeclarationEvaluator: "NOT_IMPLEMENTED"` | **৪,০০১/৪,০০১ executed**, 0 skipped, 0 failed; `AVAILABLE` |
+| status-এ শুধু "loaded" | `scaDeclarationScanParsers: ["json"]`, `scaDeclarationScanReachableRules: 432` |
+| SCA scan-এ `findingsTotal: 0` | JSON artifact-এ মেলা rule → persisted `scanner: "SCA"` finding (live e2e: ৫ finding, `eval 288 / notEval 712`) |
+
+**এখনো open (নতুন সৎ সীমা):** ৫৬৮টি rule-এর document reader নেই (`toml`, `yaml`, `xml`, `lockfile-text`, `ini`, `requirements`, `gradle`, `properties`) — সেগুলো scan-এ `declarationRulesNotEvaluated` হিসেবে গোনা হয়, কখনো "pass" নয়। Per-finding pack stamping, active-DAST boundary (GAP-045, P0), dataset licence/production ingestion — আগের মতোই open। Per-finding `packId@version` আসলে এখনও status/inspection surface-এই আছে।
+
+**Verification (পুনরায় চালানো):** `verify:dataset` **PASS** (SCA parity 0/4,001 mismatch, 0 skipped, 0 rejected, evaluator `AVAILABLE`); `npm test` **PASS ১,৩১৯/১,৩১৯** (নতুন ১৪ test); `typecheck`/`lint`/`build`/`check:secrets`/`check:boundaries`/`check:repo-integrity` PASS; `npm run verify` **PASS ১১/১১**। লাইভ preview-তে dataset সহ SCA scan → `COMPLETED` + ৫টি বৈধ SCA finding; evidence-এ কোনো declared value নেই।
+
+`docs/DATASET_INTEGRATION_EVIDENCE.json` এই addendum-এর counters দিয়ে regenerate করা হয়েছে (`sca.declaredTests`, `sca.parityMismatches`, `sca.scanParsers`, `sca.scanReachableRules`, `sca.declarationEvaluator`)।

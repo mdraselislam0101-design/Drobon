@@ -332,7 +332,7 @@ export function createApp(deps: AppDeps): App {
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore, dataset: datasetService }),
-      createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
+      createScaEngine({ sources: sourceStore, provider: intelligenceProvider, dataset: datasetService }),
       createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
       createDastEngine({
         targetPolicy: dastTargetPolicy,

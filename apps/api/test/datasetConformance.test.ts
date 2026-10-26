@@ -73,7 +73,7 @@ describe('dataset loader conformance', () => {
     expect(result.report.rejected[0]?.reason).toContain('unknown DAST check type');
   });
 
-  test('SCA declaration tests are counted as skipped, never as passing', () => {
+  test('SCA declaration tests are EXECUTED through the app evaluator (Pump 14)', () => {
     const scaRule = {
       ...base,
       schemaVersion: 'drobon.pack.sca/v1',
@@ -90,10 +90,66 @@ describe('dataset loader conformance', () => {
     delete (scaRule as Record<string, unknown>)['languages'];
     delete (scaRule as Record<string, unknown>)['patterns'];
     const result = validatePackRules([scaRule], 'sca');
+    expect(result.rules).toHaveLength(1);
     expect(result.report.accepted).toBe(1);
-    expect(result.report.executedTests).toBe(0);
-    expect(result.report.skippedTests).toBe(2);
+    expect(result.report.declaredTests).toBe(2);
+    expect(result.report.executedTests).toBe(2);
+    expect(result.report.skippedTests).toBe(0);
     expect(result.report.failedTests).toBe(0);
+    expect(result.report.rejected).toEqual([]);
+  });
+
+  test('an SCA rule whose declared test disagrees is refused, never skipped', () => {
+    const scaRule = {
+      ...base,
+      schemaVersion: 'drobon.pack.sca/v1',
+      id: 'DPK-SCA-9001',
+      ecosystems: ['npm'], artifact: 'package.json', parser: 'json',
+      check: { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '^\\*$' },
+      tests: [
+        { file: 'package.json', document: { dependencies: { x: '*' } }, match: false },
+        { file: 'package.json', document: { dependencies: { x: '1.0.0' } }, match: true },
+      ],
+    };
+    const result = validatePackRules([scaRule], 'sca');
+    expect(result.rules).toHaveLength(0);
+    expect(result.report.failedTests).toBeGreaterThan(0);
+    expect(result.report.skippedTests).toBe(0);
+    expect(result.report.rejected[0]?.reason).toContain('declared tests failed');
+  });
+
+  test('an unknown SCA check type is refused instead of silently matching false', () => {
+    const scaRule = {
+      ...base,
+      schemaVersion: 'drobon.pack.sca/v1',
+      id: 'DPK-SCA-9001',
+      ecosystems: ['npm'], artifact: 'package.json', parser: 'json',
+      check: { type: 'invented-sca-check', path: 'dependencies.*' },
+      tests: [
+        { file: 'package.json', document: { dependencies: { x: '*' } }, match: true },
+        { file: 'package.json', document: { dependencies: { x: '1.0.0' } }, match: false },
+      ],
+    };
+    const result = validatePackRules([scaRule], 'sca');
+    expect(result.rules).toHaveLength(0);
+    expect(result.report.rejected[0]?.reason).toContain('invalid SCA declaration rule');
+  });
+
+  test('a slow SCA declaration pattern is refused by the ReDoS lint', () => {
+    const scaRule = {
+      ...base,
+      schemaVersion: 'drobon.pack.sca/v1',
+      id: 'DPK-SCA-9001',
+      ecosystems: ['npm'], artifact: 'package.json', parser: 'json',
+      check: { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '(a+)+' },
+      tests: [
+        { file: 'package.json', document: { dependencies: { x: 'aaaa' } }, match: true },
+        { file: 'package.json', document: { dependencies: { x: '1.0.0' } }, match: false },
+      ],
+    };
+    const result = validatePackRules([scaRule], 'sca');
+    expect(result.rules).toHaveLength(0);
+    expect(result.report.rejected[0]?.reason).toContain('ReDoS');
   });
 
   test('static ReDoS lint rejects nested quantifiers and repeated wildcards', () => {
