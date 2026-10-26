@@ -30,8 +30,11 @@
 
 import {
   isValidSourcePath,
+  MAX_FINDINGS_PER_SCAN,
   SCA_MAX_DEPENDENCIES_PER_SCAN,
   SCA_MAX_MANIFESTS_PER_SCAN,
+  type Finding,
+  type FindingSeverity,
   type ScaAdvisory,
   type ScaManifestResult,
   type ScaResult,
@@ -56,6 +59,8 @@ import {
 } from './provider.js';
 import { evaluateScaDeclarations } from './declarationScan.js';
 import type { DatasetService } from '../../external/service.js';
+import type { AdvisoryService } from '../../external/advisory.js';
+import { advisorySourceFinding } from '../advisoryFindings.js';
 
 /** The engine's hard resource limits (defaults; injectable for tests). */
 export interface ScaLimits {
@@ -119,6 +124,12 @@ export interface ScaEngineOptions {
    * declaration findings, honest zero coverage counters.
    */
   dataset?: DatasetService;
+  /**
+   * Optional generic advisory service (Pump 15): matches declared runtime
+   * versions in ANY manifest (composer.json, package.json, go.mod, ...) against
+   * the operator's advisory pack. No network, no execution, no new requests.
+   */
+  advisory?: AdvisoryService;
   /** Override the default limits (tests). */
   limits?: Partial<ScaLimits>;
   /** Clock for the deadline (tests). */
@@ -239,6 +250,18 @@ function sanitizeAdvisory(
   };
 }
 
+/** Locate an observed version string in a manifest for an honest line/column. */
+function locateVersion(content: string, version: string): { line: number; column: number } {
+  const index = content.slice(0, 262_144).indexOf(version);
+  if (index < 0) return { line: 1, column: 1 };
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < index; i += 1) {
+    if (content[i] === '\n') { line += 1; column = 1; } else { column += 1; }
+  }
+  return { line, column };
+}
+
 /**
  * Build the real SCA engine and register it for the SCA scan type.
  * Side-effect bounded: reads the snapshot, parses manifests, consults
@@ -318,6 +341,30 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         record,
         shouldStop: () => now() > deadline || ctx.signal.aborted,
       });
+
+      // Pump 15: generic advisory analysis over declared runtime versions in
+      // ANY manifest (composer.json `require.php`, package.json `engines.node`,
+      // go.mod, ...). Data-driven, language-agnostic, no network or execution.
+      const advisoryFindings: Finding[] = [];
+      if (options.advisory !== undefined) {
+        const advisoryResult = await options.advisory.evaluate({
+          files: snapshot.files.map((file) => ({ path: file.path, content: file.content })),
+        });
+        for (const match of advisoryResult.matches) {
+          const filePath = match.location.split(' ')[0] ?? '';
+          const source = snapshot.files.find((file) => file.path === filePath);
+          if (source === undefined || !isValidSourcePath(filePath)) continue;
+          const { line, column } = locateVersion(source.content, match.observedVersion);
+          advisoryFindings.push(advisorySourceFinding(match, { record, file: filePath, line, column }));
+          if (advisoryFindings.length >= MAX_FINDINGS_PER_SCAN) break;
+        }
+      }
+      const producedFindings = declarations.findings.length + advisoryFindings.length;
+      const allFindings = [...declarations.findings, ...advisoryFindings].slice(0, MAX_FINDINGS_PER_SCAN);
+      const severityCounts: Record<FindingSeverity, number> = {
+        CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0,
+      };
+      for (const finding of allFindings) severityCounts[finding.severity] += 1;
 
       // Manifest results for the response (paths + counts + bounded
       // notes — never manifest content).
@@ -431,9 +478,9 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       // findings. Coverage counters state honestly how many declaration
       // rules were evaluated vs. left unevaluated in this scan.
       const resultSummary: ScanResultSummary = {
-        findingsTotal: declarations.findings.length,
-        findingsBySeverity: declarations.severityCounts,
-        truncated: inventory.truncated || declarations.truncated,
+        findingsTotal: allFindings.length,
+        findingsBySeverity: severityCounts,
+        truncated: inventory.truncated || declarations.truncated || producedFindings > allFindings.length,
         filesScanned: summary.manifestsAnalyzed + summary.manifestsPartial,
         filesSkipped:
           summary.manifestsUnsupported + summary.manifestsInvalid + discovery.skipped,
@@ -457,7 +504,7 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       return {
         kind: 'completed',
         resultSummary,
-        ...(declarations.findings.length === 0 ? {} : { findings: declarations.findings }),
+        ...(allFindings.length === 0 ? {} : { findings: allFindings }),
         sca,
       };
     },

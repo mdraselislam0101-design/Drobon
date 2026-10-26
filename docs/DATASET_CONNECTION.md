@@ -142,6 +142,12 @@ Verify endpoints (authenticated): `/api/v1/dataset/status`,
 
 ## Known limits / owner decisions
 
+- **New CVEs / runtime-engine bugs (e.g. PHP2Shell)**: the dataset packs above
+  classify *declared dependencies and source patterns*, not installed runtime
+  versions. That is the job of the separate, data-driven
+  [`ADVISORY_ENGINE.md`](ADVISORY_ENGINE.md) (`ADVISORY_PATH`), which is
+  language-agnostic and needs no dataset-repo change. A live licensed advisory
+  feed + refresh cadence is still an owner/licence decision (GAP-001..004).
 - **SCA declaration pack (1,000 rules)**: the evaluator now exists in the app
   and all 4,001 declared tests execute at load time. Scan-time coverage is
   honest but partial: 432 rules whose artifact is a JSON document are

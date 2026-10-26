@@ -98,6 +98,13 @@ export interface ApiConfig {
   vulnIntelProvider: 'none' | 'filesystem';
   /** Filesystem path to the external Drobon-Dataset repo (when provider is filesystem). */
   datasetPath?: string | undefined;
+  /**
+   * Optional path to an operator-supplied GENERIC advisory pack (Pump 15).
+   * This is runtime configuration, not a bundled dataset: the file lives
+   * outside the repo and drives version/advisory checks for ANY ecosystem.
+   * When absent, advisory analysis reports honest NOT_CONFIGURED.
+   */
+  advisoryPath?: string | undefined;
   /** Durable Pump 15 payment + audit JSON document. */
   paymentStorePath: string;
   /** Admin complimentary PRO entitlement store (persistent by default). */
@@ -356,6 +363,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   } else if (datasetPathRaw.length > 0) {
     issues.push('DATASET_PATH is only allowed when VULN_INTEL_PROVIDER=filesystem');
   }
+  // ADVISORY_PATH (Pump 15): optional, independent of the dataset provider.
+  const advisoryPathRaw = (env['ADVISORY_PATH'] ?? '').trim();
+  let advisoryPath: string | undefined;
+  if (advisoryPathRaw.length > 0) {
+    if (advisoryPathRaw.length > 500 || hasControlCharacter(advisoryPathRaw)) {
+      issues.push('ADVISORY_PATH must be 1-500 printable characters');
+    } else {
+      advisoryPath = advisoryPathRaw;
+    }
+  }
 
   const sourceStorePath = (env['SOURCE_STORE_PATH'] ?? '.data/sources.json').trim();
   const sourceMemoryStore = sourceStorePath === ':memory:';
@@ -495,6 +512,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     sourceStorePath,
     vulnIntelProvider,
     datasetPath,
+    advisoryPath,
     paymentStorePath,
     entitlementStorePath,
     partnerStorePath,

@@ -14,6 +14,8 @@ import type { DatasetService } from '../../external/service.js';
 import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type ResolvedDastTarget } from './target.js';
 import { findingFingerprint } from '../findingIdentity.js';
 import { createActiveDastEngine } from './activeEngine.js';
+import type { AdvisoryMatch, AdvisoryService } from '../../external/advisory.js';
+import { advisoryDastFinding } from '../advisoryFindings.js';
 
 export const DAST_MAX_REQUESTS = 3;
 export const DAST_MAX_REDIRECTS = 2;
@@ -34,6 +36,12 @@ export interface DastEngineOptions {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   packRules?: readonly { id: string; title: string; description: string; severity: import('@drobon/shared').FindingSeverity; cwe?: string; remediation: string; check: any }[];
   dataset?: DatasetService;
+  /**
+   * Optional generic advisory service (Pump 15). When configured, version
+   * signals from the passive response are matched against the operator's
+   * advisory pack — for ANY ecosystem/language — with honest UNKNOWN results.
+   */
+  advisory?: AdvisoryService;
 }
 
 function statusCounts(findings: readonly Finding[]): Record<FindingSeverity, number> {
@@ -234,6 +242,9 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         headers: string[];
       }> = [];
       const findings: Finding[] = [];
+      // Pump 15: advisory matches are collected across all observations and
+      // deduplicated by (ruleId, location, version) before findings are built.
+      const advisoryMatches = new Map<string, { match: AdvisoryMatch; endpoint: string; status: number; elapsedMs: number; observedAt: string }>();
       let redirectsFollowed = 0;
       let partialReason: string | undefined;
 
@@ -330,6 +341,21 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
             }
           }
         }
+        // Pump 15: generic advisory analysis on the SAME passive response.
+        // No extra request, no payload, no exploit — only version signals.
+        if (options.advisory !== undefined) {
+          const advisoryResult = await options.advisory.evaluate({
+            headers: response.headers,
+            body: response.body,
+          });
+          for (const match of advisoryResult.matches) {
+            const key = `${match.ruleId}\n${match.location}\n${match.observedVersion}`;
+            if (advisoryMatches.has(key)) continue;
+            advisoryMatches.set(key, {
+              match, endpoint, status: response.status, elapsedMs: response.elapsedMs, observedAt,
+            });
+          }
+        }
         if (response.bodyTruncated) {
           partialReason = 'The response body reached the configured inspection limit and was truncated.';
         }
@@ -353,6 +379,17 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         redirectsFollowed += 1;
       }
 
+      for (const entry of advisoryMatches.values()) {
+        findings.push(advisoryDastFinding(entry.match, {
+          record,
+          targetUrl: configuredUrl,
+          endpoint: entry.endpoint,
+          responseStatus: entry.status,
+          responseTimeMs: entry.elapsedMs,
+          observedAt: entry.observedAt,
+        }));
+        if (findings.length >= MAX_FINDINGS_PER_SCAN) break;
+      }
       const truncated = findings.length > MAX_FINDINGS_PER_SCAN;
       const boundedFindings = findings.slice(0, MAX_FINDINGS_PER_SCAN);
       const partial = partialReason !== undefined;

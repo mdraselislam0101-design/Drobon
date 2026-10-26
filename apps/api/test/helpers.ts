@@ -34,6 +34,7 @@ import { createSecretsEngine } from '../src/scans/secrets/engine.js';
 import { createDastEngine } from '../src/scans/dast/engine.js';
 import { createNullIntelligenceProvider } from '../src/scans/sca/provider.js';
 import { TEST_SAST_RULES, TEST_SECRETS_RULES, TEST_DAST_RULES } from './fixtures/testData.js';
+import type { AdvisoryService } from '../src/external/advisory.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
 import type { EntitlementStore } from '../src/entitlements/store.js';
@@ -84,6 +85,8 @@ export interface TestServer {
 
 export type TestServerOverrides = Partial<ApiConfig> & {
   extraRoutes?: Route[];
+  /** Inject a generic advisory service (Pump 15); defaults to NOT_CONFIGURED. */
+  advisory?: AdvisoryService;
   users?: UserRepository;
   sessions?: SessionStore;
   /** Use a real JSON file store at a temp path instead of memory. */
@@ -169,6 +172,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
   const logs: string[] = [];
   const {
     extraRoutes,
+    advisory,
     users,
     sessions,
     authStoreDir,
@@ -362,6 +366,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     // starts the processor itself.
     scanProcessorAutoStart: false,
     ...(extraRoutes === undefined ? {} : { extraRoutes }),
+    ...(advisory === undefined ? {} : { advisory }),
   });
   return {
     baseUrl: started.url,

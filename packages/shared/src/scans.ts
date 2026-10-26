@@ -391,7 +391,7 @@ export const SAST_RULE_ID_PATTERN = /^(?:DG|DPK)-SAST-[0-9]{3}$/;
  * scanner family by id alone (`DG-SAST-###` static analysis,
  * `DG-SEC-###` secrets). Closed — no free-form rule ids.
  */
-export const FINDING_RULE_ID_PATTERN = /^(?:(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}|DPK-SCA-[0-9]{3,6})$/;
+export const FINDING_RULE_ID_PATTERN = /^(?:(?:DG|DPK)-(?:SAST|SEC|DAST)-[0-9]{3}|DPK-SCA-[0-9]{3,6}|ADV-[0-9]{4,})$/;
 
 /**
  * Detection confidence (Pump 10, secrets): how certain the RULE is
@@ -558,7 +558,7 @@ export function isFinding(value: unknown): value is Finding {
   const dast = record['scanner'] === 'DAST' || record['ruleId'].startsWith('DG-DAST-') || record['ruleId'].startsWith('DPK-DAST-');
   if (dast) {
     if (
-      record['scanner'] !== 'DAST' || !/^(?:DG|DPK)-DAST-[0-9]{3,}$/.test(record['ruleId']) ||
+      record['scanner'] !== 'DAST' || !/^(?:(?:DG|DPK)-DAST-[0-9]{3,}|ADV-[0-9]{4,})$/.test(record['ruleId']) ||
       typeof record['projectId'] !== 'string' || !PROJECT_ID_PATTERN.test(record['projectId']) ||
       !isSafeDastUrl(record['targetUrl']) || !isSafeDastUrl(record['endpoint']) ||
       record['method'] !== 'GET' ||
