@@ -60,6 +60,28 @@ describe('unified dataset service', () => {
     expect(await service.sastPacks()).toEqual([]);
   });
 
+  test('SCA eligible rule count excludes artifacts blocked by source-path policy', async () => {
+    const root = fixtureDataset();
+    const dir = join(root, 'packs', 'sca', 'v1', 'rules');
+    mkdirSync(dir, { recursive: true });
+    const rule = {
+      schemaVersion: 'drobon.pack.sca/v1', id: 'DPK-SCA-9001', title: 'Fixture',
+      description: 'Fixture declaration.', severity: 'LOW', category: 'fixture',
+      remediation: 'Review.', limitation: 'Fixture.', ecosystems: ['npm'],
+      artifact: 'package.json', parser: 'json', patternRefs: ['DPK-PAT-9001'],
+      check: { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '^\\*$' },
+      tests: [
+        { file: 'package.json', document: { dependencies: { x: '*' } }, match: true },
+        { file: 'package.json', document: { dependencies: { x: '1.0.0' } }, match: false },
+      ],
+    };
+    writeFileSync(join(dir, 'allowed.json'), JSON.stringify(rule));
+    writeFileSync(join(dir, 'blocked.json'), JSON.stringify({ ...rule, id: 'DPK-SCA-9002', artifact: '.npmrc' }));
+    const status = await createDatasetService({ datasetPath: root, providerId: 'filesystem', logger: silent }).status();
+    expect(status.scaPacks.count).toBe(2);
+    expect(status.conformance.scaDeclarationScanReachableRules).toBe(1);
+  });
+
   test('configured service deduplicates vuln-intel identity and refuses invalid packs', async () => {
     const root = fixtureDataset();
     const service = createDatasetService({ datasetPath: root, providerId: 'filesystem', logger: silent });

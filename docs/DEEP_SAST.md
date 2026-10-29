@@ -1,6 +1,9 @@
 # Deep SAST — বাউন্ডেড AST / Dataflow Engine
 
-**তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। ডেটাসেট repo / ডেটাবেসে কোনো পরিবর্তন নেই, **কোনো নতুন npm dependency নেই** (parser নিজে লেখা, bounded)।
+> **বর্তমান সংশোধন:** নিচের বিবরণ Pump 16-এর ঐতিহাসিক shallow pass-এর জন্য। পরে JS/TS/JSX/TSX, Python, PHP ও Java-র সীমিত বাস্তব parser এবং JS/TS-এর সীমিত project flow যোগ হয়েছে; নতুন dependency, coverage, provenance ও বর্তমান সীমার জন্য [`AST_ANALYSIS.md`](AST_ANALYSIS.md) দেখুন। Lexical pass এখনও false positive দিতে পারে। কোনো pass-ই পূর্ণ security analysis নয়।
+
+
+**ঐতিহাসিক Pump 16 তারিখ:** 2026-10-26 · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। সেই পুরোনো shallow pass-এ dependency ছিল না; বর্তমান syntax parsers-এর dependency আছে। Dataset বা database repo-তে এই কাজের কোনো পরিবর্তন নেই।
 
 > **আপনি যা চেয়েছিলেন:** "কোডের ভেতরের ত্রুটি আরও গভীরে বিশ্লেষণ" — অর্থাৎ শুধু লাইনে regex ম্যাচ নয়, বরং **অবিশ্বস্ত ইনপুট → ভেরিয়েবল → বিপজ্জনক ফাংশন** এই প্রবাহটা ধরা।
 >
@@ -20,7 +23,7 @@
 
 - **Comment / string body** আলাদা token — তাই `// exec(req.body.x)` বা `"exec(req.body.x)"` আর false positive দেয় না।
 - **Dotted chain** (`req.body.name`, `db.query`, `os.system`) — আলগা identifier নয়, তাই unrelated নামে ভুল ম্যাচ কম।
-- **Sanitizer** (`encodeURIComponent`, `DOMPurify.sanitize`, `intval`, `shlex.quote`…) আর **parameterized SQL** (`?`, `$1`, `%s`) সঠিকভাবে suppress করে।
+- **SQL parameterization:** শুধু সীমিত static literal query এবং পৃথক parameter argument শনাক্ত হলে AST pass suppression করে; অন্যান্য আকারে review লাগতে পারে। Context-বহির্ভূত encoding-কে blanket sanitizer ধরা হয় না।
 - **Template literal**-এর `${...}` ভেতরের taint দেখা যায়।
 - **এক স্তরের interprocedural flow** — `function run(v) { exec(v) } run(req.body.x)` ধরা পড়ে (একটি bounded extra iteration, কোনো fixpoint নেই)।
 
@@ -70,7 +73,7 @@ Finding সাধারণ `Finding` contract মেনে তৈরি — ত�
 | `const cmd = req.body.cmd; child_process.exec(cmd);` | ✅ `command` finding, line 2 |
 | `// child_process.exec(req.body.x)` | ✅ **কোনো finding নেই** (comment) |
 | `const s = "child_process.exec(req.body.x)";` | ✅ **কোনো finding নেই** (string body) |
-| `exec(encodeURIComponent(req.body.n))` | ✅ suppress (sanitizer) |
+| `exec(encodeURIComponent(req.body.n))` | ⚠️ AST review candidate — URL encoding shell safety প্রমাণ করে না |
 | ``const q = `ls ${req.body.dir}`; exec(q);`` | ✅ `command` finding (template taint) |
 | `db.query("... WHERE n = " + req.body.n)` | ✅ `sql` finding |
 | `db.query("... WHERE n = ?", [req.body.n])` | ✅ suppress (parameterized) |
@@ -119,10 +122,10 @@ db.query(q);
 | **Cross-file নেই** | import/require resolve করা হয় না; flow একটিই ফাইলের ভেতরে সীমাবদ্ধ। |
 | **Fixpoint নেই** | interprocedural propagation মাত্র **একটি** extra iteration; recursive/transitive call-chain ধরা পড়বে না। |
 | **Control-flow insensitive** | `if (false) { exec(tainted) }` — branch condition বোঝা হয় না (conservative, over-report হতে পারে)। |
-| **Sanitizer allowlist সীমিত** | তালিকায় নেই এমন sanitizer কে unsanitized ধরা হয় — অর্থাৎ **কম রিপোর্ট নয়, বেশি রিপোর্ট** হতে পারে; কখনো silently suppress করে না। |
+| **Sanitizer সীমা** | AST pass conservative; context-sensitive sanitizer-এর সম্পূর্ণ বিশ্লেষণ নেই। Legacy semantic pass এবং lexical rules ভিন্ন হতে পারে; false-positive ও false-negative সম্ভব। |
 | **"সব বাগ" নয়** | business logic, auth bypass, race condition, runtime state — এখনো বাইরে। কোনো স্ক্যানারই সব ধরে না। |
 | **Auto-fix নেই** | শুধু read-only বিশ্লেষণ; source বদলায় না, patch করে না, code execute করে না। |
-| **নতুন npm dependency নেই** | tree-sitter/parser library আনিনি — নিজের bounded lexer লিখেছি, তাই lockfile/audit/scan-boundary অক্ষত। |
+| **Historical dependency note** | পুরোনো shallow pass নিজের bounded lexer ব্যবহার করে। নতুন JS/TS syntax pass `typescript` runtime dependency ব্যবহার করে। |
 
 ---
 

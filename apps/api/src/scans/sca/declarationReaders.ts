@@ -28,6 +28,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Untrusted manifest keys must never reach an Object.prototype-backed map. */
+function emptyMap(): Record<string, unknown> {
+  return Object.create(null) as Record<string, unknown>;
+}
+
 function boundedText(content: string): string[] {
   return content.slice(0, READER_MAX_BYTES).split('\n').slice(0, READER_MAX_LINES);
 }
@@ -96,13 +101,13 @@ function splitTopLevel(value: string, separator: string): string[] {
   return out;
 }
 
-function assign(root: Record<string, unknown>, path: readonly string[], value: unknown, depth = 0): void {
-  if (path.length === 0 || depth > READER_MAX_DEPTH) return;
+function assign(root: Record<string, unknown>, path: readonly string[], value: unknown): void {
+  if (path.length === 0 || path.length > READER_MAX_DEPTH) return;
   let cursor: Record<string, unknown> = root;
   for (let i = 0; i < path.length - 1; i += 1) {
     const key = path[i] ?? '';
     const next = cursor[key];
-    if (!isRecord(next)) cursor[key] = {};
+    if (!isRecord(next)) cursor[key] = emptyMap();
     cursor = cursor[key] as Record<string, unknown>;
   }
   const last = path[path.length - 1] ?? '';
@@ -116,17 +121,18 @@ function assign(root: Record<string, unknown>, path: readonly string[], value: u
 // TOML (sections, arrays of tables, dotted keys, arrays, inline tables)
 // ---------------------------------------------------------------------------
 
-function inlineValue(raw: string): unknown {
+function inlineValue(raw: string, depth = 0): unknown {
+  if (depth > READER_MAX_DEPTH) throw new RangeError('Declaration nesting limit exceeded.');
   const text = raw.trim();
   if (text.startsWith('[') && text.endsWith(']')) {
-    return splitTopLevel(text.slice(1, -1), ',').map((part) => inlineValue(part));
+    return splitTopLevel(text.slice(1, -1), ',').map((part) => inlineValue(part, depth + 1));
   }
   if (text.startsWith('{') && text.endsWith('}')) {
-    const out: Record<string, unknown> = {};
+    const out = emptyMap();
     for (const part of splitTopLevel(text.slice(1, -1), ',')) {
       const eq = part.indexOf('=');
       if (eq < 0) continue;
-      out[unquote(part.slice(0, eq).trim())] = inlineValue(part.slice(eq + 1));
+      out[unquote(part.slice(0, eq).trim())] = inlineValue(part.slice(eq + 1), depth + 1);
     }
     return out;
   }
@@ -134,7 +140,7 @@ function inlineValue(raw: string): unknown {
 }
 
 export function readToml(content: string): unknown | undefined {
-  const root: Record<string, unknown> = {};
+  const root = emptyMap();
   let section: string[] = [];
   let arrayTable: Record<string, unknown> | undefined;
   let nodeCount = 0;
@@ -162,14 +168,14 @@ export function readToml(content: string): unknown | undefined {
         if (i === path.length - 1) {
           const list = cursor[key];
           if (!Array.isArray(list)) cursor[key] = [];
-          const entry: Record<string, unknown> = {};
+          const entry = emptyMap();
           (cursor[key] as unknown[]).push(entry);
           arrayTable = entry;
         } else {
           const next = cursor[key];
           if (Array.isArray(next)) cursor = next[next.length - 1] as Record<string, unknown>;
           else {
-            if (!isRecord(next)) cursor[key] = {};
+            if (!isRecord(next)) cursor[key] = emptyMap();
             cursor = cursor[key] as Record<string, unknown>;
           }
         }
@@ -215,9 +221,11 @@ export function readYaml(content: string): unknown | undefined {
   if (lines.length === 0) return undefined;
   let index = 0;
   let nodes = 0;
+  let exceeded = false;
 
-  const parseNode = (indent: number): unknown => {
-    if (index >= lines.length || nodes > READER_MAX_NODES) return undefined;
+  const parseNode = (indent: number, depth: number): unknown => {
+    if (depth > READER_MAX_DEPTH || nodes >= READER_MAX_NODES) { exceeded = true; return undefined; }
+    if (index >= lines.length) return undefined;
     nodes += 1;
     const current = lines[index];
     if (current === undefined) return undefined;
@@ -228,10 +236,11 @@ export function readYaml(content: string): unknown | undefined {
         if (line === undefined || line.indent !== indent || !line.text.startsWith('- ')) break;
         const rest = line.text.slice(2).trim();
         index += 1;
-        if (rest.length === 0) { list.push(parseNode(indent + 2)); continue; }
+        if (rest.length === 0) { list.push(parseNode(indent + 2, depth + 1)); continue; }
         const colon = rest.indexOf(':');
         if (colon > 0 && !rest.startsWith('"') && !rest.startsWith("'")) {
-          const entry: Record<string, unknown> = { [unquote(rest.slice(0, colon).trim())]: inlineValue(rest.slice(colon + 1)) };
+          const entry = emptyMap();
+          entry[unquote(rest.slice(0, colon).trim())] = inlineValue(rest.slice(colon + 1));
           while (index < lines.length) {
             const child = lines[index];
             if (child === undefined || child.indent <= indent) break;
@@ -242,7 +251,7 @@ export function readYaml(content: string): unknown | undefined {
           }
           list.push(entry);
         } else if (rest.startsWith('[') && rest.endsWith(']')) {
-          list.push(...splitTopLevel(rest.slice(1, -1), ',').map(inlineValue));
+          list.push(...splitTopLevel(rest.slice(1, -1), ',').map((part) => inlineValue(part)));
         } else {
           list.push(inlineValue(rest));
         }
@@ -250,7 +259,7 @@ export function readYaml(content: string): unknown | undefined {
       }
       return list;
     }
-    const out: Record<string, unknown> = {};
+    const out = emptyMap();
     while (index < lines.length) {
       const line = lines[index];
       if (line === undefined || line.indent < indent) break;
@@ -262,9 +271,9 @@ export function readYaml(content: string): unknown | undefined {
       index += 1;
       if (rest.length === 0) {
         const next = lines[index];
-        out[key] = next !== undefined && next.indent > indent ? parseNode(next.indent) : {};
+        out[key] = next !== undefined && next.indent > indent ? parseNode(next.indent, depth + 1) : emptyMap();
       } else if (rest.startsWith('[') && rest.endsWith(']')) {
-        out[key] = splitTopLevel(rest.slice(1, -1), ',').map(inlineValue);
+        out[key] = splitTopLevel(rest.slice(1, -1), ',').map((part) => inlineValue(part));
       } else if (rest.startsWith('{') && rest.endsWith('}')) {
         out[key] = inlineValue(rest);
       } else {
@@ -275,8 +284,8 @@ export function readYaml(content: string): unknown | undefined {
     return out;
   };
 
-  const result = parseNode(lines[0]?.indent ?? 0);
-  return result === undefined ? undefined : result;
+  const result = parseNode(lines[0]?.indent ?? 0, 0);
+  return exceeded || result === undefined ? undefined : result;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,14 +301,18 @@ function xmlName(name: string): string {
 
 export function readXml(content: string): unknown | undefined {
   const text = content.slice(0, READER_MAX_BYTES);
-  const tagPattern = /<(\/?)([A-Za-z_][\w:.-]*)((?:"[^"]*"|'[^']*'|[^>])*?)(\/?)>/g;
+  // Reject declarations/entities; this is a bounded reader, not an XML processor.
+  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text)) return undefined;
+  // Deliberately conservative, linear tag matching: input containing nested
+  // angle brackets in attributes is unsupported rather than fully parsed.
+  const tagPattern = /<(\/?)([A-Za-z_][\w:.-]*)([^<>]*?)(\/?)>/g;
   const root: XmlNode = { name: '#root', attributes: {}, children: [], text: '' };
   const stack: XmlNode[] = [root];
   let cursor = 0;
   let nodes = 0;
   for (const match of text.matchAll(tagPattern)) {
     nodes += 1;
-    if (nodes > READER_MAX_NODES) break;
+    if (nodes > READER_MAX_NODES) return undefined;
     const closing = match[1] === '/';
     const name = match[2] ?? '';
     const attrText = match[3] ?? '';
@@ -309,10 +322,11 @@ export function readXml(content: string): unknown | undefined {
     parent.text += text.slice(cursor, match.index).trim();
     cursor = (match.index ?? 0) + (match[0]?.length ?? 0);
     if (closing) {
-      if (stack.length > 1) stack.pop();
+      if (stack.length <= 1 || parent.name !== xmlName(name)) return undefined;
+      stack.pop();
       continue;
     }
-    const attributes: Record<string, unknown> = {};
+    const attributes = emptyMap();
     const attrPattern = /([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
     for (const attr of attrText.matchAll(attrPattern)) {
       attributes[xmlName(attr[1] ?? '')] = unquote(attr[3] ?? attr[4] ?? '');
@@ -320,9 +334,11 @@ export function readXml(content: string): unknown | undefined {
     const node: XmlNode = { name: xmlName(name), attributes, children: [], text: '' };
     parent.children.push(node);
     if (!selfClosing) {
-      if (stack.length < READER_MAX_DEPTH) stack.push(node);
+      if (stack.length >= READER_MAX_DEPTH) return undefined;
+      stack.push(node);
     }
   }
+  if (stack.length !== 1 || root.children.length !== 1) return undefined;
 
   const isArrayContainer = (node: XmlNode, childName: string, count: number): boolean => {
     if (Object.keys(node.attributes).length > 0 || node.text.trim().length > 0) return false;
@@ -341,7 +357,7 @@ export function readXml(content: string): unknown | undefined {
       const [childName, list] = [...grouped.entries()][0] ?? ['', []];
       if (isArrayContainer(node, childName, list.length)) return list.map(convert);
     }
-    const out: Record<string, unknown> = { ...node.attributes };
+    const out = Object.assign(emptyMap(), node.attributes);
     for (const [key, list] of grouped) {
       const values = list.map(convert);
       out[key] = list.length > 1 ? values : values[0];
@@ -367,14 +383,14 @@ function sectionContainer(root: Record<string, unknown>, section: string): Recor
   for (const part of section.split('.')) {
     const key = part.trim();
     if (key.length === 0) continue;
-    if (!isRecord(current[key])) current[key] = {};
+    if (!isRecord(current[key])) current[key] = emptyMap();
     current = current[key] as Record<string, unknown>;
   }
   return current;
 }
 
 export function readIni(content: string, artifact: string): unknown | undefined {
-  const root: Record<string, unknown> = {};
+  const root = emptyMap();
   let section = '';
   let last: { container: Record<string, unknown>; key: string } | undefined;
   for (const raw of boundedText(content)) {
@@ -427,7 +443,7 @@ function normalizeIni(root: Record<string, unknown>, artifact: string): unknown 
 }
 
 export function readProperties(content: string, artifact: string): unknown | undefined {
-  const root: Record<string, unknown> = {};
+  const root = emptyMap();
   let lastKey = '';
   for (const raw of boundedText(content)) {
     const line = raw.trim();
@@ -648,7 +664,7 @@ function readLockfileText(content: string, artifact: string): unknown | undefine
     return { project: { app }, deps };
   }
   if (artifact === 'mix.lock') {
-    const packages: Record<string, unknown> = {};
+    const packages = emptyMap();
     for (const line of lines) {
       const found = line.match(/["']([A-Za-z0-9_.-]+)["']\s*=>\s*\{:hex,\s*:?[A-Za-z0-9_]+,\s*["']([^"']+)["']/);
       if (found !== null) {
@@ -690,45 +706,70 @@ function readLockfileText(content: string, artifact: string): unknown | undefine
     let current: Record<string, unknown> | undefined;
     for (const line of lines) {
       if (line.startsWith('version =')) version = scalar(line.slice(line.indexOf('=') + 1));
-      if (line === '[[package]]') { current = {}; packages.push(current); continue; }
+      if (line === '[[package]]') { current = emptyMap(); packages.push(current); continue; }
       if (current === undefined) continue;
       const eq = line.indexOf('=');
       if (eq > 0) current[line.slice(0, eq).trim()] = scalar(line.slice(eq + 1));
     }
     return { version, packages };
   }
-  // Generic fallback: a bounded list of entries for unknown lockfile shapes.
-  const entries = lines.slice(0, 200).map((line) => ({ line }));
-  return entries.length > 0 ? { entries } : undefined;
+  // An unknown lockfile is not an empty/line-only document of known shape.
+  // Returning one could make absence rules generate fabricated findings.
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Public dispatcher
 // ---------------------------------------------------------------------------
 
-/** Parse a real artifact into the normalized document the rules expect. */
+/** Check node/depth limits without recursive traversal of untrusted documents. */
+function documentWithinLimits(document: unknown): boolean {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: document, depth: 0 }];
+  const visited = new WeakSet<object>();
+  let nodes = 0;
+  while (pending.length > 0) {
+    const item = pending.pop();
+    if (item === undefined || item.depth > READER_MAX_DEPTH || ++nodes > READER_MAX_NODES) return false;
+    if (typeof item.value !== 'object' || item.value === null) continue;
+    if (visited.has(item.value)) continue;
+    visited.add(item.value);
+    for (const value of Object.values(item.value)) pending.push({ value, depth: item.depth + 1 });
+  }
+  return true;
+}
+
+/** Parse a real artifact into a bounded document; unsupported shapes stay unknown. */
 export function parseDeclarationDocument(parser: ScaParser, artifact: string, content: string): unknown | undefined {
   if (typeof content !== 'string' || content.length === 0) return undefined;
-  if (artifact === 'DESCRIPTION') return readProperties(content, artifact);
-  if (artifact === 'go.mod') return readGoMod(content);
-  switch (parser) {
-    case 'json': {
-      try { return JSON.parse(content.slice(0, READER_MAX_BYTES)) as unknown; } catch { return undefined; }
+  if (Buffer.byteLength(content, 'utf8') > READER_MAX_BYTES || content.split('\n').length > READER_MAX_LINES) return undefined;
+  let document: unknown;
+  try {
+    if (artifact === 'DESCRIPTION') document = readProperties(content, artifact);
+    else if (artifact === 'go.mod') document = readGoMod(content);
+    else switch (parser) {
+      case 'json':
+        try { document = JSON.parse(content) as unknown; } catch { return undefined; }
+        break;
+      case 'toml': {
+        const parsed = readToml(content);
+        document = isRecord(parsed) && artifact === 'Cargo.lock' && Array.isArray(parsed['package'])
+          ? { ...parsed, packages: parsed['package'] } : parsed;
+        break;
+      }
+      case 'yaml': document = readYaml(content); break;
+      case 'xml': document = readXml(content); break;
+      case 'ini': document = readIni(content, artifact); break;
+      case 'properties': document = readProperties(content, artifact); break;
+      case 'requirements': document = readRequirements(content); break;
+      case 'gradle': document = readGradle(content, artifact); break;
+      case 'lockfile-text': document = readLockfileText(content, artifact); break;
+      default: return undefined;
     }
-    case 'toml': {
-      const doc = readToml(content);
-      if (!isRecord(doc)) return doc;
-      if (artifact === 'Cargo.lock' && Array.isArray(doc['package'])) return { ...doc, packages: doc['package'] };
-      return doc;
-    }
-    case 'yaml': return readYaml(content);
-    case 'xml': return readXml(content);
-    case 'ini': return readIni(content, artifact);
-    case 'properties': return readProperties(content, artifact);
-    case 'requirements': return readRequirements(content);
-    case 'gradle': return readGradle(content, artifact);
-    case 'lockfile-text': return readLockfileText(content, artifact);
-    default: return undefined;
+    return document === undefined || !documentWithinLimits(document) ? undefined : document;
+  } catch {
+    // Malformed or unsupported structures must not escape into the processor
+    // as a crash or a fabricated empty document.
+    return undefined;
   }
 }
 

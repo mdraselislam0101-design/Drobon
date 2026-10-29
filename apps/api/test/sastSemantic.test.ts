@@ -282,10 +282,10 @@ describe('engine × semantic integration', () => {
     expect(flow?.remediation.length).toBeGreaterThan(10);
   });
 
-  test('the sanitized twin produces NO finding (precision, not count)', async () => {
-    // Same sink shape as the vulnerable case, but the value passes
-    // through a listed sanitizer — neither the flow rule nor a line
-    // rule fires (argument-vector form, no concat).
+  test('URL encoding does not suppress cross-context AST review of a process call', async () => {
+    // The earlier lexical flow pass may suppress URL-encoded input, but URL
+    // encoding is not a general-purpose shell or process sanitizer. The
+    // bounded AST pass reports a review candidate, not confirmed injection.
     const outcome = await scan([
       {
         path: 'srv/safe.js',
@@ -298,7 +298,8 @@ describe('engine × semantic integration', () => {
     ]);
     expect(outcome.kind).toBe('completed');
     if (outcome.kind !== 'completed') return;
-    expect(outcome.findings ?? []).toHaveLength(0);
+    expect(outcome.resultSummary.astFlowsFound).toBeGreaterThan(0);
+    expect((outcome.findings ?? []).length).toBeGreaterThan(0);
   });
 
   test('the vulnerable twin (same shape, no sanitizer) DOES produce the flow finding', async () => {

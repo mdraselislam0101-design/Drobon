@@ -17,6 +17,7 @@ import {
   isFindingHistoryResponse,
   isFindingWorkflowResponse,
   isSecurityReportResponse,
+  isSocPostureResponse,
   isScanResponse,
   isScansResponse,
   isSourceSnapshotResponse,
@@ -77,6 +78,7 @@ import {
   type FindingWorkflowResponse,
   type FindingSeverity,
   type SecurityReportResponse,
+  type SocPostureResponse,
   isStudentLessonCatalogResponse,
   isStudentProgressResponse,
   isStudentQuizResultResponse,
@@ -295,6 +297,8 @@ export interface ApiClient {
    * rejects with 403 (the API's uniform no-oracle denial).
    */
   getProject(projectId: string, signal?: AbortSignal): Promise<ProjectResponse>;
+  /** Read-only project operations snapshot derived from saved scans. */
+  getSocPosture(projectId: string, signal?: AbortSignal): Promise<SocPostureResponse>;
   /**
    * Create a project. The server assigns id, ownership, status (ACTIVE)
    * and timestamps — only name/description travel in the body.
@@ -378,8 +382,10 @@ export interface ApiClient {
   createReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Retrieve an existing persisted report without regenerating it. */
   getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
-  /** Authenticated, bounded JSON or Markdown export. */
-  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload>;
+  /** Authenticated, bounded export of a persisted single-scan report. */
+  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal): Promise<ReportDownload>;
+  /** On-demand summary of the latest attempted scan of each type. */
+  downloadProjectReport(projectId: string, signal?: AbortSignal): Promise<ReportDownload>;
   downloadSbom(projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload>;
   /** Internally authored Student lesson catalog; quiz answers stay server-side. */
   getStudentLessons(signal?: AbortSignal): Promise<StudentLessonCatalogResponse>;
@@ -548,7 +554,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   const requestReportDownload = async (
     path: string,
-    format: 'json' | 'markdown' | 'sarif' | 'cdx',
+    format: 'json' | 'markdown' | 'sarif' | 'cdx' | 'pdf' | 'portfolio',
     signal?: AbortSignal,
   ): Promise<ReportDownload> => {
     const requestId = generateId();
@@ -564,7 +570,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const response = await fetchImpl(`${baseUrl}${path}`, {
         credentials: 'include',
         signal: controller.signal,
-        headers: { accept: format === 'json' ? 'application/json' : 'text/markdown', 'x-request-id': requestId },
+        headers: { accept: format === 'pdf' || format === 'portfolio' ? 'application/pdf' : format === 'json' || format === 'cdx' ? 'application/json' : format === 'sarif' ? 'application/sarif+json' : 'text/markdown', 'x-request-id': requestId },
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => undefined) as unknown;
@@ -576,9 +582,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
       const contentType = response.headers.get('content-type') ?? '';
       const contentDisposition = response.headers.get('content-disposition') ?? '';
-      const filenameMatch = /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json))"$/.exec(contentDisposition);
-      const expectedType = format === 'markdown' ? /^text\/markdown(?:;\s*charset=utf-8)?$/i : format === 'sarif' ? /^application\/sarif\+json(?:;\s*charset=utf-8)?$/i : /^application\/json(?:;\s*charset=utf-8)?$/i;
-      const expectedSuffix = format === 'markdown' ? '.md' : format === 'sarif' ? '.sarif' : format === 'cdx' ? '.cdx.json' : '.json';
+      const filenamePattern = format === 'portfolio'
+        ? /^attachment; filename="(drobon-project-prj_[0-9a-f-]{36}\.pdf)"$/
+        : /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json|pdf))"$/;
+      const filenameMatch = filenamePattern.exec(contentDisposition);
+      const expectedType = format === 'pdf' || format === 'portfolio' ? /^application\/pdf$/i : format === 'markdown' ? /^text\/markdown(?:;\s*charset=utf-8)?$/i : format === 'sarif' ? /^application\/sarif\+json(?:;\s*charset=utf-8)?$/i : /^application\/json(?:;\s*charset=utf-8)?$/i;
+      const expectedSuffix = format === 'pdf' || format === 'portfolio' ? '.pdf' : format === 'markdown' ? '.md' : format === 'sarif' ? '.sarif' : format === 'cdx' ? '.cdx.json' : '.json';
       const declaredLength = response.headers.get('content-length');
       if (!expectedType.test(contentType) || filenameMatch === null || !filenameMatch[1]?.endsWith(expectedSuffix) ||
           (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 1024 * 1024))) {
@@ -586,6 +595,8 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
       const chunks: ArrayBuffer[] = [];
       let totalBytes = 0;
+      const prefix = new Uint8Array(5);
+      let prefixLength = 0;
       const reader = response.body?.getReader();
       if (reader !== undefined) {
         try {
@@ -597,6 +608,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
               await reader.cancel();
               throw new ApiClientError({ kind: 'invalid-response', message: 'The report download exceeds the allowed size.', status: response.status, requestId });
             }
+            if (prefixLength < prefix.length) {
+              const take = Math.min(prefix.length - prefixLength, part.value.byteLength);
+              prefix.set(part.value.subarray(0, take), prefixLength);
+              prefixLength += take;
+            }
             const copy = new Uint8Array(part.value.byteLength);
             copy.set(part.value);
             chunks.push(copy.buffer);
@@ -606,6 +622,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         }
       }
       if (totalBytes === 0) throw new ApiClientError({ kind: 'invalid-response', message: 'The report download was empty.', status: response.status, requestId });
+      if ((format === 'pdf' || format === 'portfolio') && (prefixLength < 5 || ![0x25, 0x50, 0x44, 0x46, 0x2d].every((byte, index) => prefix[index] === byte))) {
+        throw new ApiClientError({ kind: 'invalid-response', message: 'The report is not a valid PDF download.', status: response.status, requestId });
+      }
       const blob = new Blob(chunks, { type: contentType });
       return { blob, filename: filenameMatch[1], contentType };
     } catch (error) {
@@ -883,6 +902,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         { method: 'DELETE', ...(signal === undefined ? {} : { signal }) },
         isProjectResponse,
       ),
+    getSocPosture: (projectId: string, signal?: AbortSignal): Promise<SocPostureResponse> =>
+      authRequest<SocPostureResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/soc`,
+        signal === undefined ? {} : { signal },
+        isSocPostureResponse,
+      ),
     getAssessments: (projectId: string, signal?: AbortSignal): Promise<AssessmentsResponse> =>
       authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
     getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
@@ -1013,10 +1038,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSecurityReportResponse,
       ),
-    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif', signal?: AbortSignal): Promise<ReportDownload> =>
+    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal): Promise<ReportDownload> =>
       requestReportDownload(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
         format,
+        signal,
+      ),
+    downloadProjectReport: (projectId: string, signal?: AbortSignal): Promise<ReportDownload> =>
+      requestReportDownload(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/reports/portfolio/download`,
+        'portfolio',
         signal,
       ),
     downloadSbom: (projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload> =>

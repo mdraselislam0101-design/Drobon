@@ -89,6 +89,13 @@ describe('engagement contract (pure, deterministic)', () => {
     expect(engagementAllowsScan(records, {
       scanType: 'SAST', hostname: 'fixture.example.org', path: '/api/x', nowIso: NOW,
     })).toMatchObject({ allowed: true, engagementId: engagement().id });
+    expect(engagementAllowsScan([engagement({ scopePaths: ['/api'] })], {
+      scanType: 'SAST', hostname: 'fixture.example.org', path: '/api2', nowIso: NOW,
+    }).allowed).toBe(false);
+    expect(engagementAllowsScan(records, { scanType: 'SAST', nowIso: 'not-a-time' }).allowed).toBe(false);
+    expect(engagementAllowsScan([engagement({ scopePaths: ['/api'] })], {
+      scanType: 'SAST', hostname: 'fixture.example.org', path: '/api/%2e%2e%2fadmin', nowIso: NOW,
+    }).allowed).toBe(false);
   });
 
   test('assessment guard accepts legacy records and validates engagements', () => {

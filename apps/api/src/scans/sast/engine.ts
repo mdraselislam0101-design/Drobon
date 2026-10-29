@@ -1,10 +1,14 @@
 import {
+  AST_FLOW_KINDS,
   FINDING_EVIDENCE_MAX_LENGTH,
   MAX_FINDINGS_PER_SCAN,
   isValidSourcePath,
+  type AstAnalysisCoverage,
+  type AstParserFamily,
   type Finding,
   type FindingSeverity,
   type ScanResultSummary,
+  type StructuredAstSummary,
 } from '@drobon/shared';
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
@@ -15,6 +19,9 @@ import { detectLanguageFamily, isAnalyzedMaturity, supportsBoundedAst } from './
 import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
 import { findingFingerprint } from '../findingIdentity.js';
 import { analyzeAstFile, astReporterRules, type AstReporterMap } from './astAnalyzer.js';
+import { astProfileFor } from './astProfiles.js';
+import { StructuredAstSession, supportsStructuredAst, type ProjectAstFile } from './structuredAstSession.js';
+import { effectiveSastRuleDigest, parserVersions } from './astCoverage.js';
 
 /**
  * THE REAL SAST ENGINE (Pump 8).
@@ -33,9 +40,9 @@ import { analyzeAstFile, astReporterRules, type AstReporterMap } from './astAnal
  *   extensions) before it is resolved inside the snapshot — a
  *   traversal-shaped path fails the scan closed (SAST_INPUT_INVALID),
  *   and symlinks cannot exist in a content-addressed snapshot at all.
- * - NO EXECUTION OF TARGET CODE: the engine reads text and matches
- *   regexes. It NEVER runs npm/scripts/shell/project code, never
- *   installs anything, never follows build instructions — a malicious
+ * - NO EXECUTION OF TARGET CODE: the engine reads text, matches rules
+ *   and parses bounded syntax trees. It NEVER runs npm/scripts/shell/project code,
+ *   never installs anything, never follows build instructions — a malicious
  *   project cannot turn SAST into RCE.
  * - NO MODIFICATION: SAST is read-only. The engine never rewrites,
  *   patches or "auto-fixes" source, and never writes to the snapshot.
@@ -136,12 +143,14 @@ function isIgnoredDir(path: string): boolean {
 
 /**
  * Bounded, match-centered evidence window (the match is always
- * visible), normalized for the API: tabs become spaces and a trailing
- * CR is dropped, so the evidence always satisfies the strict finding
- * guard (no control characters).
+ * visible), normalized for the API: tabs and control characters become
+ * spaces, so the evidence satisfies the strict finding guard.
  */
 function evidenceFromLine(rule: SastRule, rawLine: string, column: number): string {
-  const line = rawLine.replace(/\t/g, '  ');
+  // eslint-disable-next-line no-control-regex -- source evidence must not persist control characters.
+  const line = rawLine.replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, ' ');
+  // eslint-disable-next-line no-control-regex -- redaction callbacks cannot reintroduce control characters.
+  const safeEvidence = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, FINDING_EVIDENCE_MAX_LENGTH) || '(empty line)';
   const windowRadius = 60;
   // Room for the two ellipsis markers, so the result never exceeds the
   // evidence bound (the finding guard enforces it).
@@ -150,7 +159,7 @@ function evidenceFromLine(rule: SastRule, rawLine: string, column: number): stri
   const end = Math.min(line.length, start + windowLength);
   if (line.length <= FINDING_EVIDENCE_MAX_LENGTH) {
     // Short lines: no windowing needed.
-    return rule.redactEvidence === undefined ? line : rule.redactEvidence(line, { column });
+    return safeEvidence(rule.redactEvidence === undefined ? line : rule.redactEvidence(line, { column }));
   }
   if (end - start < windowLength) {
     start = Math.max(0, end - windowLength);
@@ -163,7 +172,7 @@ function evidenceFromLine(rule: SastRule, rawLine: string, column: number): stri
   }
   const prefix = start > 0 ? '…' : '';
   const suffix = end < line.length ? '…' : '';
-  return `${prefix}${window}${suffix}`;
+  return safeEvidence(`${prefix}${window}${suffix}`);
 }
 
 /** Deterministic finding identity — never a random UUID. */
@@ -218,6 +227,9 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits, ruleFamili
   return { kind: 'ok', files: scannable, skipped };
 }
 
+const AST_HEURISTIC_DESCRIPTION = 'A bounded AST pass found a possible untrusted data flow. The rule was selected by category, not by its exact pattern; severity is inherited from that rule. Review the source and sink manually.';
+const AST_HEURISTIC_REMEDIATION = 'Review the flow in context and use appropriate safe APIs, parameterization, validation or output encoding. Verify the result manually.';
+
 const emptySeverityCounts = (): Record<FindingSeverity, number> => ({
   CRITICAL: 0,
   HIGH: 0,
@@ -242,10 +254,14 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
       // Dataset-aware rule merging (honest: if dataset unavailable, fallback to embedded)
       let effectiveRules: readonly SastRule[] = options.rules ?? SAST_RULES;
+      let ruleSource: AstAnalysisCoverage['rules']['source'] = options.rules === undefined ? 'NONE' : 'EXPLICIT';
+      let pack: { packId: string; version: string } | undefined;
       if (options.dataset?.configured) {
         try {
           const { getMergedSastRules } = await import('../../external/packIntegration.js');
           effectiveRules = await getMergedSastRules(options.dataset);
+          ruleSource = 'DATASET';
+          pack = await options.dataset.packMetadata('sast');
         } catch { /* fail closed: optional path */ }
       }
       // The deterministic scan target: the project's source snapshot.
@@ -301,6 +317,9 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       // (the registry is a compile-time constant; this is a cache, not
       // state that can change).
       const flowRulesByFamily = new Map<string, ReturnType<typeof flowRulesForFamily>>();
+      // Select applicable lexical rules once per language family rather than
+      // rechecking all loaded rules on every line. Preserve original ordering.
+      const lexicalRulesByFamily = new Map<string, readonly SastRule[]>();
       // The production registry is intentionally empty (data lives in the
       // external dataset). Flow findings must therefore resolve their rule
       // metadata from the SAME effective rule set that produced the flow
@@ -312,81 +331,19 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       const astReportersByFamily = new Map<string, AstReporterMap>();
       let astFilesAnalyzed = 0;
       let astFlowsFound = 0;
+      let filesScanned = 0;
+      const astParser: StructuredAstSummary = { parsedFiles: 0, incompleteFiles: 0, filesWithoutRules: 0, findings: 0 };
+      const astCoverage: AstAnalysisCoverage = {
+        rules: { source: ruleSource, count: effectiveRules.length, sha256: effectiveSastRuleDigest(effectiveRules),
+          ...(pack === undefined ? {} : { packId: pack.packId, packVersion: pack.version }) },
+        parsers: parserVersions(), families: [], files: [], unstructuredFiles: 0,
+        projectFlow: { status: 'NOT_RUN', examinedFiles: 0, unresolvedImports: 0, findings: 0 },
+      };
+      const structuredAst = new StructuredAstSession();
 
-      outer: for (const file of discovery.files) {
-        // Deadline checkpoints: between files…
-        if (now() > deadline || ctx.signal.aborted) {
-          return {
-            kind: 'failed',
-            failureCode: 'SAST_SCAN_TIMEOUT',
-            failureMessage: 'The SAST engine exceeded its processing deadline.',
-          };
-        }
-        // CRLF-safe: strip the trailing CR so evidence and matching
-        // never see control characters.
-        const lines = file.content.split('\n').map((line) => line.replace(/\r$/, ''));
-        for (let index = 0; index < lines.length; index += 1) {
-          // …and every 512 lines (bounded per-file latency).
-          if (index % 512 === 511 && now() > deadline) {
-            return {
-              kind: 'failed',
-              failureCode: 'SAST_SCAN_TIMEOUT',
-              failureMessage: 'The SAST engine exceeded its processing deadline.',
-            };
-          }
-          const line = lines[index] ?? '';
-          for (const rule of effectiveRules) {
-            // LANGUAGE GATING (v2): a family-scoped rule runs only on
-            // files of its own families; universal rules run on every
-            // analyzed file.
-            if (rule.languages !== undefined && !rule.languages.includes(file.family)) {
-              continue;
-            }
-            const match = matchRuleLine(rule, line);
-            if (match === undefined) {
-              continue;
-            }
-            const evidence = evidenceFromLine(rule, line, match.column);
-            const fingerprint = findingFingerprint({
-              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
-              location: file.path, line: index + 1, evidence,
-            });
-            findings.push({
-              id: `fnd_${fingerprint.slice(0, 24)}`,
-              scanId: record.id,
-              ruleId: rule.id,
-              scanner: 'SAST',
-              projectId: record.projectId,
-              severity: rule.severity,
-              title: rule.title,
-              description: rule.description,
-              ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
-              file: file.path,
-              line: index + 1,
-              column: match.column,
-              evidence,
-              remediation: rule.remediation,
-              fingerprint,
-            });
-            findingsBySeverity[rule.severity] += 1;
-            if (findings.length >= limits.maxFindings) {
-              truncated = true;
-              break outer;
-            }
-            // One finding per rule per line (first pattern wins).
-          }
-        }
-
-        // BOUNDED SEMANTIC PASS (deep-semantic pump): literal masking
-        // + single-forward-pass source→sink flow analysis for the
-        // flow-tagged rules of this family. Same finding model, same
-        // identity, same caps; the deadline is honored here too.
-        let flowRules = flowRulesByFamily.get(file.family);
-        if (flowRules === undefined) {
-          flowRules = flowRulesForFamily(file.family, options.rules ?? SAST_RULES);
-          flowRulesByFamily.set(file.family, flowRules);
-        }
-        if (flowRules.length > 0) {
+      try {
+        outer: for (const file of discovery.files) {
+          // Deadline checkpoints: between files…
           if (now() > deadline || ctx.signal.aborted) {
             return {
               kind: 'failed',
@@ -394,120 +351,357 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               failureMessage: 'The SAST engine exceeded its processing deadline.',
             };
           }
-          const maskedLines = maskLiterals(file.content, file.family).split('\n');
-          const flowCandidates = analyzeFileFlows(file.family, maskedLines, flowRules, lines);
-          for (const candidate of flowCandidates) {
-            const rule = rulesById.get(candidate.ruleId);
-            const originalLine = lines[candidate.lineIndex] ?? '';
-            if (rule === undefined) continue;
-            const evidence = evidenceFromLine(rule, originalLine, candidate.column);
-            const fingerprint = findingFingerprint({
-              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
-              location: file.path, line: candidate.lineIndex + 1, evidence,
-            });
-            findings.push({
-              id: `fnd_${fingerprint.slice(0, 24)}`,
-              scanId: record.id,
-              ruleId: rule.id,
-              scanner: 'SAST',
-              projectId: record.projectId,
-              severity: rule.severity,
-              title: rule.title,
-              description: rule.description,
-              ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
-              file: file.path,
-              line: candidate.lineIndex + 1,
-              column: candidate.column,
-              evidence,
-              remediation: rule.remediation,
-              fingerprint,
-            });
-            findingsBySeverity[rule.severity] += 1;
-            if (findings.length >= limits.maxFindings) {
-              truncated = true;
-              break outer;
+          // Count a file only after processing actually reaches it; the
+          // findings cap may leave later discovered files untouched.
+          filesScanned += 1;
+          // CRLF-safe: strip the trailing CR so evidence and matching
+          // never see control characters.
+          const lines = file.content.split('\n').map((line) => line.replace(/\r$/, ''));
+          let lexicalRules = lexicalRulesByFamily.get(file.family);
+          if (lexicalRules === undefined) {
+            lexicalRules = effectiveRules.filter((rule) => rule.languages === undefined || rule.languages.includes(file.family));
+            lexicalRulesByFamily.set(file.family, lexicalRules);
+          }
+          const seenRuleLine = new Set<string>();
+          for (let index = 0; index < lines.length; index += 1) {
+            // …and every 512 lines (bounded per-file latency).
+            if (index % 512 === 511 && now() > deadline) {
+              return {
+                kind: 'failed',
+                failureCode: 'SAST_SCAN_TIMEOUT',
+                failureMessage: 'The SAST engine exceeded its processing deadline.',
+              };
+            }
+            const line = lines[index] ?? '';
+            for (const rule of lexicalRules) {
+              const match = matchRuleLine(rule, line);
+              if (match === undefined) continue;
+              const key = `${rule.id}\n${index + 1}`;
+              if (seenRuleLine.has(key)) continue;
+              seenRuleLine.add(key);
+              const evidence = evidenceFromLine(rule, line, match.column);
+              const fingerprint = findingFingerprint({
+                scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+                location: file.path, line: index + 1, evidence,
+              });
+              findings.push({
+                id: `fnd_${fingerprint.slice(0, 24)}`,
+                scanId: record.id,
+                ruleId: rule.id,
+                scanner: 'SAST',
+                projectId: record.projectId,
+                severity: rule.severity,
+                title: rule.title,
+                description: rule.description,
+                ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
+                file: file.path,
+                line: index + 1,
+                column: match.column,
+                evidence,
+                remediation: rule.remediation,
+                fingerprint,
+              });
+              findingsBySeverity[rule.severity] += 1;
+              if (findings.length >= limits.maxFindings) {
+                truncated = true;
+                break outer;
+              }
+              // One finding per rule per line (first pattern wins).
             }
           }
-        }
 
-        // ---- BOUNDED AST / DATAFLOW PASS (Pump 16, ADDITIVE) ----
-        // Same finding model, same identity, same caps. Rules stay in the
-        // dataset; this pass only decides WHERE a loaded rule's class is
-        // actually reachable from untrusted input.
-        if (supportsBoundedAst(file.family)) {
-          if (now() > deadline || ctx.signal.aborted) {
-            return {
-              kind: 'failed',
-              failureCode: 'SAST_SCAN_TIMEOUT',
-              failureMessage: 'The SAST engine exceeded its processing deadline.',
-            };
+          // BOUNDED SEMANTIC PASS (deep-semantic pump): literal masking
+          // + single-forward-pass source→sink flow analysis for the
+          // flow-tagged rules of this family. Same finding model, same
+          // identity, same caps; the deadline is honored here too.
+          let flowRules = flowRulesByFamily.get(file.family);
+          if (flowRules === undefined) {
+            flowRules = flowRulesForFamily(file.family, effectiveRules);
+            flowRulesByFamily.set(file.family, flowRules);
           }
-          let reporters = astReportersByFamily.get(file.family);
-          if (reporters === undefined) {
-            reporters = astReporterRules(effectiveRules, file.family);
+          if (flowRules.length > 0) {
+            if (now() > deadline || ctx.signal.aborted) {
+              return {
+                kind: 'failed',
+                failureCode: 'SAST_SCAN_TIMEOUT',
+                failureMessage: 'The SAST engine exceeded its processing deadline.',
+              };
+            }
+            const maskedLines = maskLiterals(file.content, file.family).split('\n');
+            const flowCandidates = analyzeFileFlows(file.family, maskedLines, flowRules, lines);
+            for (const candidate of flowCandidates) {
+              const rule = rulesById.get(candidate.ruleId);
+              const originalLine = lines[candidate.lineIndex] ?? '';
+              if (rule === undefined) continue;
+              const key = `${rule.id}\n${candidate.lineIndex + 1}`;
+              if (seenRuleLine.has(key)) continue;
+              seenRuleLine.add(key);
+              const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+              const fingerprint = findingFingerprint({
+                scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+                location: file.path, line: candidate.lineIndex + 1, evidence,
+              });
+              findings.push({
+                id: `fnd_${fingerprint.slice(0, 24)}`,
+                scanId: record.id,
+                ruleId: rule.id,
+                scanner: 'SAST',
+                projectId: record.projectId,
+                severity: rule.severity,
+                title: rule.title,
+                description: rule.description,
+                ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
+                file: file.path,
+                line: candidate.lineIndex + 1,
+                column: candidate.column,
+                evidence,
+                remediation: rule.remediation,
+                fingerprint,
+              });
+              findingsBySeverity[rule.severity] += 1;
+              if (findings.length >= limits.maxFindings) {
+                truncated = true;
+                break outer;
+              }
+            }
+          }
+
+          // ---- BOUNDED AST / DATAFLOW PASS (Pump 16, ADDITIVE) ----
+          // Same finding model, same identity, same caps. Rules stay in the
+          // dataset; this pass only decides WHERE a loaded rule's class is
+          // actually reachable from untrusted input.
+          if (supportsBoundedAst(file.family)) {
+            if (now() > deadline || ctx.signal.aborted) {
+              return {
+                kind: 'failed',
+                failureCode: 'SAST_SCAN_TIMEOUT',
+                failureMessage: 'The SAST engine exceeded its processing deadline.',
+              };
+            }
+            let reporters = astReportersByFamily.get(file.family);
+            if (reporters === undefined) {
+              reporters = astReporterRules(effectiveRules, file.family);
+              astReportersByFamily.set(file.family, reporters);
+            }
+            const astResult = analyzeAstFile({
+              family: file.family,
+              content: file.content,
+              reporters,
+              shouldStop: () => now() > deadline || ctx.signal.aborted,
+            });
+            astFilesAnalyzed += 1;
+            if (astResult.truncated) truncated = true;
+            // One finding per (rule, line): lexical + flow + AST share this set.
+            const already = new Set<string>();
+            for (const existing of findings) {
+              if ('file' in existing && existing.file === file.path) {
+                already.add(`${existing.ruleId}\n${existing.line}`);
+              }
+            }
+            for (const candidate of astResult.candidates) {
+              const rule = rulesById.get(candidate.ruleId);
+              if (rule === undefined) continue;
+              const key = `${rule.id}\n${candidate.lineIndex + 1}`;
+              if (already.has(key)) continue;
+              already.add(key);
+              const originalLine = lines[candidate.lineIndex] ?? '';
+              const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+              const fingerprint = findingFingerprint({
+                scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+                location: file.path, line: candidate.lineIndex + 1, evidence,
+              });
+              findings.push({
+                id: `fnd_${fingerprint.slice(0, 24)}`,
+                scanId: record.id,
+                ruleId: rule.id,
+                scanner: 'SAST',
+                projectId: record.projectId,
+                severity: rule.severity,
+                title: `Possible ${candidate.kind} data flow (AST heuristic)`,
+                description: AST_HEURISTIC_DESCRIPTION,
+                file: file.path,
+                line: candidate.lineIndex + 1,
+                column: candidate.column,
+                evidence,
+                remediation: AST_HEURISTIC_REMEDIATION,
+                astFlow: { mode: 'SHALLOW', category: candidate.kind, attribution: 'CATEGORY_REPORTER' },
+                fingerprint,
+              });
+              findingsBySeverity[rule.severity] += 1;
+              astFlowsFound += 1;
+              if (findings.length >= limits.maxFindings) {
+                truncated = true;
+                break outer;
+              }
+            }
+          }
+
+          // A real, isolated syntax-tree pass supplements the older passes.
+          if (supportsStructuredAst(file.family)) {
+            const family = file.family as AstParserFamily;
+            const profile = astProfileFor(file.family);
+            const reporters = astReportersByFamily.get(file.family) ?? astReporterRules(effectiveRules, file.family);
             astReportersByFamily.set(file.family, reporters);
+            if (!astCoverage.families.some((item) => item.family === family)) {
+              astCoverage.families.push({ family, reporters: { ...reporters } });
+            }
+            if (profile === undefined) {
+              astParser.incompleteFiles += 1;
+              astCoverage.files.push({ path: file.path, family, status: 'ERROR' });
+              continue;
+            }
+            const parsed = await structuredAst.analyze({ family: file.family, content: file.content, profile, reporters }, ctx.signal, deadline - now());
+            if (now() > deadline || ctx.signal.aborted) {
+              return {
+                kind: 'failed',
+                failureCode: 'SAST_SCAN_TIMEOUT',
+                failureMessage: 'The SAST engine exceeded its processing deadline.',
+              };
+            }
+            astCoverage.files.push({ path: file.path, family, status: parsed.status });
+            if (parsed.status === 'OK') {
+              astParser.parsedFiles += 1;
+              if (Object.keys(reporters).length === 0) astParser.filesWithoutRules += 1;
+            } else {
+              astParser.incompleteFiles += 1;
+            }
+            const already = new Set<string>();
+            for (const existing of findings) {
+              if ('file' in existing && existing.file === file.path) {
+                already.add(`${existing.ruleId}\n${existing.line}`);
+              }
+            }
+            for (const candidate of parsed.candidates) {
+              const rule = rulesById.get(candidate.ruleId);
+              if (rule === undefined || reporters[candidate.kind] !== candidate.ruleId ||
+                  !Number.isInteger(candidate.lineIndex) || candidate.lineIndex < 0 || candidate.lineIndex >= lines.length ||
+                  !Number.isInteger(candidate.column) || candidate.column < 1) continue;
+              const line = candidate.lineIndex + 1;
+              const key = `${rule.id}\n${line}`;
+              if (already.has(key)) continue;
+              already.add(key);
+              // Do not copy arbitrary source or literals across this new pass's
+              // evidence boundary. The file/line/column points to the sink.
+              const evidence = `AST ${candidate.kind} flow candidate; review the source and sink at this location.`;
+              const fingerprint = findingFingerprint({
+                scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+                location: file.path, line, evidence,
+              });
+              findings.push({
+                id: `fnd_${fingerprint.slice(0, 24)}`,
+                scanId: record.id,
+                ruleId: rule.id,
+                scanner: 'SAST',
+                projectId: record.projectId,
+                severity: rule.severity,
+                title: `Possible ${candidate.kind} data flow (AST heuristic)`,
+                description: AST_HEURISTIC_DESCRIPTION,
+                file: file.path,
+                line,
+                column: candidate.column,
+                evidence,
+                remediation: AST_HEURISTIC_REMEDIATION,
+                astFlow: { mode: 'STRUCTURED', category: candidate.kind, attribution: 'CATEGORY_REPORTER' },
+                fingerprint,
+              });
+              findingsBySeverity[rule.severity] += 1;
+              astFlowsFound += 1;
+              astParser.findings += 1;
+              if (findings.length >= limits.maxFindings) {
+                truncated = true;
+                break outer;
+              }
+            }
+          } else {
+            astCoverage.unstructuredFiles += 1;
           }
-          const astResult = analyzeAstFile({
-            family: file.family,
-            content: file.content,
-            reporters,
-            shouldStop: () => now() > deadline || ctx.signal.aborted,
-          });
-          astFilesAnalyzed += 1;
-          if (astResult.truncated) truncated = true;
-          // One finding per (rule, line): lexical + flow + AST share this set.
-          const already = new Set<string>();
-          for (const existing of findings) {
-            const line = (existing as { line?: number }).line;
-            if (typeof line === 'number') already.add(`${existing.ruleId}\n${line}`);
+        }
+
+        // A separately bounded project pass resolves only named local functions
+        // and relative named imports in this virtual snapshot. It cannot read the
+        // host filesystem or execute/resolve a target's dependencies.
+        const projectFiles: ProjectAstFile[] = [];
+        if (!truncated) {
+          for (const file of discovery.files) {
+            if (!['javascript', 'typescript', 'jsx', 'tsx'].includes(file.family)) continue;
+            const profile = astProfileFor(file.family);
+            if (profile === undefined) continue;
+            projectFiles.push({ ...file, profile, reporters: astReportersByFamily.get(file.family) ?? astReporterRules(effectiveRules, file.family) });
           }
-          for (const candidate of astResult.candidates) {
+        }
+        if (projectFiles.length > 0 && projectFiles.some((file) => Object.keys(file.reporters).length > 0)) {
+          const projectResult = await structuredAst.analyzeProject(projectFiles, ctx.signal, deadline - now());
+          if (now() > deadline || ctx.signal.aborted) {
+            return { kind: 'failed', failureCode: 'SAST_SCAN_TIMEOUT', failureMessage: 'The SAST engine exceeded its processing deadline.' };
+          }
+          astCoverage.projectFlow.status = projectResult.status === 'OK' ? 'RAN' : 'INCOMPLETE';
+          astCoverage.projectFlow.examinedFiles = projectResult.examinedFiles;
+          astCoverage.projectFlow.unresolvedImports = projectResult.unresolvedImports;
+          const projectByPath = new Map(projectFiles.map((file) => [file.path, file]));
+          const linesByPath = new Map(projectFiles.map((file) => [file.path, file.content.split('\n')]));
+          const validLocation = (location: unknown): location is { file: string; line: number; column: number } => {
+            if (typeof location !== 'object' || location === null || Array.isArray(location)) return false;
+            const item = location as Record<string, unknown>;
+            if (!isValidSourcePath(item['file']) || typeof item['line'] !== 'number' || !Number.isInteger(item['line']) || item['line'] < 1 ||
+                typeof item['column'] !== 'number' || !Number.isInteger(item['column']) || item['column'] < 1) return false;
+            const sourceLines = linesByPath.get(item['file']);
+            return sourceLines !== undefined && item['line'] <= sourceLines.length && item['column'] <= (sourceLines[item['line'] - 1]?.length ?? 0) + 1;
+          };
+          for (const candidate of projectResult.candidates) {
+            const sinkFile = projectByPath.get(candidate.path);
             const rule = rulesById.get(candidate.ruleId);
-            if (rule === undefined) continue;
-            const key = `${rule.id}\n${candidate.lineIndex + 1}`;
-            if (already.has(key)) continue;
-            already.add(key);
-            const originalLine = lines[candidate.lineIndex] ?? '';
-            const evidence = evidenceFromLine(rule, originalLine, candidate.column);
-            const fingerprint = findingFingerprint({
-              scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
-              location: file.path, line: candidate.lineIndex + 1, evidence,
-            });
-            findings.push({
-              id: `fnd_${fingerprint.slice(0, 24)}`,
-              scanId: record.id,
-              ruleId: rule.id,
-              scanner: 'SAST',
-              projectId: record.projectId,
-              severity: rule.severity,
-              title: rule.title,
-              description: rule.description,
-              ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }),
-              file: file.path,
-              line: candidate.lineIndex + 1,
-              column: candidate.column,
-              evidence,
-              remediation: rule.remediation,
-              fingerprint,
-            });
+            const sink = { file: candidate.path, line: candidate.lineIndex + 1, column: candidate.column };
+            if (sinkFile === undefined || rule === undefined || !(AST_FLOW_KINDS as readonly string[]).includes(candidate.kind) ||
+                sinkFile.reporters[candidate.kind] !== candidate.ruleId || !validLocation(sink) || !validLocation(candidate.source) ||
+                !Array.isArray(candidate.via) || candidate.via.length > 4 || !candidate.via.every(validLocation)) {
+              astCoverage.projectFlow.status = 'INCOMPLETE';
+              continue;
+            }
+            const flow = { mode: 'PROJECT' as const, category: candidate.kind, attribution: 'CATEGORY_REPORTER' as const,
+              source: candidate.source, via: candidate.via };
+            const existing = findings.find((finding) => finding.scanner !== 'DAST' && finding.file === candidate.path &&
+              finding.ruleId === candidate.ruleId && finding.line === sink.line);
+            if (existing !== undefined) {
+              // Do not relabel a lexical rule match as a category-only match.
+              if (existing.scanner === 'SAST' && existing.astFlow?.category === candidate.kind) existing.astFlow = flow;
+              continue;
+            }
+            const evidence = `AST ${candidate.kind} flow candidate across a bounded call path; category reporter, not proof of an exact rule-pattern match.`;
+            const fingerprint = findingFingerprint({ scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
+              location: candidate.path, line: sink.line, evidence });
+            findings.push({ id: `fnd_${fingerprint.slice(0, 24)}`, scanId: record.id, ruleId: rule.id, scanner: 'SAST',
+              projectId: record.projectId, severity: rule.severity, title: `Possible ${candidate.kind} data flow (AST heuristic)`,
+              description: AST_HEURISTIC_DESCRIPTION, file: candidate.path, line: sink.line, column: sink.column,
+              evidence, remediation: AST_HEURISTIC_REMEDIATION, astFlow: flow, fingerprint });
             findingsBySeverity[rule.severity] += 1;
             astFlowsFound += 1;
-            if (findings.length >= limits.maxFindings) {
-              truncated = true;
-              break outer;
-            }
+            astParser.findings += 1;
+            astCoverage.projectFlow.findings += 1;
+            if (findings.length >= limits.maxFindings) { truncated = true; break; }
           }
         }
+      } finally {
+        await structuredAst.close();
       }
 
+      const partialReasons: string[] = [];
+      if (effectiveRules.length === 0) partialReasons.push('No SAST rules were available.');
+      else if (astParser.filesWithoutRules > 0) partialReasons.push('Some parsed files had no applicable AST flow rules.');
+      else if (astCoverage.families.some((family) => Object.keys(family.reporters).length < AST_FLOW_KINDS.length)) partialReasons.push('Some AST categories lack rules.');
+      if (astParser.incompleteFiles > 0) partialReasons.push('Some structured AST files were incomplete.');
+      if (astCoverage.unstructuredFiles > 0) partialReasons.push('Some files lack a structured parser.');
+      if (astCoverage.projectFlow.status === 'INCOMPLETE') partialReasons.push('Project flow analysis was incomplete.');
       const resultSummary: ScanResultSummary = {
         findingsTotal: findings.length,
         findingsBySeverity,
-        filesScanned: discovery.files.length,
-        filesSkipped: discovery.skipped,
+        filesScanned,
+        filesSkipped: discovery.skipped + (discovery.files.length - filesScanned),
         truncated,
         astFilesAnalyzed,
         astFlowsFound,
+        astParser,
+        astCoverage,
+        ...(partialReasons.length === 0 ? {} : { partial: true, partialReason: partialReasons.join(' ') }),
       };
       return {
         kind: 'completed',

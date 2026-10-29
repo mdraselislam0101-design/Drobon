@@ -1,8 +1,9 @@
 /**
  * GENERIC ADVISORY ENGINE (Pump 15, MAIN-APP ONLY).
  *
- * Goal: let the tool detect PHP2Shell AND any future problem, in ANY coding
- * language, WITHOUT changing application code. The knowledge lives in an
+ * Goal: compare observable version signals to operator-supplied advisory data.
+ * An advisory match is not proof of exploitability, installed software or
+ * complete coverage across languages. The knowledge lives in an
  * operator-supplied runtime JSON pack (`ADVISORY_PATH`), exactly like the
  * external dataset is read from `DATASET_PATH`. This file contains NO advisory
  * bytes and NO embedded production rules.
@@ -20,8 +21,8 @@
  * HONESTY (never fake a clean result)
  *  - Every fingerprint must carry a `selfTest` that produces a version at
  *    load time; a fingerprint that cannot extract a version is REFUSED.
- *  - A version that cannot be compared is `UNKNOWN` and produces a
- *    `NEEDS_REVIEW` finding (LOW), never silence and never "not affected".
+ *  - An ambiguous version or manifest declaration is `UNKNOWN` and produces a
+ *    `NEEDS REVIEW` finding; the advisory's severity is retained for triage.
  *  - No pack configured → `NOT_CONFIGURED`, zero findings, no guesses.
  *  - Stale pack (> ADVISORY_STALE_MS) → status `STALE`; findings still work
  *    but the operator is told the data may be old.
@@ -255,6 +256,9 @@ export function compareVersions(a: string, b: string): number | undefined {
   const left = parseVersion(a);
   const right = parseVersion(b);
   if (left === undefined || right === undefined) return undefined;
+  // Distribution, prerelease and vendor suffixes may contain backports or
+  // ecosystem-specific semantics. Never compare them as plain numeric releases.
+  if (left.suffix !== undefined || right.suffix !== undefined) return undefined;
   const width = Math.max(left.parts.length, right.parts.length);
   for (let index = 0; index < width; index += 1) {
     const l = left.parts[index] ?? 0;
@@ -262,9 +266,6 @@ export function compareVersions(a: string, b: string): number | undefined {
     if (l < r) return -1;
     if (l > r) return 1;
   }
-  // A distro/prerelease suffix makes an otherwise-equal comparison ambiguous.
-  // Fail closed rather than guessing whether `-1ubuntu` is newer or older.
-  if (left.suffix !== undefined || right.suffix !== undefined) return undefined;
   return 0;
 }
 
@@ -302,7 +303,9 @@ function classifyConstraints(record: AdvisoryRecord, observed: string): { verdic
 
 /** Decide whether an observed version is affected. Never guesses. */
 export function classifyAdvisory(record: AdvisoryRecord, observed: string): { verdict: AdvisoryVerdict; reason: string } {
-  if (parseVersion(observed) === undefined) return { verdict: 'UNKNOWN', reason: `unparseable version signal ${observed}` };
+  const parsed = parseVersion(observed);
+  if (parsed === undefined) return { verdict: 'UNKNOWN', reason: `unparseable version signal ${observed}` };
+  if (parsed.suffix !== undefined) return { verdict: 'UNKNOWN', reason: 'version suffix requires ecosystem-specific verification' };
   if (record.introduced !== undefined) {
     const cmp = compareVersions(observed, record.introduced);
     if (cmp === undefined) return { verdict: 'UNKNOWN', reason: `could not compare ${observed} with introduced ${record.introduced}` };
@@ -526,22 +529,44 @@ function fileValues(files: AdvisoryInputs['files'], artifact: string | undefined
   return (files ?? []).filter((file) => (file.path.split('/').pop() ?? '') === artifact).slice(0, 50);
 }
 
-function fingerprintVersions(compiled: CompiledAdvisory, inputs: AdvisoryInputs): Array<{ version: string; location: string }> {
-  const out: Array<{ version: string; location: string }> = [];
+interface VersionSignal {
+  version: string;
+  location: string;
+  declared: boolean;
+  incomplete: boolean;
+}
+
+/** A partial capture or suffix must not be treated as a complete version. */
+function versionSignal(pattern: RegExp, value: string): { version: string; incomplete: boolean } | undefined {
+  const input = value.slice(0, ADVISORY_MAX_BYTES);
+  const match = input.match(pattern);
+  const captured = match?.[1];
+  if (match === null || captured === undefined || match.index === undefined || !VERSION_LIKE.test(captured)) return undefined;
+  const numeric = captured.match(/^[vV]?[0-9]+(?:\.[0-9]+){0,7}/)?.[0];
+  if (numeric === undefined) return undefined;
+  // A pattern capturing 8.4 out of 8.4.27, or 8.4.3 out of a distro build,
+  // is not proof of the installed patch level. Retain only numeric evidence.
+  const capturedOffset = match[0].lastIndexOf(captured);
+  const after = input[match.index + capturedOffset + captured.length] ?? '';
+  return { version: numeric, incomplete: numeric.length !== captured.length || /[A-Za-z0-9._+-]/.test(after) };
+}
+
+function fingerprintVersions(compiled: CompiledAdvisory, inputs: AdvisoryInputs): VersionSignal[] {
+  const out: VersionSignal[] = [];
   for (const fp of compiled.fingerprints) {
     const { raw, pattern } = fp;
     if (raw.source === 'response-header') {
       for (const value of headerValues(inputs.headers, raw.header ?? '')) {
-        const version = extractVersion(pattern, value);
-        if (version !== undefined) out.push({ version, location: `header ${raw.header}` });
+        const signal = versionSignal(pattern, value);
+        if (signal !== undefined) out.push({ ...signal, declared: false, location: `header ${raw.header}` });
       }
     } else if (raw.source === 'response-body') {
-      const version = extractVersion(pattern, (inputs.body ?? '').slice(0, 32_768));
-      if (version !== undefined) out.push({ version, location: 'response body' });
+      const signal = versionSignal(pattern, (inputs.body ?? '').slice(0, 32_768));
+      if (signal !== undefined) out.push({ ...signal, declared: false, location: 'response body' });
     } else if (raw.source === 'manifest-text') {
       for (const file of fileValues(inputs.files, raw.artifact)) {
-        const version = extractVersion(pattern, file.content.slice(0, 262_144));
-        if (version !== undefined) out.push({ version, location: file.path });
+        const signal = versionSignal(pattern, file.content.slice(0, 262_144));
+        if (signal !== undefined) out.push({ ...signal, declared: true, location: file.path });
       }
     } else {
       for (const file of fileValues(inputs.files, raw.artifact)) {
@@ -551,8 +576,11 @@ function fingerprintVersions(compiled: CompiledAdvisory, inputs: AdvisoryInputs)
           const value = typeof node.value === 'string' ? node.value
             : typeof node.value === 'number' ? String(node.value) : undefined;
           if (value === undefined) continue;
-          const version = extractVersion(pattern, value.slice(0, 2048));
-          if (version !== undefined) out.push({ version, location: `${file.path} ${node.path}`.trim() });
+          const signal = versionSignal(pattern, value.slice(0, 2048));
+          // The configured path, not an attacker-controlled object key, is
+          // included in evidence. Versions declared in a manifest are never
+          // claimed as the running host's installed version.
+          if (signal !== undefined) out.push({ ...signal, declared: true, location: file.path });
         }
       }
     }
@@ -577,9 +605,14 @@ export function evaluateAdvisories(
     signalsFound += signals.length;
     const seenForRecord = new Set<string>();
     for (const signal of signals) {
-      if (seenForRecord.has(signal.version)) continue;
-      seenForRecord.add(signal.version);
-      const verdict = classifyAdvisory(record, signal.version);
+      const signalKey = `${signal.location}\n${signal.version}\n${signal.declared}\n${signal.incomplete}`;
+      if (seenForRecord.has(signalKey)) continue;
+      seenForRecord.add(signalKey);
+      const verdict = signal.declared || signal.incomplete
+        ? { verdict: 'UNKNOWN' as const, reason: signal.declared
+          ? 'manifest declaration does not establish the installed runtime or dependency version'
+          : 'version capture is incomplete or has a suffix; manual verification is required' }
+        : classifyAdvisory(record, signal.version);
       if (verdict.verdict === 'NOT_AFFECTED') { notAffected += 1; continue; }
       if (verdict.verdict === 'AFFECTED') affected += 1; else needsReview += 1;
       const key = `${record.ruleId}\n${signal.location}\n${signal.version}`;
@@ -590,9 +623,9 @@ export function evaluateAdvisories(
       matches.set(key, {
         ruleId: record.ruleId,
         advisoryId: record.id,
-        title: (isUnknown ? `[NEEDS REVIEW] ${record.title}` : record.title).slice(0, 80),
+        title: (isUnknown ? `[NEEDS REVIEW] ${record.title}` : `[POSSIBLE] ${record.title}`).slice(0, 80),
         description: `${record.description} ${verdict.reason}.${staleNote}`.slice(0, 400),
-        severity: isUnknown ? 'LOW' : record.severity,
+        severity: record.severity,
         ...(record.cwe === undefined ? {} : { cwe: record.cwe }),
         remediation: record.remediation.slice(0, 400),
         limitation: (record.limitation ?? defaultLimitation).slice(0, 400),
@@ -602,7 +635,7 @@ export function evaluateAdvisories(
         observedVersion: signal.version,
         verdict: isUnknown ? 'UNKNOWN' : 'AFFECTED',
         reason: verdict.reason,
-        evidence: `${record.id} ${record.component} ${signal.version} at ${signal.location} (version signal only)`.slice(0, 200),
+        evidence: `${record.id} ${record.component} ${signal.version} (version signal only)`.slice(0, 200),
         location: signal.location.slice(0, 120),
       });
     }

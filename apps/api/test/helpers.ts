@@ -32,6 +32,7 @@ import { createSastEngine } from '../src/scans/sast/engine.js';
 import { createScaEngine } from '../src/scans/sca/engine.js';
 import { createSecretsEngine } from '../src/scans/secrets/engine.js';
 import { createDastEngine } from '../src/scans/dast/engine.js';
+import { createAssessmentDastAuthorizer } from '../src/scans/dast/authorization.js';
 import { createNullIntelligenceProvider } from '../src/scans/sca/provider.js';
 import { TEST_SAST_RULES, TEST_SECRETS_RULES, TEST_DAST_RULES } from './fixtures/testData.js';
 import type { AdvisoryService } from '../src/external/advisory.js';
@@ -341,7 +342,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     createScaEngine({ sources: resolvedSourceStore, provider: createNullIntelligenceProvider() }),
     createSecretsEngine({ sources: resolvedSourceStore, rules: TEST_SECRETS_RULES }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, packRules: TEST_DAST_RULES as any }),
+    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, authorize: createAssessmentDastAuthorizer(resolvedAssessmentStore), packRules: TEST_DAST_RULES as any }),
   ]);
   const started: StartedServer = await startServer({
     config: configWithStore,

@@ -10,10 +10,10 @@ import type { FindingSeverity } from '@drobon/shared';
  * - DETECTION for 53 language/configuration families (extension,
  *   exact filename, shebang, and two documented content tie-breaks), so
  *   polyglot repositories are analyzed as one snapshot;
- * - HONEST MATURITY per family. The engine is lexical/pattern analysis
- *   (analysis depth LEVEL 1–2): it has NO parser, NO AST, NO dataflow
- *   and NO cross-file analysis, therefore NO family is ever labelled
- *   FULL. Maturity is an audit statement, never marketing:
+ * - HONEST MATURITY per family. Lexical matching is supplemented by a
+ *   bounded shallow flow, several limited syntax parsers, and a bounded JS/TS project pass. None
+ *   supplies complete semantic/dataflow or cross-file analysis, therefore
+ *   NO family is labelled FULL. Maturity is an audit statement, never marketing:
  *
  *     PARTIAL          real security rules + evidence + fingerprint +
  *                      remediation + retest + report/SARIF + tests, but

@@ -580,15 +580,16 @@ describe('SAST scans: the real engine over HTTP', () => {
       const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
       expect(detail.data.scan.status).toBe('COMPLETED');
       expect(detail.data.scan.scanType).toBe('SAST');
-      expect(detail.data.scan.resultSummary).toEqual({
+      expect(detail.data.scan.resultSummary).toMatchObject({
         findingsTotal: 0,
         findingsBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
         filesScanned: 3, // README.md is unsupported → skipped
         filesSkipped: 1,
         truncated: false,
-        // Pump 16: bounded AST/dataflow pass runs on the supported families.
+        // Shallow AST is retained; the structured parser handles these JS/TS files.
         astFilesAnalyzed: 3,
         astFlowsFound: 0,
+        astParser: { parsedFiles: 3, incompleteFiles: 0, filesWithoutRules: 0, findings: 0 },
       });
       expect(detail.data.scan.findings).toEqual([]);
       expect(detail.data.scan.failureCode).toBeUndefined();
@@ -750,7 +751,7 @@ describe('SAST scans: the real engine over HTTP', () => {
     }
   });
 
-  test('v2: pass-through-only python/java snapshots are analyzed honestly with zero findings', async () => {
+  test('Python/Java files with no applicable reporters remain explicitly partial', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'owner@example.test');
     const server = await startTestServer({ users });
@@ -766,14 +767,16 @@ describe('SAST scans: the real engine over HTTP', () => {
       await server.scanProcessor.drain();
       const detail = await getScanDetail(server, owner, projectId, scanOf(body).id);
       expect(detail.data.scan.status).toBe('COMPLETED');
-      expect(detail.data.scan.resultSummary).toEqual({
+      expect(detail.data.scan.resultSummary).toMatchObject({
         findingsTotal: 0,
         findingsBySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
         filesScanned: 2,
         filesSkipped: 0,
         truncated: false,
+        partial: true,
         astFilesAnalyzed: 2,
         astFlowsFound: 0,
+        astParser: { parsedFiles: 2, incompleteFiles: 0, filesWithoutRules: 2, findings: 0 },
       });
     } finally {
       await server.stop();

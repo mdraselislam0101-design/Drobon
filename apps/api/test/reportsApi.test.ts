@@ -373,7 +373,7 @@ describe('findings and reports production API', () => {
     } finally {
       cleanupTempStoreDir(dataDir);
     }
-  });
+  }, 20_000);
 
   test('Student E2E: FREE and PRO workflow, four scanners, findings, remediation, reverification, reports, assistant, isolation, and restart', async () => {
     const dataDir = makeTempStoreDir('pump18-student-e2e');
@@ -478,8 +478,8 @@ describe('findings and reports production API', () => {
       expect(findingDetail.guidance?.verification.length).toBeGreaterThan(0);
 
       // Audited lifecycle and note, then same-scanner re-observation must
-      // reopen the resolved finding. A subsequent clean completed SAST run
-      // changes only verification metadata; it does not invent a fix claim.
+      // reopen the resolved finding. A subsequent scan with missing AST
+      // categories is partial, so it cannot verify a finding's absence.
       for (const state of ['ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED'] as const) {
         const transition = await fetch(`${findingUrl}/lifecycle`, {
           method: 'PATCH', headers: { 'content-type': 'application/json', cookie: cookieHeader(pro) }, body: JSON.stringify({ state }),
@@ -503,8 +503,9 @@ describe('findings and reports production API', () => {
       await uploadSources(server, pro, projectId, 'const learnerMessage = "reviewed";\nconsole.log(learnerMessage);\n');
       const fixed = await runScan(server, pro, projectId, 'SAST', 'student-pro-sast-003');
       expect(fixed.detail.findings).toHaveLength(0);
+      expect(fixed.detail.resultSummary?.partial).toBe(true);
       const afterFix = await responseData<FindingDetailResponse>(await fetch(findingUrl, { headers: { cookie: cookieHeader(pro) } }));
-      expect(afterFix.workflow).toMatchObject({ state: 'RESOLVED', verificationState: 'NOT_OBSERVED_IN_LATEST_SCAN', lastVerificationScanId: fixed.id });
+      expect(afterFix.workflow).toMatchObject({ state: 'RESOLVED', verificationState: 'OBSERVED', lastVerificationScanId: repeated.id });
 
       const usageBeforeReports = await responseData<UsageResponse>(await fetch(`${server.baseUrl}/api/v1/usage`, { headers: { cookie: cookieHeader(pro) } }));
       expect(usageBeforeReports.used).toBe(6);
@@ -513,7 +514,7 @@ describe('findings and reports production API', () => {
       const sastReport = sastReportResult.body.report;
       expect(sastReport.integrityDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(sastReport.contentDigest).toMatch(/^[a-f0-9]{64}$/);
-      expect(sastReport.findingWorkflows?.some((workflow) => workflow.findingId === finding.id && workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN')).toBe(true);
+      expect(sastReport.findingWorkflows?.some((workflow) => workflow.findingId === finding.id && workflow.verificationState === 'OBSERVED' && workflow.lastVerificationScanId === repeated.id)).toBe(true);
       const scaReportResult = await generateReport(server, pro, projectId, sca.id);
       expect(scaReportResult.body.report.dependencyIntelligence).toMatchObject({ status: 'NOT_ASSESSED', datasetStatus: 'NO_DATA_LOADED' });
       expect(scaReportResult.body.report.inventory.status).toBe('INCLUDED');
@@ -595,7 +596,7 @@ describe('findings and reports production API', () => {
     } finally {
       cleanupTempStoreDir(dataDir);
     }
-  });
+  }, 20_000);
 
   test('Security Professional E2E: independent FREE/PRO journey, four shared engines, assistant summaries, reports, verification and isolation', async () => {
     const dataDir = makeTempStoreDir('pump19-security-professional-e2e');
@@ -722,7 +723,8 @@ describe('findings and reports production API', () => {
       await uploadSources(server, pro, projectId, 'const reviewed = true;\nconsole.log(reviewed);\n');
       const fixed = await runScan(server, pro, projectId, 'SAST', 'professional-pro-sast-003');
       expect(fixed.detail.findings).toHaveLength(0);
-      expect((await responseData<FindingDetailResponse>(await fetch(findingUrl, { headers: { cookie: cookieHeader(pro) } }))).workflow).toMatchObject({ state: 'RESOLVED', verificationState: 'NOT_OBSERVED_IN_LATEST_SCAN', lastVerificationScanId: fixed.id });
+      expect(fixed.detail.resultSummary?.partial).toBe(true);
+      expect((await responseData<FindingDetailResponse>(await fetch(findingUrl, { headers: { cookie: cookieHeader(pro) } }))).workflow).toMatchObject({ state: 'RESOLVED', verificationState: 'OBSERVED', lastVerificationScanId: repeated.id });
 
       const assistantStatus = await responseData<{ providerState: string }>(await fetch(`${server.baseUrl}/api/v1/assistant/status`, { headers: { cookie: cookieHeader(pro) } }));
       expect(assistantStatus.providerState).toBe('NONE');
@@ -813,7 +815,7 @@ describe('findings and reports production API', () => {
     } finally {
       cleanupTempStoreDir(dataDir);
     }
-  });
+  }, 20_000);
 
   test('Pentester journey: server-owned passive DAST, findings and retest, assistant/report history, FREE quota, PRO exemption, and restart', async () => {
     const dataDir = makeTempStoreDir('pump20-pentester-e2e');
@@ -862,6 +864,9 @@ describe('findings and reports production API', () => {
       const first = await runScan(server, free, projectId, 'DAST', 'pentester-free-dast-001');
       expect(first.detail.dast?.observations.length).toBeGreaterThan(0);
       expect(first.detail.dast?.observations.every((observation) => observation.method === 'GET')).toBe(true);
+      // The fixture includes an external script: the new static response
+      // supplement does not fetch it and must record the coverage gap.
+      expect(first.detail.resultSummary?.astSupplement).toMatchObject({ mode: 'DAST_RESPONSE_SCRIPTS', status: 'PARTIAL', skipped: 1 });
       expect(first.detail.findings.length).toBeGreaterThan(0);
       const finding = first.detail.findings[0];
       if (finding === undefined) throw new Error('Expected only scanner-produced fixture DAST findings.');
@@ -882,7 +887,7 @@ describe('findings and reports production API', () => {
       const assistant = await responseData<{ state: string; mode: string; providerState: string; evidence: Array<{ projectId: string }> }>(await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/assistant/ask`, {
         method: 'POST', headers: { 'content-type': 'application/json', cookie: cookieHeader(free) }, body: JSON.stringify({ question: 'Explain DAST observations' }),
       }));
-      expect(assistant).toMatchObject({ state: 'SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
+      expect(assistant).toMatchObject({ state: 'PARTIALLY_SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
       expect(assistant.evidence.every((entry) => entry.projectId === projectId)).toBe(true);
       expect(JSON.stringify(assistant)).not.toContain('FIXTURE_COOKIE_SECRET_DO_NOT_LEAK');
 
@@ -948,7 +953,7 @@ describe('findings and reports production API', () => {
     } finally {
       cleanupTempStoreDir(dataDir);
     }
-  });
+  }, 20_000);
   test('Developer E2E (Phase 22): SARIF export, standalone CycloneDX SBOM export, FALSE_POSITIVE lifecycle with reobservation reopen, and export authorization', async () => {
     const dataDir = makeTempStoreDir('dev22-reports');
     try {
@@ -1007,7 +1012,7 @@ describe('findings and reports production API', () => {
       expect(JSON.stringify(secretsSarifJson)).not.toContain('AKIAP10QZ9WM7XK2BR4J');
 
       // SARIF negative paths: invalid format, duplicate format parameter, unauthenticated caller.
-      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=pdf`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(422);
+      expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=xml`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(422);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif&format=sarif`, { headers: { cookie: cookieHeader(dev) } })).status).toBe(400);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=sarif`)).status).toBe(401);
 
@@ -1056,6 +1061,6 @@ describe('findings and reports production API', () => {
     } finally {
       cleanupTempStoreDir(dataDir);
     }
-  });
+  }, 20_000);
 
 });

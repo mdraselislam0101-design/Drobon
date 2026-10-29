@@ -5,6 +5,7 @@
  * Fail-closed: invalid pack files are skipped with a warning, never thrown.
  */
 
+import { FINDING_CWE_PATTERN, FINDING_TEXT_MAX_LENGTH, FINDING_TITLE_MAX_LENGTH, isFindingConfidence, isFindingSeverity } from '@drobon/shared';
 import type { SastRule } from '../scans/sast/rules.js';
 import type { SecretsRule } from '../scans/secrets/rules.js';
 import type { DastRule } from '../scans/dast/packTypes.js';
@@ -16,22 +17,35 @@ const APP_CATALOG_IDS: ReadonlySet<string> = new Set(SAST_LANGUAGE_CATALOG.map((
 
 function compilePattern(source: string, flags?: string): RegExp | undefined {
   try {
-    const f = flags === 'i' ? 'i' : flags === undefined ? '' : '';
-    if (f !== '' && f !== 'i') return undefined;
-    return new RegExp(source, f);
+    if (flags !== undefined && flags !== 'i') return undefined;
+    return new RegExp(source, flags ?? '');
   } catch {
     return undefined;
   }
 }
 
+/** Normalize untrusted pack text to the persisted Finding contract. Truncation
+ * is visible via an ellipsis; the scan-time digest uses this effective rule. */
+function findingText(value: unknown, maxLength: number, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  // eslint-disable-next-line no-control-regex -- untrusted pack text must not persist control characters.
+  const safe = value.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  if (safe.length === 0) return fallback;
+  if (safe.length <= maxLength) return safe;
+  let prefix = safe.slice(0, maxLength - 1);
+  // Do not cut a UTF-16 surrogate pair in half.
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return `${prefix}…`;
+}
+
 export function convertSastPackToRule(raw: any): SastRule | undefined {
   if (raw?.schemaVersion !== 'drobon.pack.sast/v1') return undefined;
-  if (typeof raw.id !== 'string' || !/^DPK-SAST-\d+$/.test(raw.id)) return undefined;
-  if (typeof raw.title !== 'string' || typeof raw.severity !== 'string') return undefined;
+  if (typeof raw.id !== 'string' || !/^DPK-SAST-\d{3,6}$/.test(raw.id)) return undefined;
+  if (typeof raw.title !== 'string' || !isFindingSeverity(raw.severity)) return undefined;
   const patterns: RegExp[] = [];
   if (!Array.isArray(raw.patterns)) return undefined;
   for (const p of raw.patterns) {
-    if (typeof p.source !== 'string') return undefined;
+    if (typeof p?.source !== 'string') return undefined;
     const re = compilePattern(p.source, p.flags);
     if (!re) return undefined;
     if (re.global || re.sticky) return undefined;
@@ -41,12 +55,12 @@ export function convertSastPackToRule(raw: any): SastRule | undefined {
 
   return {
     id: raw.id,
-    title: raw.title,
-    description: typeof raw.description === 'string' ? raw.description : '',
+    title: findingText(raw.title, FINDING_TITLE_MAX_LENGTH, `SAST rule ${raw.id}`),
+    description: findingText(raw.description, FINDING_TEXT_MAX_LENGTH, 'Rule description was not provided by the configured SAST pack.'),
     severity: raw.severity,
-    cwe: typeof raw.cwe === 'string' ? raw.cwe : undefined,
+    cwe: typeof raw.cwe === 'string' && FINDING_CWE_PATTERN.test(raw.cwe) ? raw.cwe : undefined,
     category: typeof raw.category === 'string' ? raw.category : 'pack',
-    remediation: typeof raw.remediation === 'string' ? raw.remediation : '',
+    remediation: findingText(raw.remediation, FINDING_TEXT_MAX_LENGTH, 'Remediation guidance was not provided by the configured SAST pack.'),
     limitation: typeof raw.limitation === 'string' ? raw.limitation : '',
     patterns,
     languages: resolvePackLanguages(raw.languages, APP_CATALOG_IDS),
@@ -55,7 +69,10 @@ export function convertSastPackToRule(raw: any): SastRule | undefined {
 
 export function convertSecretsPackToRule(raw: any): SecretsRule | undefined {
   if (raw?.schemaVersion !== 'drobon.pack.secrets/v1') return undefined;
-  if (typeof raw.id !== 'string' || !/^DPK-SEC-\d+$/.test(raw.id)) return undefined;
+  if (typeof raw.id !== 'string' || !/^DPK-SEC-\d{3,6}$/.test(raw.id)) return undefined;
+  const severity = raw.severity ?? 'MEDIUM';
+  const confidence = raw.confidence ?? 'MEDIUM';
+  if (typeof raw.title !== 'string' || !isFindingSeverity(severity) || !isFindingConfidence(confidence)) return undefined;
   const patterns: RegExp[] = [];
   if (!Array.isArray(raw.patterns)) return undefined;
   for (const p of raw.patterns) {
@@ -73,13 +90,13 @@ export function convertSecretsPackToRule(raw: any): SecretsRule | undefined {
 
   const rule: any = {
     id: raw.id,
-    title: raw.title,
-    description: typeof raw.description === 'string' ? raw.description : '',
+    title: findingText(raw.title, FINDING_TITLE_MAX_LENGTH, `Secrets rule ${raw.id}`),
+    description: findingText(raw.description, FINDING_TEXT_MAX_LENGTH, 'Rule description was not provided by the configured Secrets pack.'),
     category: typeof raw.category === 'string' ? raw.category : 'pack-secret',
-    severity: raw.severity ?? 'MEDIUM',
-    confidence: raw.confidence ?? 'MEDIUM',
-    cwe: typeof raw.cwe === 'string' ? raw.cwe : undefined,
-    remediation: typeof raw.remediation === 'string' ? raw.remediation : '',
+    severity,
+    confidence,
+    cwe: typeof raw.cwe === 'string' && FINDING_CWE_PATTERN.test(raw.cwe) ? raw.cwe : undefined,
+    remediation: findingText(raw.remediation, FINDING_TEXT_MAX_LENGTH, 'Remediation guidance was not provided by the configured Secrets pack.'),
     limitation: typeof raw.limitation === 'string' ? raw.limitation : '',
     patterns,
     matchOnlyEvidence: matchOnlyEvidence ? true : undefined,
@@ -101,19 +118,20 @@ export function convertSecretsPackToRule(raw: any): SecretsRule | undefined {
 // DAST pack — see packTypes for DastRule shape
 export function convertDastPackToRule(raw: any): DastRule | undefined {
   if (raw?.schemaVersion !== 'drobon.pack.dast/v1') return undefined;
-  if (typeof raw.id !== 'string' || !/^DPK-DAST-\d+$/.test(raw.id)) return undefined;
+  if (typeof raw.id !== 'string' || !/^DPK-DAST-\d{3,6}$/.test(raw.id)) return undefined;
+  if (typeof raw.title !== 'string' || !isFindingSeverity(raw.severity)) return undefined;
   if (!raw.check || typeof raw.check.type !== 'string') return undefined;
   // Fail closed on an unknown check type: a silent `false` would let a pack
   // claim coverage it cannot deliver (loader checklist step 1).
   if (!DAST_CHECK_TYPES.includes(raw.check.type)) return undefined;
   return {
     id: raw.id,
-    title: raw.title,
-    description: raw.description ?? '',
-    severity: raw.severity ?? 'LOW',
-    cwe: raw.cwe,
-    category: raw.category ?? 'dast',
-    remediation: raw.remediation ?? '',
+    title: findingText(raw.title, FINDING_TITLE_MAX_LENGTH, `DAST rule ${raw.id}`),
+    description: findingText(raw.description, FINDING_TEXT_MAX_LENGTH, 'Rule description was not provided by the configured DAST pack.'),
+    severity: raw.severity,
+    cwe: typeof raw.cwe === 'string' && FINDING_CWE_PATTERN.test(raw.cwe) ? raw.cwe : undefined,
+    category: typeof raw.category === 'string' ? raw.category : 'dast',
+    remediation: findingText(raw.remediation, FINDING_TEXT_MAX_LENGTH, 'Remediation guidance was not provided by the configured DAST pack.'),
     limitation: raw.limitation ?? '',
     check: raw.check,
     tests: raw.tests ?? [],

@@ -307,7 +307,18 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (assessmentId === undefined) {
           outcome = await createScan();
         } else {
-          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, createScan);
+          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, async (current) => {
+            // Re-evaluate while holding the assessment store's serialization
+            // lock so a concurrent withdrawal cannot race scan creation.
+            const target = targetUrl === undefined ? undefined : new URL(targetUrl);
+            const gate = engagementAllowsScan(current.engagements, {
+              scanType,
+              nowIso: at(),
+              ...(target === undefined ? {} : { hostname: target.hostname.toLowerCase(), path: target.pathname || '/' }),
+            });
+            if (!gate.allowed) throw conflict(`Authorization gate: ${gate.reason}`);
+            return createScan();
+          });
           if (gated.outcome === 'not-found') throw notFound('Assessment not found.');
           if (gated.outcome === 'inactive') throw conflict('Only an active project assessment can be linked to a new scan.');
           outcome = gated.value;

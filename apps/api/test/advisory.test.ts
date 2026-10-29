@@ -196,9 +196,25 @@ describe('language-agnostic signal evaluation', () => {
     expect(patched.notAffected).toBe(1);
     const unknown = evaluateAdvisories(compiled, { headers: { 'x-powered-by': 'PHP/9.0.1' } });
     expect(unknown.matches[0]?.verdict).toBe('UNKNOWN');
-    expect(unknown.matches[0]?.severity).toBe('LOW');
+    expect(unknown.matches[0]?.severity).toBe('CRITICAL'); // advisory severity retained; UNKNOWN is not a confirmed finding
     expect(unknown.matches[0]?.title).toContain('NEEDS REVIEW');
     expect(unknown.needsReview).toBe(1);
+  });
+
+  test('partial version captures and distribution suffixes require review', () => {
+    const fullPattern = compileAdvisoryPack(pack([phpRecord()]));
+    if (fullPattern === undefined) throw new Error('fixture failed to compile');
+    const distro = evaluateAdvisories(fullPattern, { headers: { 'x-powered-by': 'PHP/8.4.3-1vendor' } });
+    expect(distro.matches[0]?.verdict).toBe('UNKNOWN');
+    expect(distro.matches[0]?.reason).toContain('verification');
+    expect(compareVersions('8.4.3-1vendor', '8.4.27')).toBeUndefined();
+    const partial = compileAdvisoryPack(pack([phpRecord({ fingerprints: [{
+      ...PHP_FP, pattern: 'PHP/([0-9]+\\.[0-9]+)', selfTest: 'PHP/8.4',
+    }] })]));
+    if (partial === undefined) throw new Error('fixture failed to compile');
+    const result = evaluateAdvisories(partial, { headers: { 'x-powered-by': 'PHP/8.4.27' } });
+    expect(result.matches[0]?.verdict).toBe('UNKNOWN');
+    expect(result.notAffected).toBe(0);
   });
 
   test('ONE evaluator handles PHP, Node, Go and Python manifests', () => {
@@ -249,7 +265,7 @@ describe('language-agnostic signal evaluation', () => {
     });
     expect(result.recordsEvaluated).toBe(4);
     expect(new Set(result.matches.map((m) => m.ecosystem))).toEqual(new Set(['php', 'nodejs', 'go', 'python']));
-    expect(result.matches.every((m) => m.verdict === 'AFFECTED')).toBe(true);
+    expect(result.matches.every((m) => m.verdict === 'UNKNOWN')).toBe(true); // manifest declarations are not installed versions
   });
 });
 

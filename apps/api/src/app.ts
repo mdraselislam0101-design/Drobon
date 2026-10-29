@@ -86,6 +86,8 @@ import type { DastTransport } from './scans/dast/http.js';
 import { createDastEngine } from './scans/dast/engine.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from './assessments/store.js';
 import { createAssessmentRoutes } from './routes/assessments.js';
+import { createSocRoutes } from './routes/soc.js';
+import { createAssessmentDastAuthorizer } from './scans/dast/authorization.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -346,6 +348,7 @@ export function createApp(deps: AppDeps): App {
       createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
       createDastEngine({
         targetPolicy: dastTargetPolicy,
+        authorize: createAssessmentDastAuthorizer(assessmentStore, clock),
         dataset: datasetService,
         advisory: advisoryService,
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
@@ -382,6 +385,7 @@ export function createApp(deps: AppDeps): App {
     ...createDatasetRoutes({ config, dataset: datasetService }),
     ...createAdvisoryRoutes({ config, advisory: advisoryService }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
+    ...createSocRoutes({ projects: projectStore, scans: scanStore, dataset: datasetService, advisory: advisoryService, now: clock }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({
       config,

@@ -1,14 +1,17 @@
 # জেনেরিক Advisory Engine — নতুন যেকোনো সমস্যা, যেকোনো ভাষায়
 
+> **বর্তমান সংশোধন (2026-10-28):** কোনো pack বা scanner “সব নতুন সমস্যা” স্বয়ংক্রিয়ভাবে ধরে না। Manifest-এ লেখা version/constraint চলমান সফটওয়্যারের প্রমাণ নয়, তাই তা এখন `UNKNOWN`/review; আংশিক version বা vendor suffix-ও review। HTTP banner-ও অনিশ্চিত সংকেত। কোনো feed bundled বা auto-refresh করা হয়নি।
+
+
 **তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। ডেটাসেট repo বা ডেটাবেসে কোনো পরিবর্তন নেই, কোনো নতুন npm dependency নেই।
 
 > **আপনি যা চেয়েছিলেন (এক লাইনে):** "PHP2Shell বাদেও ভবিষ্যতে নতুন নতুন সমস্যা এলে আমার টুল যেন সেগুলো ধরতে ও বিশ্লেষণ করতে পারে, সকল কোডিং ল্যাংগুয়েজে।"
 >
-> **যা বানানো হয়েছে:** একটি **data-driven, language-agnostic advisory engine**। নতুন CVE / নতুন runtime bug / নতুন ভাষার সমস্যা এলে **কোড বদলাতে হয় না** — শুধু একটি runtime advisory record যোগ করলেই টুল সেটা ধরবে।
+> **যা বানানো হয়েছে:** একটি **data-driven, language-agnostic advisory engine**। নতুন CVE / নতুন runtime bug / নতুন ভাষার সমস্যা এলে **কোড বদলাতে হয় না** — সঠিক fingerprint ও version policy-সহ operator-supplied runtime record দিলে কিছু সম্ভাব্য সংকেত বিশ্লেষণ করতে পারে।
 
 ---
 
-## ১) কেন এটা "সব ভাষার" জন্য কাজ করে
+## ১) বিভিন্ন ecosystem কীভাবে যুক্ত করা যায়
 
 অ্যাপে কোনো `if (language === 'php')` নেই। তিনটি জিনিসই **ডেটা** হিসেবে থাকে বাইরের runtime pack-এ:
 
@@ -18,7 +21,7 @@
 | `fingerprints[]` | version কোথায় পাওয়া যাবে — response header, response body, JSON manifest, text manifest — আর তার regex |
 | `branches` / `constraints` / `eolBranches` | কোন version আক্রান্ত, কোনটা patched — একটি জেনেরিক dotted-numeric comparator দিয়ে |
 
-আজকেই একই evaluator দিয়ে **PHP header, `composer.json`, `package.json`, `go.mod`, `requirements.txt`** — সব পরীক্ষা করা হয়েছে (টেস্ট + লাইভ প্রোব)। আগামীকাল `pom.xml`, `Cargo.toml`, `Gemfile`, বা `Server: nginx/...` যোগ করতে হলে শুধু নতুন record লাগবে।
+আজকেই একই evaluator দিয়ে **PHP header, `composer.json`, `package.json`, `go.mod`, `requirements.txt`** — সব পরীক্ষা করা হয়েছে (টেস্ট + লাইভ প্রোব)। অন্য ecosystem-এর জন্য উপযুক্ত, পরীক্ষিত fingerprint ও policy দরকার; প্রতিটি format বা version semantics আপনা থেকেই কাজ করে না।
 
 ---
 
@@ -130,7 +133,7 @@ ADVISORY_PATH=/opt/drobon/advisory-pack.json
 3. সার্ভার restart (বা নতুন process) → pack lazy-load হবে।
 4. `POST /api/v1/advisory/analyze` দিয়ে যাচাই করুন → তারপর scan চালান।
 
-**কোডে এক লাইনও বদলাতে হয়নি।** এইটাই আপনার চাওয়ার মূল জবাব।
+সঠিকভাবে তৈরি record যোগ করলে কিছু version signal code না বদলে বিশ্লেষণ করা যায়; নতুন শ্রেণির সমস্যা বা অসমর্থিত version semantics-এর জন্য অতিরিক্ত কাজ লাগতে পারে।
 
 ---
 
@@ -152,7 +155,7 @@ patched version-এ (`PHP/8.4.27`):
 অজানা branch-এ (`PHP/9.0.1`) — কখনো "clean" বলা হয় না:
 
 ```
-ADV-0001  LOW  UNKNOWN  [NEEDS REVIEW] branch not covered — verify manually
+ADV-0001  CRITICAL  UNKNOWN  [NEEDS REVIEW] branch not covered — verify manually
 ```
 
 Finding-এর evidence-এ শুধু **advisory id + component + version + location** থাকে — কোনো raw header/token value নেই। Finding সাধারণ `Finding` contract মেনে চলে, তাই findings list, workflow, assistant, report (JSON/Markdown/SARIF), SBOM — সব জায়গায় স্বয়ংক্রিয়ভাবে দেখা যায়।

@@ -13,12 +13,13 @@ end-to-end marker-file tests).
 SECRETS (Pump 10) and limited passive DAST (Pump 11) are also real
 engines (see `docs/SECRETS.md` and `docs/DAST.md`).
 
-## THE DATASET LOCK (absolute)
+## External intelligence and the default
 
-**No CVE / NVD / GHSA / OSV / KEV / EPSS data may ever enter this
-repository** — not vendored, not embedded, not synthesized into a
-"demo database". The consequence is deliberate and shipped as a
-feature:
+The main app does not vendor a vulnerability dataset. An operator may
+configure the separately managed, read-only filesystem dataset using
+`VULN_INTEL_PROVIDER=filesystem` and `DATASET_PATH`; it is not a live
+feed and requires independent freshness, provenance and license review.
+The default provider is `none`:
 
 - With no real vulnerability-intelligence dataset loaded, an SCA scan
   reports **`NOT_ASSESSED`** with `datasetStatus: NO_DATA_LOADED`. Its
@@ -29,16 +30,14 @@ feature:
 - The scan still SUCCEEDS: the inventory, the direct/transitive
   classification and the SBOM are real work and are fully delivered.
   A missing dataset never fails a scan and never burns analysis.
-- `VULN_INTEL_PROVIDER` must be `none` (see `.env.example`); any other
-  value fails configuration validation at startup. The lock is
-  enforced in config, in code (`apps/api/src/scans/sca/provider.ts`)
-  and in tests (`staticSafety`, engine honesty suites).
+- Filesystem intelligence and separately configured declaration/advisory
+  rules are optional. Missing, sparse, malformed or unevaluable data is
+  disclosed as `NOT_ASSESSED` or `PARTIAL`; a real match can coexist with
+  partial coverage. No loaded match establishes that all packages are safe.
 
-The advisory→finding path is nevertheless REAL: the
-`VulnerabilityIntelligenceProvider` boundary is injectable, and a
-test-only stub provider flows verified synthetic records through the
-same validation, dedup and persistence path a future dataset will use.
-The boundary exists; the data does not. That is the honest state.
+Provider advisories are SCA advisory records; declaration rules and the
+separate generic advisory service can also produce ordinary findings.
+Synthetic advisory records used in tests are fixtures, not product data.
 
 ## The pipeline
 
@@ -48,7 +47,7 @@ source snapshot (Pump 8 upload policy, unchanged)
   → defensive parsing         (apps/api/src/scans/sca/parsers.ts)
   → normalized inventory      (apps/api/src/scans/sca/inventory.ts)
   → deterministic SBOM        (inventory.ts, CycloneDX 1.5 subset)
-  → OPTIONAL intelligence     (provider.ts — Null provider today)
+  → OPTIONAL intelligence     (Null or operator-configured filesystem provider)
   → honest assessment         (NOT_ASSESSED unless a provider assessed)
 ```
 
@@ -63,10 +62,10 @@ consumption). There is no parallel system.
 | -------- | --------- | ------ | ----- |
 | `package.json` | npm | ANALYZED | dependencies/devDependencies/optionalDependencies/peerDependencies; runtime wins on duplicate names; name+version give the root identity |
 | `package-lock.json` v3/v2 | npm | ANALYZED | `packages` map: root `""` entry supplies the direct set; nested `node_modules/...` keys resolve to the innermost package; `link: true` and version-less entries are skipped |
-| `package-lock.json` v1 | npm | ANALYZED | flat `dependencies` map; classes are `unknown` until a companion `package.json` in the same directory classifies them (declared = direct, rest = transitive) |
+| `package-lock.json` v1 | npm | ANALYZED/PARTIAL | bounded iterative nested `dependencies` walk; a companion `package.json` classifies root entries, nested copies are transitive; depth/entry caps are disclosed |
 | `requirements.txt` | pypi | ANALYZED | pins, ranges, extras (stripped from the name), environment markers (after `;`), continuation lines, `--hash` evidence; options/flags and bare URLs are skipped and counted |
 | `pyproject.toml` | pypi | ANALYZED | PEP 621 `[project]` `dependencies` + `optional-dependencies` groups; Poetry `[tool.poetry]` dependency tables (`python` key excluded) |
-| anything else (e.g. `Pipfile`, `Gemfile`, `go.mod`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.toml`, `pom.xml`) | — | UNSUPPORTED | counted honestly with a bounded note; never a fake parse |
+| other formats (e.g. `Pipfile`, `Gemfile`, `go.mod`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.toml`, `pom.xml`) | — | no full dependency inventory | Some can separately be inspected by bounded dataset declaration readers; that is not equivalent to installed-package inventory or full lockfile resolution. See `SCA_READERS.md`. |
 
 Discovery ignores `node_modules/`, `dist/`, `build/`, `out/`,
 `coverage/`, `vendor/`, `target/`, `cache/` (case-insensitive) —
@@ -82,11 +81,19 @@ evidence.
 - **Transitive** = present in a lockfile closure without a direct
   declaration (npm lockfiles only).
 - **Unknown** is honest: a lockfile v1 without a companion manifest
-  leaves classes unknown — never guessed.
-- `transitiveGraph` is `AVAILABLE` only when lockfile evidence exists
-  AND every dependency is classified. A requirements/pyproject-only
-  project reports `UNAVAILABLE` — those formats list direct
-  declarations; there is no closure to report.
+  leaves top-level classes unknown; its nested copies remain transitive.
+- `transitiveGraph` is `AVAILABLE` only when there is lockfile evidence,
+  every retained coordinate is lockfile-resolved and classified, the
+  inventory was not truncated and discovered inventory manifests were
+  analyzed. Mixed unresolved Python/npm declarations therefore report
+  `UNAVAILABLE`. This flag describes the bounded lockfile closure, not a
+  complete dependency-edge graph: the SBOM emits root edges only.
+- Distinct version/path evidence is preserved. Identical coordinates at
+  different nested installation paths under the same manifest may merge.
+- Only evaluable exact declarations, including Python `==1.2.3`, are
+  sent as advisory candidates; wildcards and ranges remain unknown.
+  Environment markers are not evaluated and a declaration is not proof
+  of installation or deployment.
 - **Declared and resolved versions are both preserved, never
   merged**: `declaredVersion` (e.g. `^4.18.0`) comes from the
   manifest; `resolvedVersion` (e.g. `4.17.1`) exists only when a
@@ -98,7 +105,7 @@ evidence.
 ## Determinism (no random identities)
 
 - Dependency fingerprint = `sha256` over a canonical coordinate
-  (ecosystem, name, resolved-or-declared version, evidence paths).
+  (ecosystem, name, resolved-or-declared version, manifest path).
 - `dependencyId` = `dep_` + fingerprint prefix — identical snapshots
   produce identical ids across rescans and restarts (tested).
 - The SBOM `serialNumber` is a content-hash-derived UUID — same input,
@@ -112,11 +119,14 @@ Emitted fields: `bomFormat` (`CycloneDX`), `specVersion` (`1.5`),
 `serialNumber` (`urn:uuid:…`, deterministic), `version` (1),
 `metadata.tools.components[0]` (the analyzer), `metadata.component`
 (root application, when a single named `package.json` provides it),
-`components[]` (`type: library`, `bom-ref` = the dependency id, name,
+`components[]` (`type: library`, `bom-ref` = dependency fingerprint, name,
 resolved-or-exact-pin version, `scope` required/optional/excluded by
 type, `purl` when constructible, `hashes` from lockfile integrity —
 never fabricated), `dependencies[]` (only evidenced edges:
-root → direct). Deliberately omitted: timestamps, suppliers, licenses,
+root → direct dependencies declared by that root manifest). If several
+named npm manifests exist, no single application root is invented.
+An exact manifest-only version is declaration evidence, not an installed
+version. Deliberately omitted: timestamps, suppliers, licenses,
 external references, contacts — everything without evidence in the
 snapshot. purls are `pkg:npm/name[@version]` / `pkg:pypi/name[@version]`
 (PEP 503-normalized), emitted only when constructible; scoped npm
@@ -173,8 +183,9 @@ result presented as complete.
   `constructor`, `prototype`) are skipped as data everywhere —
   checked with `Object.prototype.hasOwnProperty`-style access, never
   `key in obj`, never square-bracket assignment into shared shapes.
-- **No recursion** on JSON structure: iteration is flat over sections;
-  200-deep nesting is ignored by construction.
+- **No recursive calls** on lockfile structure: npm v1 nested maps use an
+  iterative walk capped at 500 entries and depth 32; reaching a cap is
+  reported as PARTIAL rather than hidden.
 - **Bounded everything**: entry caps, line caps, name/version/note
   length caps; control characters rejected (versions, names, notes).
 - **Invalid data is dropped, never guessed**: malformed JSON →

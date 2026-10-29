@@ -259,6 +259,7 @@ export function engagementAllowsScan(
 ): { allowed: true; engagementId?: string } | { allowed: false; reason: string } {
   const records = engagements ?? [];
   if (records.length === 0) return { allowed: true };
+  if (!Number.isFinite(Date.parse(options.nowIso))) return { allowed: false, reason: 'The engagement evaluation time is invalid.' };
   const active = records.filter((item) =>
     item.state === 'DECLARED' && engagementStatus(item, options.nowIso) === 'ACTIVE' && item.allowedScanTypes.includes(options.scanType));
   if (active.length === 0) return { allowed: false, reason: 'No active engagement authorizes this scan type.' };
@@ -267,7 +268,17 @@ export function engagementAllowsScan(
     const inHost = active.filter((item) => item.inScopeHosts.includes(host));
     if (inHost.length === 0) return { allowed: false, reason: 'No active engagement covers this target hostname.' };
     if (options.path !== undefined) {
-      const inPath = inHost.filter((item) => item.scopePaths.length === 0 || item.scopePaths.some((prefix) => (options.path ?? '/').startsWith(prefix)));
+      const path = options.path;
+      // Encoded separators/dots can be decoded or normalised differently by
+      // proxies and target frameworks. Do not treat an ambiguous path as in scope.
+      if (/%(?:2f|5c|2e|25)/i.test(path) || path.includes('\\')) {
+        return { allowed: false, reason: 'The target path uses ambiguous encoded separators or traversal.' };
+      }
+      const inPath = inHost.filter((item) => item.scopePaths.length === 0 || item.scopePaths.some((prefix) => {
+        if (prefix === '/') return true;
+        const base = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+        return path === base || path.startsWith(`${base}/`);
+      }));
       if (inPath.length === 0) return { allowed: false, reason: 'The target path is outside the engagement scope.' };
       const picked = inPath[0]?.id;
       return picked === undefined ? { allowed: true } : { allowed: true, engagementId: picked };

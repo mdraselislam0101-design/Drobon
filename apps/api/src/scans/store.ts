@@ -10,6 +10,7 @@ import {
   isFinding,
   isScanFailureCode,
   isScanResultSummary,
+  isAstSupplementForScanType,
   isScanStatus,
   isScanType,
   isDastResult,
@@ -424,6 +425,10 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   if (record['resultSummary'] !== undefined && !isScanResultSummary(record['resultSummary'])) {
     return undefined;
   }
+  if (isScanResultSummary(record['resultSummary'])) {
+    if ((record['resultSummary'].astParser !== undefined || record['resultSummary'].astCoverage !== undefined) && record['scanType'] !== 'SAST') return undefined;
+    if (!isAstSupplementForScanType(record['resultSummary'], record['scanType'])) return undefined;
+  }
   // Findings (Pump 8): COMPLETED scans only, bounded, individually
   // guarded, and each finding must belong to THIS scan (a cross-scan
   // finding would mean corrupted or transplanted state — refuse).
@@ -667,6 +672,14 @@ function parseStoredFindingWorkflow(value: unknown, scansById: ReadonlyMap<strin
   return { ...publicWorkflow, history };
 }
 
+// An incomplete scan can still positively observe a finding, but its lack
+// of a finding is not reliable verification evidence. Older scans without
+// coverage fields retain their historical interpretation.
+function canVerifyAbsence(summary: ScanResultSummary, dast?: DastResult): boolean {
+  return summary.partial !== true && summary.truncated !== true &&
+    summary.astSupplement?.status !== 'PARTIAL' && dast?.partial !== true;
+}
+
 function migrateFindingWorkflows(scans: readonly ScanRecord[]): FindingWorkflowRecord[] {
   const workflows = new Map<string, FindingWorkflowRecord>();
   const completed = scans.filter((scan) => scan.status === 'COMPLETED' && scan.completedAt !== undefined &&
@@ -679,9 +692,11 @@ function migrateFindingWorkflows(scans: readonly ScanRecord[]): FindingWorkflowR
     const scanContext = { id: scan.id, projectId: scan.projectId, scanType: scan.scanType, completedAt: scan.completedAt! };
     const currentFindings = scan.findings ?? [];
     const current = new Set(currentFindings.map((finding) => finding.fingerprint));
-    for (const [key, prior] of workflows) {
-      if (prior.projectId === scan.projectId && prior.scanner === scan.scanType && !current.has(prior.fingerprint)) {
-        workflows.set(key, markFindingNotObserved(prior, scanContext));
+    if (scan.resultSummary !== undefined && canVerifyAbsence(scan.resultSummary, scan.dast)) {
+      for (const [key, prior] of workflows) {
+        if (prior.projectId === scan.projectId && prior.scanner === scan.scanType && !current.has(prior.fingerprint)) {
+          workflows.set(key, markFindingNotObserved(prior, scanContext));
+        }
       }
     }
     for (const finding of currentFindings) {
@@ -709,6 +724,7 @@ function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
     report.scan.status !== 'COMPLETED' || report.scan.createdAt !== scan.createdAt ||
     report.scan.updatedAt !== scan.updatedAt || report.scan.startedAt !== scan.startedAt ||
     report.scan.completedAt !== scan.completedAt || report.scan.targetUrl !== scan.dastTargetUrl ||
+    (report.scan.dastMode !== undefined && report.scan.dastMode !== scan.dastMode) ||
     canonicalJson(report.scan.resultSummary) !== canonicalJson(scan.resultSummary) ||
     canonicalJson(report.findings) !== canonicalJson(scan.findings ?? []) ||
     report.findingSummary.total !== scan.resultSummary.findingsTotal ||
@@ -1270,6 +1286,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         const current = scansById.get(id);
         if (current === undefined || current.status !== 'RUNNING') return undefined;
         if (!isScanResultSummary(resultSummary)) return undefined;
+        if ((resultSummary.astParser !== undefined || resultSummary.astCoverage !== undefined) && current.scanType !== 'SAST') return undefined;
+        if (!isAstSupplementForScanType(resultSummary, current.scanType)) return undefined;
         if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) return undefined;
         if (dast !== undefined && !(isDastResult(dast) && current.scanType === 'DAST' && dast.targetUrl === current.dastTargetUrl)) return undefined;
         if ((current.scanType === 'DAST') !== (dast !== undefined)) return undefined;
@@ -1307,9 +1325,11 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         const nextWorkflows = new Map(findingWorkflowsByKey);
         if (findingsAreAuthoritative) {
           const observed = new Set(actualFindings.map((finding) => finding.fingerprint));
-          for (const [key, workflow] of nextWorkflows) {
-            if (workflow.projectId === current.projectId && workflow.scanner === current.scanType && !observed.has(workflow.fingerprint)) {
-              nextWorkflows.set(key, markFindingNotObserved(workflow, scanContext));
+          if (canVerifyAbsence(resultSummary, dast)) {
+            for (const [key, workflow] of nextWorkflows) {
+              if (workflow.projectId === current.projectId && workflow.scanner === current.scanType && !observed.has(workflow.fingerprint)) {
+                nextWorkflows.set(key, markFindingNotObserved(workflow, scanContext));
+              }
             }
           }
           for (const finding of actualFindings) {

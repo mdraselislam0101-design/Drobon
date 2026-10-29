@@ -30,6 +30,8 @@
 
 import {
   isValidSourcePath,
+  isScaAdvisory,
+  FINDING_SEVERITIES,
   MAX_FINDINGS_PER_SCAN,
   SCA_MAX_DEPENDENCIES_PER_SCAN,
   SCA_MAX_MANIFESTS_PER_SCAN,
@@ -58,9 +60,11 @@ import {
   type VulnerabilityIntelligenceProvider,
 } from './provider.js';
 import { evaluateScaDeclarations } from './declarationScan.js';
+import { exactDeclaredVersion } from './exactVersion.js';
 import type { DatasetService } from '../../external/service.js';
 import type { AdvisoryService } from '../../external/advisory.js';
 import { advisorySourceFinding } from '../advisoryFindings.js';
+import { analyzeScaManifestAst } from '../supplementAst.js';
 
 /** The engine's hard resource limits (defaults; injectable for tests). */
 export interface ScaLimits {
@@ -238,7 +242,7 @@ function sanitizeAdvisory(
   if (url !== undefined && (typeof url !== 'string' || url.length > 400)) {
     return undefined;
   }
-  return {
+  const candidate = {
     id,
     severity: severity as ScaAdvisory['severity'],
     summary,
@@ -248,6 +252,7 @@ function sanitizeAdvisory(
     name: dependency.name,
     ...(dependency.version === undefined ? {} : { version: dependency.version }),
   };
+  return isScaAdvisory(candidate) ? candidate : undefined;
 }
 
 /** Locate an observed version string in a manifest for an honest line/column. */
@@ -346,6 +351,7 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       // ANY manifest (composer.json `require.php`, package.json `engines.node`,
       // go.mod, ...). Data-driven, language-agnostic, no network or execution.
       const advisoryFindings: Finding[] = [];
+      let advisoryFindingsOmitted = false;
       if (options.advisory !== undefined) {
         const advisoryResult = await options.advisory.evaluate({
           files: snapshot.files.map((file) => ({ path: file.path, content: file.content })),
@@ -354,9 +360,9 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
           const filePath = match.location.split(' ')[0] ?? '';
           const source = snapshot.files.find((file) => file.path === filePath);
           if (source === undefined || !isValidSourcePath(filePath)) continue;
+          if (advisoryFindings.length >= MAX_FINDINGS_PER_SCAN) { advisoryFindingsOmitted = true; break; }
           const { line, column } = locateVersion(source.content, match.observedVersion);
           advisoryFindings.push(advisorySourceFinding(match, { record, file: filePath, line, column }));
-          if (advisoryFindings.length >= MAX_FINDINGS_PER_SCAN) break;
         }
       }
       const producedFindings = declarations.findings.length + advisoryFindings.length;
@@ -379,17 +385,12 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
 
       // Consult the (optional) intelligence provider.
       // Version for matching: prefer the lockfile/resolved version when present;
-      // fall back to a declared version that looks like a concrete version
-      // (exact pins such as "6.2.4" or "5.2.16" — not range specs like
-      // "^6.2.4" or ">=1.0"). This keeps package.json-only projects
-      // honest without guessing ranges, and mirrors the SBOM version rule.
+      // fall back to one evaluable declared pin (including Python's
+      // `==1.2.3`); ranges, wildcards and unsupported forms stay unknown.
+      // A declared pin is not evidence of an installed/deployed version.
       const coordinates = inventory.dependencies.map((dependency) => {
-        const versionForAssessment =
-          dependency.resolvedVersion ??
-          (dependency.declaredVersion !== undefined &&
-          /^[0-9][A-Za-z0-9._+-]*$/.test(dependency.declaredVersion)
-            ? dependency.declaredVersion
-            : undefined);
+        const versionForAssessment = dependency.resolvedVersion ??
+          exactDeclaredVersion(dependency.ecosystem, dependency.declaredVersion);
         return {
           ecosystem: dependency.ecosystem,
           name: dependency.name,
@@ -401,12 +402,8 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
 
       const dependencyById = new Map(
         inventory.dependencies.map((dependency) => {
-          const versionForAdvisory =
-            dependency.resolvedVersion ??
-            (dependency.declaredVersion !== undefined &&
-            /^[0-9][A-Za-z0-9._+-]*$/.test(dependency.declaredVersion)
-              ? dependency.declaredVersion
-              : undefined);
+          const versionForAdvisory = dependency.resolvedVersion ??
+            exactDeclaredVersion(dependency.ecosystem, dependency.declaredVersion);
           return [
             dependency.dependencyId,
             {
@@ -418,28 +415,35 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         }),
       );
       const advisories: ScaAdvisory[] = [];
+      let invalidAdvisory = false;
       for (const advisory of assessment.advisories) {
+        // A provider that reports no available data cannot simultaneously
+        // establish an advisory match, regardless of its supplied payload.
+        if (assessment.datasetStatus !== 'DATASET_AVAILABLE' || assessment.providerId === 'none') { invalidAdvisory = true; continue; }
         const sanitized = sanitizeAdvisory(advisory, dependencyById);
-        if (sanitized !== undefined) {
-          advisories.push(sanitized);
-        }
+        if (sanitized !== undefined) advisories.push(sanitized);
+        else invalidAdvisory = true;
       }
-      // Dedupe provider advisories deterministically (id+dependencyId).
+      // Dedupe deterministically (id+dependencyId). If the persisted bound is
+      // reached, preserve higher severity records and disclose the omission.
       const seenAdvisory = new Set<string>();
-      const uniqueAdvisories = advisories.filter((advisory) => {
+      const allUniqueAdvisories = advisories.filter((advisory) => {
         const key = `${advisory.id}\n${advisory.dependencyId}`;
-        if (seenAdvisory.has(key)) {
-          return false;
-        }
+        if (seenAdvisory.has(key)) return false;
         seenAdvisory.add(key);
         return true;
       });
+      const advisoriesTruncated = allUniqueAdvisories.length > SCA_MAX_DEPENDENCIES_PER_SCAN;
+      const uniqueAdvisories = advisoriesTruncated
+        ? [...allUniqueAdvisories].sort((a, b) => FINDING_SEVERITIES.indexOf(a.severity) - FINDING_SEVERITIES.indexOf(b.severity))
+          .slice(0, SCA_MAX_DEPENDENCIES_PER_SCAN)
+        : allUniqueAdvisories;
 
       // ASSESSED requires the provider to have actually matched
       // verified records against loaded data; anything else (no data
       // loaded, dataset unavailable, zero matches) is NOT_ASSESSED.
       const assessmentState =
-        uniqueAdvisories.length > 0 && assessment.datasetStatus !== 'NO_DATA_LOADED'
+        uniqueAdvisories.length > 0 && assessment.datasetStatus === 'DATASET_AVAILABLE' && assessment.providerId !== 'none'
           ? 'ASSESSED'
           : 'NOT_ASSESSED';
 
@@ -465,9 +469,9 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         // declarations — no graph exists there, even when every
         // dependency is classified.
         transitiveGraph:
-          inventory.hasLockfileEvidence &&
-          inventory.unclassifiedCount === 0 &&
-          inventory.totalUnique > 0
+          inventory.hasLockfileEvidence && inventory.allDependenciesResolved &&
+          !inventory.truncated && inventory.unclassifiedCount === 0 &&
+          manifestResults.every((manifest) => manifest.status === 'ANALYZED')
             ? 'AVAILABLE'
             : 'UNAVAILABLE',
         truncated: inventory.truncated,
@@ -477,10 +481,28 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       // separated), while declaration-rule matches are REAL persisted
       // findings. Coverage counters state honestly how many declaration
       // rules were evaluated vs. left unevaluated in this scan.
+      const astSupplement = await analyzeScaManifestAst(discovery.manifests, ctx.signal, () => deadline - now());
+      if (ctx.signal.aborted || now() >= deadline) return deadlineFailure();
+      const partialReasons: string[] = [];
+      if (assessment.datasetStatus !== 'DATASET_AVAILABLE') partialReasons.push('Dependency advisory data was unavailable.');
+      else if (assessment.incomplete === true || invalidAdvisory || coordinates.some((coordinate) => coordinate.version === undefined)) {
+        partialReasons.push('Some dependency advisory checks were unknown or lacked version evidence.');
+      }
+      if (advisoriesTruncated) partialReasons.push('The advisory detail limit was reached.');
+      if (advisoryFindingsOmitted || producedFindings > allFindings.length) partialReasons.push('Some source finding details exceeded the limit.');
+      if (inventory.dependencies.some((dependency) => dependency.versionSource === 'manifest')) {
+        partialReasons.push('Declared versions do not prove what was installed.');
+      }
+      if (manifestResults.some((manifest) => manifest.status !== 'ANALYZED') || discovery.skipped > 0) {
+        partialReasons.push('Some manifests were incomplete, invalid or skipped.');
+      }
+      if (declarations.partial) partialReasons.push('Declaration readers are bounded subsets or an artifact was unreadable; coverage is incomplete.');
       const resultSummary: ScanResultSummary = {
+        astSupplement,
         findingsTotal: allFindings.length,
         findingsBySeverity: severityCounts,
-        truncated: inventory.truncated || declarations.truncated || producedFindings > allFindings.length,
+        truncated: inventory.truncated || advisoriesTruncated || advisoryFindingsOmitted || declarations.truncated || producedFindings > allFindings.length,
+        ...(partialReasons.length === 0 ? {} : { partial: true, partialReason: partialReasons.join(' ').slice(0, 200) }),
         filesScanned: summary.manifestsAnalyzed + summary.manifestsPartial,
         filesSkipped:
           summary.manifestsUnsupported + summary.manifestsInvalid + discovery.skipped,

@@ -14,6 +14,7 @@ import {
 } from './scans.js';
 import { isScaResult, type ScaResult } from './sca.js';
 import { isDastResult, type DastResult } from './dast.js';
+import { isSacAssessment, type SacAssessment } from './socSac.js';
 
 export const REPORT_SCHEMA_VERSION = 1 as const;
 export const REPORT_VERSION = '1.0' as const;
@@ -81,6 +82,12 @@ export interface SecurityReport {
   dast?: DastResult;
   /** P13 point-in-time workflow snapshot; absent only on legacy Pump 12 reports. */
   findingWorkflows?: FindingWorkflow[];
+  /**
+   * Pump 19 — honest COVERAGE & RESIDUAL RISK ledger (SAC engine). Optional
+   * so pre-Pump-19 persisted reports remain contract-valid. When present it
+   * is part of contentDigest/integrityDigest (tamper-evident).
+   */
+  sac?: SacAssessment;
   dependencyIntelligence: ReportDependencyIntelligence;
   inventory: ReportInventory;
   contentDigest: string;
@@ -205,7 +212,7 @@ export function isSecurityReport(value: unknown): value is SecurityReport {
     'scannerCoverage', 'findingSummary', 'findings', 'dependencyIntelligence',
     'inventory', 'contentDigest', 'integrityDigest',
   ];
-  if (Object.keys(record).some((key) => ![...requiredKeys, 'dast', 'findingWorkflows'].includes(key)) ||
+  if (Object.keys(record).some((key) => ![...requiredKeys, 'dast', 'findingWorkflows', 'sac'].includes(key)) ||
       requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(record, key))) return false;
   if (typeof record['reportId'] !== 'string' || !REPORT_ID_PATTERN.test(record['reportId']) ||
       record['reportVersion'] !== REPORT_VERSION || record['schemaVersion'] !== REPORT_SCHEMA_VERSION ||
@@ -227,6 +234,29 @@ export function isSecurityReport(value: unknown): value is SecurityReport {
   const findings = record['findings'] as Finding[];
   if (findings.some((finding) => finding.scanId !== scan.id ||
       (finding.projectId !== undefined && finding.projectId !== project.id))) return false;
+  if (record['sac'] !== undefined) {
+    if (!isSacAssessment(record['sac'])) return false;
+    const sac = record['sac'];
+    const expectedCoverage = record['scannerCoverage'] as ScannerCoverageEntry[];
+    const summary = record['findingSummary'] as ReportFindingSummary;
+    const scanSummary = scan.resultSummary;
+    if (sac.ruleProvenance === 'SAST_EFFECTIVE_RULES_RECORDED' && (scan.scanType !== 'SAST' || scan.resultSummary?.astCoverage === undefined)) return false;
+    if (sac.scope.projectId !== project.id || sac.scope.scanId !== scan.id || sac.scope.scanType !== scan.scanType ||
+        sac.scope.completedAt !== scan.completedAt || sac.scope.targetUrl !== scan.targetUrl || sac.scope.assessmentId !== scan.assessmentId ||
+        sac.findings.total !== summary.total || FINDING_SEVERITIES.some((key) => sac.findings.bySeverity[key] !== summary.bySeverity[key]) ||
+        scanSummary === undefined) return false;
+    const metricKeys = ['filesScanned', 'filesSkipped', 'requestsMade', 'redirectsFollowed', 'declarationRulesEvaluated',
+      'declarationRulesNotEvaluated', 'astFilesAnalyzed', 'astFlowsFound', 'partial', 'truncated', 'partialReason'] as const;
+    if (metricKeys.some((key) => sac.metrics[key] !== (scanSummary[key] ?? null))) return false;
+    const incomplete = scanSummary.partial === true || scanSummary.truncated === true ||
+      scanSummary.astSupplement?.status === 'PARTIAL' ||
+      (typeof record['dast'] === 'object' && record['dast'] !== null && (record['dast'] as DastResult).partial === true);
+    if (sac.scannerCoverage.some((entry) => {
+      const expected = expectedCoverage.find((item) => item.scanner === entry.scanner);
+      const expectedStatus = expected?.status === 'NOT_RUN' ? 'NOT_RUN' : incomplete ? 'PARTIAL' : 'RAN';
+      return expected === undefined || entry.status !== expectedStatus;
+    })) return false;
+  }
   if (record['findingWorkflows'] !== undefined) {
     if (!Array.isArray(record['findingWorkflows']) || record['findingWorkflows'].length !== findings.length ||
         !record['findingWorkflows'].every(isFindingWorkflow)) return false;

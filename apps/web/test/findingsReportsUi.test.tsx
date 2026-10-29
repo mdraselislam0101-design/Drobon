@@ -136,6 +136,62 @@ describe('completed scan findings and report UI', () => {
     expect(within(findingDetail).getByTestId('finding-evidence')).toHaveTextContent('<img src=x onerror=alert(1)>');
     expect(findingDetail.querySelector('img')).toBeNull();
     expect(findingDetail.querySelector('[onerror]')).toBeNull();
+    const task = within(findingDetail).getByTestId('finding-task-draft');
+    expect(task).toHaveTextContent('does not create a Jira issue');
+    const draft = within(task).getByLabelText('Task draft (selectable, no evidence)') as HTMLTextAreaElement;
+    expect(draft.value).toContain('Severity: HIGH');
+    expect(draft.value).not.toContain(finding.evidence);
+    await userEvent.type(within(task).getByLabelText('Suggested assignee (optional, text only)'), 'Reviewer A');
+    expect(draft.value).toContain('Suggested assignee (manual): Reviewer A');
+    await userEvent.click(within(task).getByRole('button', { name: 'Copy task draft' }));
+    expect(within(task).getByRole('status')).toHaveTextContent(/Draft copied|Clipboard unavailable/);
+  });
+
+  test('shows category attribution and a project source-to-sink trace', async () => {
+    const traced: Finding = {
+      ...finding, scanner: 'SAST', astFlow: { mode: 'PROJECT', category: 'code', attribution: 'CATEGORY_REPORTER',
+        source: { file: 'src/input.ts', line: 3, column: 8 }, via: [{ file: 'src/handler.ts', line: 7, column: 4 }] },
+    };
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: TEST_USER })),
+      getProject: vi.fn(async () => projectResponse),
+      getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [scan] })),
+      getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [traced], page: 1, pageSize: 20, total: 1, totalPages: 1 })),
+      getFinding: vi.fn(async (): Promise<FindingDetailResponse> => ({ project, scan, finding: traced })),
+    });
+    await renderProject(client);
+    await userEvent.click(await screen.findByTestId('view-findings'));
+    await userEvent.click(await screen.findByTestId('finding-detail-button'));
+    const trace = await screen.findByTestId('finding-ast-flow');
+    expect(trace).toHaveTextContent('rule selected by category');
+    expect(trace).toHaveTextContent('src/input.ts:3:8');
+    expect(trace).toHaveTextContent('src/handler.ts:7:4');
+    expect(trace).toHaveTextContent('src/app.ts:4:1');
+  });
+
+  test('shows DAST script-flow attribution without presenting it as an established exploit', async () => {
+    const targetUrl = 'https://app.example.org/';
+    const dastScan: Scan = { ...scan, scanType: 'DAST', targetUrl };
+    const candidate: Finding = {
+      id: finding.id, scanId: scan.id, ruleId: 'DG-DAST-900', severity: 'HIGH', scanner: 'DAST',
+      title: 'Possible HTML flow', description: 'Review candidate.', evidence: 'AST flow metadata only.', remediation: 'Review.',
+      fingerprint: finding.fingerprint, projectId: project.id, targetUrl, endpoint: targetUrl, method: 'GET',
+      responseStatus: 200, responseTimeMs: 4, observedAt: scan.completedAt!, observedHeaders: [],
+      astContext: { kind: 'DAST_RESPONSE_FLOW', category: 'html', attribution: 'CATEGORY_REPORTER', script: 2, line: 3, column: 4 },
+    };
+    const client = stubClient({
+      getMe: vi.fn(async () => ({ user: TEST_USER })), getProject: vi.fn(async () => projectResponse),
+      getScans: vi.fn(async () => ({ scans: [dastScan] })),
+      getScan: vi.fn(async () => ({ scan: { ...dastScan, findings: [candidate], dast: { targetUrl, requestCount: 1, redirectsFollowed: 0, partial: false, observations: [{ endpoint: targetUrl, method: 'GET' as const, status: 200, observedAt: scan.completedAt!, responseTimeMs: 4, bodyBytes: 0, bodyTruncated: false, headers: [] }] } } })),
+      getFindings: vi.fn(async () => ({ findings: [candidate], page: 1, pageSize: 20, total: 1, totalPages: 1 })),
+      getFinding: vi.fn(async () => ({ project, scan: dastScan, finding: candidate })),
+    });
+    await renderProject(client);
+    await userEvent.click(await screen.findByTestId('view-findings'));
+    await userEvent.click(await screen.findByTestId('finding-detail-button'));
+    const context = await screen.findByTestId('finding-ast-context');
+    expect(context).toHaveTextContent('script 2, line 3, column 4');
+    expect(context).toHaveTextContent('exact rule check and exploitability not established');
   });
 
   test('shows workflow verification, rule guidance, bounded history, and saved remediation notes', async () => {
@@ -186,7 +242,7 @@ describe('completed scan findings and report UI', () => {
     await userEvent.click(await screen.findByTestId('finding-detail-button'));
     const panel = await screen.findByTestId('finding-workflow');
     expect(within(panel).getByTestId('finding-lifecycle-state')).toHaveTextContent('OPEN');
-    expect(within(panel).getByTestId('finding-verification-state')).toHaveTextContent('Observed in latest completed same-scanner scan');
+    expect(within(panel).getByTestId('finding-verification-state')).toHaveTextContent('Observed in the recorded verification scan');
     expect(screen.getByTestId('finding-guidance')).toHaveTextContent('RULE SPECIFIC');
 
     await userEvent.selectOptions(within(panel).getByLabelText('Change lifecycle state'), 'ACKNOWLEDGED');
@@ -209,11 +265,12 @@ describe('completed scan findings and report UI', () => {
     expect(getFindingHistory).toHaveBeenCalledWith(project.id, scan.id, finding.id, 1, 20);
   });
 
-  test('generates/retrieves honest saved reports and offers JSON/Markdown/SARIF/standalone-SBOM exports', async () => {
+  test('generates/retrieves honest saved reports and offers PDF and existing exports', async () => {
     const createReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
     const getReport = vi.fn(async (): Promise<SecurityReportResponse> => report);
     const downloadReport = vi.fn(async (): Promise<ReportDownload> => ({ blob: new Blob(['{}']), filename: `drobon-${report.report.reportId}.sarif`, contentType: 'application/sarif+json' }));
     const downloadSbom = vi.fn(async (): Promise<ReportDownload> => ({ blob: new Blob(['{"bomFormat":"CycloneDX"}']), filename: `drobon-${report.report.reportId}.cdx.json`, contentType: 'application/json' }));
+    const downloadProjectReport = vi.fn(async (): Promise<ReportDownload> => ({ blob: new Blob(['%PDF-1.3']), filename: `drobon-project-${project.id}.pdf`, contentType: 'application/pdf' }));
     const client = stubClient({
       getMe: vi.fn(async () => ({ user: TEST_USER })),
       getProject: vi.fn(async () => projectResponse),
@@ -221,6 +278,7 @@ describe('completed scan findings and report UI', () => {
       createReport,
       getReport,
       downloadReport,
+      downloadProjectReport,
       downloadSbom,
     });
     await renderProject(client);
@@ -238,9 +296,15 @@ describe('completed scan findings and report UI', () => {
     expect(screen.getByTestId('download-report-markdown')).toBeInTheDocument();
     expect(screen.getByTestId('download-report-sarif')).toBeInTheDocument();
     expect(screen.getByTestId('download-report-sbom')).toBeInTheDocument();
-    expect(screen.queryByText(/PDF/i)).toBeNull();
+    expect(screen.getByTestId('download-report-pdf')).toBeInTheDocument();
+    expect(screen.getByTestId('download-project-pdf')).toBeInTheDocument();
     URL.createObjectURL = (): string => 'blob:fixture';
     URL.revokeObjectURL = (): void => undefined;
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    await userEvent.click(screen.getByTestId('download-report-pdf'));
+    await waitFor(() => expect(downloadReport).toHaveBeenCalledWith(project.id, scan.id, 'pdf'));
+    await userEvent.click(screen.getByTestId('download-project-pdf'));
+    await waitFor(() => expect(downloadProjectReport).toHaveBeenCalledWith(project.id));
     await userEvent.click(screen.getByTestId('download-report-sarif'));
     await waitFor(() => expect(downloadReport).toHaveBeenCalledWith(project.id, scan.id, 'sarif'));
     await userEvent.click(screen.getByTestId('download-report-sbom'));
@@ -249,5 +313,6 @@ describe('completed scan findings and report UI', () => {
     expect(getReport).toHaveBeenCalledWith(project.id, scan.id);
     await userEvent.click(screen.getByTestId('refresh-report-snapshot'));
     expect(createReport).toHaveBeenCalledTimes(2);
+    anchorClick.mockRestore();
   });
 });

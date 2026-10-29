@@ -49,7 +49,7 @@ export interface AssessmentStore {
   listByProject(ownerId: string, projectId: string): Promise<Assessment[]>;
   findByProjectAndId(ownerId: string, projectId: string, assessmentId: string): Promise<Assessment | undefined>;
   /** Linearizes linked scan creation against assessment completion/cancellation. */
-  withActiveAssessment<T>(ownerId: string, projectId: string, assessmentId: string, action: () => Promise<T>): Promise<{ outcome: 'ready'; value: T } | { outcome: 'not-found' } | { outcome: 'inactive' }>;
+  withActiveAssessment<T>(ownerId: string, projectId: string, assessmentId: string, action: (current: Assessment) => Promise<T>): Promise<{ outcome: 'ready'; value: T } | { outcome: 'not-found' } | { outcome: 'inactive' }>;
   update(input: UpdateAssessmentInput): Promise<{ outcome: 'updated' | 'not-found' | 'not-planned' | 'history-limit'; assessment?: Assessment }>;
   transition(input: { ownerId: string; projectId: string; assessmentId: string; status: AssessmentStatus; now: string }, guard?: (current: Assessment) => Promise<boolean>): Promise<{ outcome: 'updated' | 'unchanged' | 'not-found' | 'invalid-transition' | 'guard-rejected' | 'history-limit'; assessment?: Assessment }>;
   recordAuthorization(input: { ownerId: string; projectId: string; assessmentId: string; targetUrl: string; action: 'DECLARE' | 'WITHDRAW'; now: string }): Promise<{ outcome: 'updated' | 'unchanged' | 'not-found' | 'inactive' | 'not-declared' | 'declarations-limit' | 'history-limit'; assessment?: Assessment }>;
@@ -186,7 +186,7 @@ function createStore(initial: AssessmentRecord[], persistWith: (records: Assessm
       const current = find(ownerId, projectId, id);
       if (current === undefined) return { outcome: 'not-found' as const };
       if (current.status !== 'ACTIVE') return { outcome: 'inactive' as const };
-      return { outcome: 'ready' as const, value: await action() };
+      return { outcome: 'ready' as const, value: await action(safeAssessment(current)) };
     }),
     update: (input) => runExclusive(() => {
       const current = find(input.ownerId, input.projectId, input.assessmentId);

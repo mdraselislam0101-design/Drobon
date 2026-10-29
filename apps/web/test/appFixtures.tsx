@@ -225,6 +225,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // Pump 6 default: no projects yet (the honest empty world). Suites
     // override these to model owned/foreign/lifecycle states.
     getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),
+    getSocPosture: vi.fn(async () => { throw new Error('not stubbed'); }),
     getProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw forbiddenError();
     }),
@@ -278,6 +279,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     createReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     getReport: vi.fn(async (): Promise<SecurityReportResponse> => { throw new Error('not stubbed'); }),
     downloadReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
+    downloadProjectReport: vi.fn(async (): Promise<ReportDownload> => { throw new Error('not stubbed'); }),
     downloadSbom: (_projectId: string, _scanId: string, _signal?: AbortSignal): Promise<ReportDownload> => Promise.reject(new Error('downloadSbom not implemented in fixture')),
     getStudentLessons: vi.fn(async (): Promise<StudentLessonCatalogResponse> => ({ lessons: [] })),
     getStudentProgress: vi.fn(async (): Promise<StudentProgressResponse> => ({ lessons: [] })),

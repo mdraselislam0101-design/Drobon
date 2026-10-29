@@ -14,8 +14,9 @@ are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
 > **CURRENT STATE (2026-10-26) — read this first.** The embedded `DG-SAST-*`
 > rule catalog described in the historical sections below was **removed** by
 > the dataset-decoupling work. `apps/api/src/scans/sast/rules.ts` now exports
-> an empty registry; all 1,000 SAST rules come from the external
-> `Drobon-Dataset` `packs/sast/v1/rules/*.json` at runtime (see
+> an empty registry; accepted SAST rules come from the configured external
+> `Drobon-Dataset` `packs/sast/v1/rules/*.json` at runtime (the actual count
+> depends on the supplied pack and conformance validation; see
 > `docs/DATASET_CONNECTION.md`). With no dataset configured the engine
 > produces **0 findings** and startup logs a warning — it does not silently
 > fall back to the 50 rules described below. Sections that enumerate
@@ -25,9 +26,9 @@ are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
 > **Pump 16 (2026-10-26):** an additive **bounded AST/dataflow pass** now
 > runs on 11 language families (JS/TS, Python, PHP, Java, Go, C#, Ruby …).
 > It tokenizes code, drops comments/strings, follows source→variable→sink
-> chains and suppresses sanitizers/parameterized SQL. It is a SHALLOW
+> chains with limited SQL parameterization handling. It is a SHALLOW
 > structural analyzer, not a full grammar — every family stays `PARTIAL`.
-> See [`DEEP_SAST.md`](DEEP_SAST.md) for scope, bounds and limits.
+> Newer limited syntax parsers and project-flow details are in [`AST_ANALYSIS.md`](AST_ANALYSIS.md).
 >
 > Loader conformance: every pack rule is closed-field validated, ReDoS-linted
 > and its declared tests are executed before it reaches the engine
@@ -120,8 +121,12 @@ unit tests for the v1 six live in `sastRules.test.ts`).
 
 ### Honest maturity model (v2 — never faked)
 
-The engine is **lexical, line-based pattern analysis (analysis depth
-LEVEL 1–2)**: no parser, no AST, no dataflow, no cross-file analysis.
+Historically the engine was **lexical, line-based pattern analysis (analysis depth
+LEVEL 1–2)**. It now also has bounded shallow flow and limited syntax-tree passes
+for JS/TS/JSX/TSX, Python, PHP and Java. A separate bounded JS/TS project pass
+follows some local functions and relative named imports; none provides complete
+dataflow, call-graph or language coverage. See [`AST_ANALYSIS.md`](AST_ANALYSIS.md)
+for current coverage and missing-rule reporting.
 Therefore **no language family is labelled FULL** — that would be a
 fabrication. The catalog (`apps/api/src/scans/sast/languages.ts`)
 states the truthful maturity of every family:

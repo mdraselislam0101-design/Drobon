@@ -23,6 +23,7 @@ import { INSPECTED_RESPONSE_HEADERS } from '../apps/api/src/scans/dast/observedH
 import { createGuidanceLookup } from '../apps/api/src/external/guidance.ts';
 import { remediationGuidanceForFinding } from '../apps/api/src/scans/remediationGuidance.ts';
 import { createFilesystemIntelligenceProvider } from '../apps/api/src/scans/sca/filesystemProvider.ts';
+import { isValidSourcePath } from '@drobon/shared';
 import { parseDeclarationDocument, DECLARATION_READER_PARSERS } from '../apps/api/src/scans/sca/declarationReaders.ts';
 import { renderDeclarationDocument, unwrapXml } from './sca-reader-fixtures.mjs';
 
@@ -147,17 +148,18 @@ const readerParsers = Object.keys(readerStats);
 const readerDeclaredTests = readerParsers.reduce((sum, key) => sum + readerStats[key].declaredTests, 0);
 const readerMismatches = readerParsers.reduce((sum, key) => sum + readerStats[key].verdictMismatches, 0);
 const readerParseFailures = readerParsers.reduce((sum, key) => sum + readerStats[key].parseFailures, 0);
-// The readers are deliberately BOUNDED subset parsers. A small residual of
-// dataset-declared document shapes is richer than those subsets (deeply
-// nested Gradle/lockfile/INI structures). Those shapes are NOT guessed: in a
-// real scan the rule is counted as `declarationRulesNotEvaluated`. This gate
-// is a REGRESSION guard (>=92% verdict parity), not a completeness claim.
+const readerFailures = readerMismatches + readerParseFailures;
+// Readers are bounded subsets. A verdict mismatch may also be a silently
+// misinterpreted document, not necessarily an explicitly unevaluated rule.
+// This is a regression threshold, NOT evidence of complete coverage.
 const readerMismatchBudget = Math.ceil(readerDeclaredTests * 0.08);
 check(readerParsers.length === 9, `SCA reader registry: only ${readerParsers.length}/9 parsers registered`);
-check(status.conformance.scaDeclarationScanReachableRules === scaRules.length,
-  `SCA scan-reachable rules ${status.conformance.scaDeclarationScanReachableRules} != ${scaRules.length}`);
-check(readerMismatches <= readerMismatchBudget,
-  `SCA reader round-trip: ${readerMismatches} verdict mismatches exceeds the ${readerMismatchBudget} residual budget`);
+const eligibleRules = scaRules.filter((rule) =>
+  isValidSourcePath(rule.artifact) && !rule.artifact.includes('/') && readerParsers.includes(rule.parser)).length;
+check(status.conformance.scaDeclarationScanReachableRules === eligibleRules,
+  `SCA eligible rule count ${status.conformance.scaDeclarationScanReachableRules} != ${eligibleRules}`);
+check(readerFailures <= readerMismatchBudget,
+  `SCA reader round-trip: ${readerFailures} mismatches or parse failures exceeds the ${readerMismatchBudget} residual budget`);
 // Honest structural limit: the shared source-path policy rejects dotfiles,
 // so these artifacts can never be uploaded into a snapshot. They are counted,
 // never silently treated as reachable.
@@ -228,8 +230,8 @@ const evidence = {
     scanReachableRules: status.conformance.scaDeclarationScanReachableRules ?? 0,
     loadedRules: scaRules.length,
     readerDeclaredTests, readerVerdictMismatches: readerMismatches, readerMismatchBudget,
-    readerParseFailures, unuploadableArtifacts, rulesWithUnuploadableArtifact,
-    readerVerdictParityPercent: Number((100 * (1 - readerMismatches / Math.max(1, readerDeclaredTests))).toFixed(2)),
+    readerParseFailures, readerFailures, unuploadableArtifacts, rulesWithUnuploadableArtifact,
+    readerVerdictParityPercent: Number((100 * (1 - readerFailures / Math.max(1, readerDeclaredTests))).toFixed(2)),
     readers: readerStats,
   },
   remediation: { sampleRuleIds: sampleIds, surfaced: guidanceSpecific },

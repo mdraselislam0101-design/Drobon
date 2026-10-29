@@ -72,6 +72,8 @@ export interface RawDependency {
   packageManager: string;
   manifestPath: string;
   lockfilePath?: string;
+  /** Internal npm lock evidence: this installed node sits at the root. */
+  lockfileRoot?: boolean;
   integrity?: string;
 }
 
@@ -404,69 +406,49 @@ export function parsePackageLock(
         name,
         versionSource: 'lockfile',
         dependencyType,
-        // Direct when the root entry declares it; everything else in a
-        // lockfile's closure is transitive.
-        dependencyClass: directNames.has(name) ? 'direct' : 'transitive',
+        // A nested node_modules copy is not the root's direct installation,
+        // even if the root also declares the same package name.
+        dependencyClass: directNames.has(name) && key.lastIndexOf('node_modules/') === 0 ? 'direct' : 'transitive',
         packageManager: 'npm',
         manifestPath,
         lockfilePath: manifestPath,
+        lockfileRoot: key.lastIndexOf('node_modules/') === 0,
         resolvedVersion: version,
         ...(integrity === undefined ? {} : { integrity }),
       });
     }
   } else if (isPlainObject(parsed['dependencies'])) {
-    // lockfileVersion 1 (or v2 lock without packages): the flat map.
-    // No root entry → the direct set comes from the companion
-    // package.json (merged by the inventory step). Without it the
-    // class stays unknown — never guessed.
-    const map = parsed['dependencies'];
-    for (const key of Object.keys(map).sort()) {
-      if ((FORBIDDEN_KEYS as readonly string[]).includes(key)) {
-        continue;
+    // v1 can contain nested resolved dependency maps. Inspect them without
+    // recursion, with a shared node/depth budget; top-level directness still
+    // needs a companion manifest, while nested copies are transitive.
+    const queue: Array<{ map: Record<string, unknown>; depth: number }> = [{ map: parsed['dependencies'], depth: 0 }];
+    let visited = 0;
+    outer: for (let index = 0; index < queue.length; index += 1) {
+      const frame = queue[index];
+      if (frame === undefined) break;
+      for (const key of Object.keys(frame.map).sort()) {
+        if (++visited > SCA_PARSER_MAX_ENTRIES) { truncated = true; break outer; }
+        if ((FORBIDDEN_KEYS as readonly string[]).includes(key)) continue;
+        const name = normalizeNpmName(key);
+        const entry = frame.map[key];
+        if (name === undefined || !isPlainObject(entry)) continue;
+        if (isPlainObject(entry['dependencies'])) {
+          if (frame.depth >= 32) truncated = true;
+          else queue.push({ map: entry['dependencies'], depth: frame.depth + 1 });
+        }
+        const version = ownString(entry, 'version');
+        if (version === undefined || !isBoundedVersion(version)) continue;
+        const integrityRaw = ownString(entry, 'integrity');
+        const integrity = integrityRaw !== undefined && isBoundedIntegrity(integrityRaw) ? integrityRaw : undefined;
+        const dependencyType = entry['dev'] === true ? 'development' : entry['optional'] === true ? 'optional' : 'runtime';
+        entries.push({ name, version, ...(integrity === undefined ? {} : { integrity }), dependencyType });
+        dependencies.push({
+          ecosystem: 'npm', name, versionSource: 'lockfile', dependencyType,
+          dependencyClass: frame.depth === 0 ? 'unknown' : 'transitive',
+          packageManager: 'npm', manifestPath, lockfilePath: manifestPath, resolvedVersion: version,
+          ...(integrity === undefined ? {} : { integrity }),
+        });
       }
-      const name = normalizeNpmName(key);
-      if (name === undefined) {
-        continue;
-      }
-      const entry = map[key];
-      if (!isPlainObject(entry)) {
-        continue;
-      }
-      const version = ownString(entry, 'version');
-      if (version === undefined || !isBoundedVersion(version)) {
-        continue;
-      }
-      const integrityRaw = ownString(entry, 'integrity');
-      const integrity =
-        integrityRaw !== undefined && isBoundedIntegrity(integrityRaw) ? integrityRaw : undefined;
-      if (entries.length >= SCA_PARSER_MAX_ENTRIES) {
-        truncated = true;
-        break;
-      }
-      const dependencyType =
-        entry['dev'] === true
-          ? 'development'
-          : entry['optional'] === true
-            ? 'optional'
-            : 'runtime';
-      entries.push({
-        name,
-        version,
-        ...(integrity === undefined ? {} : { integrity }),
-        dependencyType,
-      });
-      dependencies.push({
-        ecosystem: 'npm',
-        name,
-        versionSource: 'lockfile',
-        dependencyType,
-        dependencyClass: 'unknown', // Direct set unavailable at v1 parse time.
-        packageManager: 'npm',
-        manifestPath,
-        lockfilePath: manifestPath,
-        resolvedVersion: version,
-        ...(integrity === undefined ? {} : { integrity }),
-      });
     }
   } else {
     return {
@@ -663,14 +645,16 @@ export function parseRequirementsTxt(
     if (parsedLine === undefined) {
       continue;
     }
-    if (seen.has(parsedLine.name)) {
-      continue; // Duplicate declaration: first (deterministic) wins.
-    }
+    // Distinct constraints for the same name can represent different
+    // environment markers or requirements. Keep each declaration; collapse
+    // only the same normalized name + constraint within this file.
+    const declarationKey = `${parsedLine.name}\n${parsedLine.declaredVersion ?? ''}`;
+    if (seen.has(declarationKey)) continue;
     if (dependencies.length >= SCA_PARSER_MAX_ENTRIES) {
       truncated = true;
       break;
     }
-    seen.add(parsedLine.name);
+    seen.add(declarationKey);
     dependencies.push({
       ecosystem: 'pypi',
       name: parsedLine.name,
@@ -729,14 +713,14 @@ export function parsePyprojectToml(
 
   const pushPep508 = (raw: string, type: ScaDependencyType): void => {
     const parsedLine = parseRequirementLine(raw);
-    if (parsedLine === undefined || seen.has(parsedLine.name)) {
-      return;
-    }
+    if (parsedLine === undefined) return;
+    const declarationKey = `${parsedLine.name}\n${parsedLine.declaredVersion ?? ''}`;
+    if (seen.has(declarationKey)) return;
     if (dependencies.length >= SCA_PARSER_MAX_ENTRIES) {
       truncated = true;
       return;
     }
-    seen.add(parsedLine.name);
+    seen.add(declarationKey);
     dependencies.push({
       ecosystem: 'pypi',
       name: parsedLine.name,
@@ -841,9 +825,7 @@ export function parsePyprojectToml(
         continue;
       }
       const name = normalizePypiName(key);
-      if (name === undefined || seen.has(name)) {
-        continue;
-      }
+      if (name === undefined) continue;
       let declared: string | undefined;
       const simple = value.match(/^"([^"]*)"|^\x27([^\x27]*)\x27/);
       if (simple !== null) {
@@ -856,11 +838,13 @@ export function parsePyprojectToml(
         declared = undefined;
       }
       recognizedSection = true;
+      const declarationKey = `${name}\n${declared ?? ''}`;
+      if (seen.has(declarationKey)) continue;
       if (dependencies.length >= SCA_PARSER_MAX_ENTRIES) {
         truncated = true;
         break;
       }
-      seen.add(name);
+      seen.add(declarationKey);
       dependencies.push({
         ecosystem: 'pypi',
         name,

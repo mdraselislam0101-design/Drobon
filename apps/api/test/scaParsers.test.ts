@@ -335,10 +335,10 @@ describe('requirements.txt parsing', () => {
     expect(bare.dependencies[0]?.declaredVersion).toBeUndefined();
   });
 
-  test('duplicate declarations: first wins', () => {
-    const parsed = parseRequirementsTxt('flask==1.0\nFlask==2.0\n', 'requirements.txt');
-    expect(parsed.dependencies).toHaveLength(1);
-    expect(parsed.dependencies[0]).toMatchObject({ name: 'flask', declaredVersion: '==1.0' });
+  test('preserves distinct declarations for a name and deduplicates identical constraints', () => {
+    const parsed = parseRequirementsTxt('flask==1.0\nFlask==2.0\nFLASK==1.0\n', 'requirements.txt');
+    expect(parsed.dependencies).toHaveLength(2);
+    expect(parsed.dependencies.map((item) => item.declaredVersion)).toEqual(['==1.0', '==2.0']);
   });
 
   test('line cap → INVALID_INPUT', () => {

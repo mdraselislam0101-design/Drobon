@@ -33,6 +33,8 @@ import type { ScanRecord, ScanStore } from '../scans/store.js';
 import { toScanResponse } from '../scans/store.js';
 import { sendSuccess } from '../respond.js';
 import { buildSecurityReport, canonicalJson, renderSbomExport, renderSecurityReportMarkdown, renderSecurityReportSarif } from '../reports/build.js';
+import { renderPortfolioPdf, renderSecurityReportPdf, type PortfolioPdfEntry } from '../reports/pdf.js';
+import { selectLatestAttempt } from '../reports/portfolio.js';
 import { prepareFindingNote } from '../scans/findingWorkflow.js';
 import { remediationGuidanceForFinding } from '../scans/remediationGuidance.js';
 import * as v from '../lib/validate.js';
@@ -83,11 +85,11 @@ function rejectUnknownQueryParameters(req: IncomingMessage, allowed: ReadonlySet
 
 function sendAttachment(
   res: ServerResponse,
-  body: string,
+  body: string | Buffer,
   contentType: string,
   filename: string,
 ): void {
-  const bytes = Buffer.from(body, 'utf8');
+  const bytes = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
   if (bytes.length > REPORT_MAX_BYTES * 2) throw conflict('The report export exceeds the configured size limit.');
   res.writeHead(200, {
     'content-type': contentType,
@@ -356,7 +358,66 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
           sendAttachment(res, renderSecurityReportSarif(report), 'application/sarif+json; charset=utf-8', `${stem}.sarif`);
           return;
         }
-        throw validationError([{ path: 'format', message: 'Must be json, markdown, or sarif.' }]);
+        if (format === 'pdf') {
+          try {
+            sendAttachment(res, await renderSecurityReportPdf(report), 'application/pdf', `${stem}.pdf`);
+          } catch (error) {
+            if (error instanceof RangeError) throw conflict('The generated PDF exceeds the size limit.');
+            throw internal('The report could not be rendered safely.');
+          }
+          return;
+        }
+        throw validationError([{ path: 'format', message: 'Must be json, markdown, sarif, or pdf.' }]);
+      },
+    },
+    {
+      method: 'GET',
+      path: '/api/v1/projects/:projectId/reports/portfolio/download',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        rejectUnknownQueryParameters(req);
+        if (ctx.user === undefined) throw unauthorized();
+        const project = await access.ownProjectOr403(ctx.params['projectId'], ctx.user.id);
+        // Select the latest ATTEMPT, never an older completion after a failure.
+        // Equal latest timestamps do not imply an order; mark them uncertain.
+        const projectScans = await scans.listByProject(project.id);
+        if (projectScans.some((scan) => scan.ownerId !== ctx.user?.id || scan.projectId !== project.id)) throw internal('Scan scope is inconsistent.');
+        const generatedAt = new Date(clock()).toISOString();
+        const entries: PortfolioPdfEntry[] = [];
+        for (const scanner of SCAN_TYPES) {
+          const latest = selectLatestAttempt(projectScans, scanner);
+          if (latest.kind === 'NONE') {
+            entries.push({ scanner, status: 'NOT_RUN' });
+            continue;
+          }
+          if (latest.kind === 'ORDER_UNCERTAIN') {
+            entries.push({ scanner, status: 'ORDER_UNCERTAIN', requestedAt: latest.requestedAt });
+            continue;
+          }
+          const scan = latest.scan;
+          if (scan.status !== 'COMPLETED') {
+            entries.push({ scanner, status: scan.status, requestedAt: scan.createdAt });
+            continue;
+          }
+          const findings = scan.findings ?? [];
+          if (scan.resultSummary?.findingsTotal !== findings.length) throw conflict('A completed scan has incomplete finding details.');
+          const workflows = await scans.getFindingWorkflowsForFindings(project.id, findings);
+          if (workflows.length !== findings.length) throw conflict('Finding workflow snapshots are unavailable.');
+          try {
+            entries.push({ scanner, status: 'COMPLETED', requestedAt: scan.createdAt,
+              report: buildSecurityReport(project, scan, generatedAt, workflows) });
+          } catch (error) {
+            if (error instanceof RangeError) throw conflict('A scan report exceeds the configured size limit.');
+            throw internal('The project report could not be generated safely.');
+          }
+        }
+        try {
+          const pdf = await renderPortfolioPdf({ project: { id: project.id, name: project.name }, generatedAt, entries });
+          sendAttachment(res, pdf, 'application/pdf', `drobon-project-${project.id}.pdf`);
+        } catch (error) {
+          if (error instanceof RangeError) throw conflict('The generated PDF exceeds the size limit.');
+          throw internal('The project report could not be rendered safely.');
+        }
       },
     },
     {

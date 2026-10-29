@@ -171,7 +171,7 @@ export function HomePage(): React.JSX.Element {
               <li>Projects, findings, remediation workflow</li>
               <li>Persisted JSON & Markdown reports</li>
               <li>Community support</li>
-              <li className="muted">No active DAST crawl / fuzz</li>
+              <li className="muted">Consent-gated bounded DAST; no broad fuzzing</li>
             </ul>
             <Link to="/register" className="button button-secondary">Start free</Link>
           </div>

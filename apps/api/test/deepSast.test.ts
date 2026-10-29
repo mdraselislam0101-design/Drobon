@@ -168,10 +168,11 @@ describe('AST dataflow: real detection, honest suppression', () => {
     expect(result.candidates[0]?.lineIndex).toBe(1);
   });
 
-  test('comments, string literals and sanitized values never create findings', () => {
+  test('comments and string literals do not create AST candidates; URL encoding does not sanitize a shell command', () => {
     expect(analyze('javascript', '// child_process.exec(req.body.x)\n').candidates).toEqual([]);
     expect(analyze('javascript', 'const s = "child_process.exec(req.body.x)";\n').candidates).toEqual([]);
-    expect(analyze('javascript', 'const x = encodeURIComponent(req.body.n);\nchild_process.exec(x);\n').candidates).toEqual([]);
+    const encoded = analyze('javascript', 'const x = encodeURIComponent(req.body.n);\nchild_process.exec(x);\n');
+    expect(encoded.candidates.some((candidate) => candidate.kind === 'command')).toBe(true);
   });
 
   test('template interpolation taint, SQL concat vs parameterized query', () => {
@@ -180,6 +181,8 @@ describe('AST dataflow: real detection, honest suppression', () => {
     const sql = analyze('javascript', 'db.query("SELECT * FROM t WHERE n = " + req.body.n);\n');
     expect(sql.candidates[0]?.kind).toBe('sql');
     expect(analyze('javascript', 'db.query("SELECT * FROM t WHERE n = ?", [req.body.n]);\n').candidates).toEqual([]);
+    const mixed = analyze('javascript', 'db.query("SELECT ? WHERE n = " + req.body.n, ["x"]);\n');
+    expect(mixed.candidates.some((candidate) => candidate.kind === 'sql')).toBe(true);
   });
 
   test('assignment-form HTML sink and one level of function-parameter flow', () => {
@@ -214,6 +217,17 @@ describe('AST dataflow: real detection, honest suppression', () => {
 });
 
 describe('SAST engine integration: AST findings are real persisted findings', () => {
+  test('concurrent dataset consumers wait for the same complete validated load', async () => {
+    const dataset = createDatasetService({ datasetPath: fixtureDataset(), providerId: 'filesystem' });
+    const [status, rules, metadata, secondRules] = await Promise.all([
+      dataset.status(), dataset.sastPacks(), dataset.packMetadata('sast'), dataset.sastPacks(),
+    ]);
+    expect(status.sastPacks.count).toBe(1);
+    expect(rules).toHaveLength(1);
+    expect(secondRules).toHaveLength(1);
+    expect(metadata).toEqual({ packId: 'fixture-sast', version: '1.0.0' });
+  });
+
   test('a dataset-backed scan reports an AST flow with honest coverage counters', async () => {
     const dataset = createDatasetService({
       datasetPath: fixtureDataset(), providerId: 'filesystem',
@@ -232,6 +246,8 @@ describe('SAST engine integration: AST findings are real persisted findings', ()
     expect(outcome.resultSummary.astFilesAnalyzed).toBe(1);
     expect(outcome.resultSummary.astFlowsFound).toBe(1);
     expect(outcome.resultSummary.findingsTotal).toBe(1);
+    expect(outcome.resultSummary.astCoverage?.rules).toMatchObject({ source: 'DATASET', count: 1, packId: 'fixture-sast', packVersion: '1.0.0' });
+    expect(outcome.resultSummary.astCoverage?.rules.sha256).toMatch(/^[0-9a-f]{64}$/);
     const finding = outcome.findings?.[0];
     expect(finding).toBeDefined();
     if (finding === undefined) return;

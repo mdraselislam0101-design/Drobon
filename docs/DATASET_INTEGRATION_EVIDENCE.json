@@ -126,7 +126,7 @@
       ".yarnrc.yml"
     ],
     "rulesWithUnuploadableArtifact": 41,
-    "readerVerdictParityPercent": 95.12,
+    "readerVerdictParityPercent": 93.49,
     "readers": {
       "json": {
         "declaredTests": 0,
@@ -191,7 +191,8 @@
         "verdictMismatches": 54,
         "parseFailures": 12
       }
-    }
+    },
+    "readerFailures": 148
   },
   "remediation": {
     "sampleRuleIds": [
@@ -203,5 +204,6 @@
     "surfaced": 4
   },
   "checks": "PASS",
-  "failures": []
+  "failures": [],
+  "statusNote": "Historical snapshot from 2026-10-26, not reverified after the 2026-10-28 application changes. The old 1000 reachability count excluded neither blocked paths nor subset-parser limitations. Parity below was corrected to include parse failures."
 }

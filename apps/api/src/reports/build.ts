@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { SCAN_TYPES, type Finding, type FindingWorkflow, type ReportScanContext } from '@drobon/shared';
+import { AST_FLOW_KINDS, SCAN_TYPES, type AstAnalysisCoverage, type AstFlowTrace, type DastAstContext, type SecretAstContext, type Finding, type FindingWorkflow, type ReportScanContext } from '@drobon/shared';
 import {
   REPORT_MAX_BYTES,
   REPORT_SCHEMA_VERSION,
@@ -12,6 +12,7 @@ import {
 } from '@drobon/shared';
 import type { ProjectRecord } from '../projects/store.js';
 import type { ScanRecord } from '../scans/store.js';
+import { createSacAssessment } from '../sac/engine.js';
 
 /** JSON subset used by the canonical report serializer. */
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -42,7 +43,7 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scannerCoverage' | 'findingSummary' | 'findings' | 'dast' | 'findingWorkflows' | 'dependencyIntelligence' | 'inventory'>): unknown {
+function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scannerCoverage' | 'findingSummary' | 'findings' | 'dast' | 'findingWorkflows' | 'dependencyIntelligence' | 'inventory' | 'sac'>): unknown {
   return {
     reportVersion: REPORT_VERSION,
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -53,6 +54,7 @@ function contentMaterial(report: Pick<SecurityReport, 'project' | 'scan' | 'scan
     findings: report.findings,
     ...(report.dast === undefined ? {} : { dast: report.dast }),
     ...(report.findingWorkflows === undefined ? {} : { findingWorkflows: report.findingWorkflows }),
+    ...(report.sac === undefined ? {} : { sac: report.sac }),
     dependencyIntelligence: report.dependencyIntelligence,
     inventory: report.inventory,
   };
@@ -82,6 +84,7 @@ function scanSnapshot(record: ScanRecord): ReportScanContext {
     updatedAt: record.updatedAt,
     startedAt: record.startedAt,
     ...(record.dastTargetUrl === undefined ? {} : { targetUrl: record.dastTargetUrl }),
+    ...(record.dastMode === undefined ? {} : { dastMode: record.dastMode }),
     completedAt: record.completedAt,
     resultSummary: record.resultSummary,
   };
@@ -112,15 +115,24 @@ export function buildSecurityReport(
           ? { reason: `Vulnerability intelligence is NOT ASSESSED (${scan.sca.summary.datasetStatus.toLowerCase().replaceAll('_', ' ')}).` }
           : {}),
       };
+  const scannerCoverage = SCAN_TYPES.map((scanner) => scanner === scan.scanType
+    ? { scanner, status: 'RAN' as const }
+    : { scanner, status: 'NOT_RUN' as const, reason: 'Not run in this single-scan assessment.' });
+  const findingSummary = summarizeReportFindings(findings);
+  const sac = createSacAssessment({
+    scan: scanContext,
+    scannerCoverage,
+    findings: findingSummary,
+    ...(scan.dast === undefined ? {} : { dast: scan.dast }),
+  });
   const payload = {
     project: { id: project.id, name: project.name, status: project.status },
     scan: scanContext,
-    scannerCoverage: SCAN_TYPES.map((scanner) => scanner === scan.scanType
-      ? { scanner, status: 'RAN' as const }
-      : { scanner, status: 'NOT_RUN' as const, reason: 'Not run in this single-scan assessment.' }),
-    findingSummary: summarizeReportFindings(findings),
+    scannerCoverage,
+    findingSummary,
     findings,
     ...(findingWorkflows === undefined ? {} : { findingWorkflows: [...findingWorkflows] }),
+    sac,
     ...(scan.dast === undefined ? {} : { dast: scan.dast }),
     dependencyIntelligence,
     inventory,
@@ -157,6 +169,25 @@ function quoteBlock(label: string, value: string): string {
   return `**${escapeMarkdown(label)}**\n\n${safe || '> (empty)'}\n`;
 }
 
+function astCoverageLines(coverage: AstAnalysisCoverage): string[] {
+  const { rules, parsers, projectFlow } = coverage;
+  const incomplete = coverage.files.filter((file) => file.status !== 'OK');
+  return [
+    `- Effective rules: ${rules.source}, ${rules.count}; SHA-256: \`${rules.sha256}\` (not a signature)`,
+    ...(rules.packId === undefined ? ['- Dataset pack identity: not recorded'] : [`- Dataset pack: ${escapeMarkdown(rules.packId)} ${escapeMarkdown(rules.packVersion ?? 'unknown')}`]),
+    `- Parser versions: TypeScript ${escapeMarkdown(parsers.typescript)}, Python/Lezer ${escapeMarkdown(parsers.python)}, PHP ${escapeMarkdown(parsers.php)}, Java/Lezer ${escapeMarkdown(parsers.java)}`,
+    `- Project flow: ${projectFlow.status}; ${projectFlow.examinedFiles} files examined, ${projectFlow.unresolvedImports} unresolved relative named imports, ${projectFlow.findings} additional findings.`,
+    `- Files without a structured parser: ${coverage.unstructuredFiles}`,
+    ...coverage.families.map(({ family, reporters }) => {
+      const available = AST_FLOW_KINDS.filter((kind) => reporters[kind] !== undefined).map((kind) => `${kind}=${reporters[kind]}`).join(', ') || 'none';
+      const missing = AST_FLOW_KINDS.filter((kind) => reporters[kind] === undefined).join(', ') || 'none';
+      return `- ${family}: category reporters ${escapeMarkdown(available)}; missing ${escapeMarkdown(missing)}`;
+    }),
+    ...(incomplete.length === 0 ? ['- Incomplete parser files: none recorded'] : incomplete.map((file) => `- Incomplete: ${escapeMarkdown(file.path)} (${file.family}, ${file.status})`)),
+    '- Category reporter attribution does not establish that its exact rule pattern matched; severity is inherited, not independently validated.',
+  ];
+}
+
 /** Human-readable, inert Markdown; all untrusted text is escaped as text. */
 export function renderSecurityReportMarkdown(report: SecurityReport): string {
   const lines = [
@@ -180,6 +211,57 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
     '',
     ...report.scannerCoverage.map((entry) => `- ${entry.scanner}: ${entry.status}${entry.reason === undefined ? '' : ` — ${escapeMarkdown(entry.reason)}`}`),
     '',
+    '## Coverage and residual risk',
+    '',
+    ...(report.sac === undefined
+      ? ['This older report has no saved coverage ledger; missing coverage cannot be inferred.', '']
+      : [
+          `- Assessment: ${report.sac.assessmentLevel}`,
+          `- Verdict: ${report.sac.verdict}`,
+          `- ${escapeMarkdown(report.sac.verdictStatement)}`,
+          `- Residual risk: ${report.sac.residualRisk.status} — ${escapeMarkdown(report.sac.residualRisk.statement)}`,
+          `- Compliance: ${report.sac.compliance.status} — ${escapeMarkdown(report.sac.compliance.statement)}`,
+          `- Rule pack provenance: ${report.sac.ruleProvenance}`,
+          ...report.sac.scannerCoverage.map((entry) => `- ${entry.scanner}: ${entry.status} — ${escapeMarkdown(entry.reason)}`),
+          '',
+          '### Recorded scan metrics',
+          '',
+          ...Object.entries(report.sac.metrics).map(([key, value]) => `- ${escapeMarkdown(key)}: ${value === null ? 'NOT RECORDED' : escapeMarkdown(String(value))}`),
+          '',
+          '### Limitations',
+          '',
+          ...report.sac.limitations.map((item) => `- ${escapeMarkdown(item)}`),
+          '',
+          '### Suggested next steps',
+          '',
+          ...report.sac.nextSteps.map((item) => `- ${escapeMarkdown(item)}`),
+          '',
+        ]),
+    ...(report.scan.resultSummary?.astParser === undefined ? [] : [
+      '## AST syntax-parser coverage',
+      '',
+      report.scan.resultSummary.astCoverage === undefined
+        ? '- Recorded scope: JavaScript, TypeScript, JSX and TSX; other languages use earlier bounded heuristics.'
+        : '- Scope: JavaScript, TypeScript, JSX, TSX, Python, PHP and Java; project-flow analysis is a bounded JS/TS subset.',
+      `- Successfully parsed files: ${report.scan.resultSummary.astParser.parsedFiles}`,
+      `- Incomplete files: ${report.scan.resultSummary.astParser.incompleteFiles}`,
+      `- Parsed files without applicable AST flow rules: ${report.scan.resultSummary.astParser.filesWithoutRules}`,
+      `- Additional parser findings after deduplication: ${report.scan.resultSummary.astParser.findings}`,
+      ...(report.scan.resultSummary.astCoverage === undefined ? [] : astCoverageLines(report.scan.resultSummary.astCoverage)),
+      '- Each flow class needs an applicable rule; some classes may be missing even when the count of files without rules is zero.',
+      '- Findings are review candidates, not proof of exploitation or complete coverage.',
+      '',
+    ]),
+    ...(report.scan.resultSummary?.astSupplement === undefined ? [] : [
+      '## Scanner-specific AST supplement',
+      '',
+      `- Mode: ${report.scan.resultSummary.astSupplement.mode}; status: ${report.scan.resultSummary.astSupplement.status}`,
+      `- Parsed: ${report.scan.resultSummary.astSupplement.parsed}; incomplete: ${report.scan.resultSummary.astSupplement.incomplete}; skipped: ${report.scan.resultSummary.astSupplement.skipped}; signals: ${report.scan.resultSummary.astSupplement.signals}`,
+      `- TypeScript parser: ${escapeMarkdown(report.scan.resultSummary.astSupplement.parserVersion)}; DAST category reporter: ${escapeMarkdown(report.scan.resultSummary.astSupplement.reporterRuleId ?? 'not recorded')}`,
+      '- DAST: only already-observed inline/direct script; no script execution or extra fetch. Secrets: literal overlap is context only. SCA: package.json declaration counts are syntactic, not vulnerability findings.',
+      '- Partial, unsupported, missing rules and unobserved inputs remain coverage gaps; manual review is required.',
+      '',
+    ]),
     '## Findings',
     '',
     `Total: ${report.findingSummary.total}`,
@@ -188,7 +270,8 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
     '',
   ];
   if (report.dast !== undefined) {
-    lines.push('## Passive DAST observations', '', `Target: ${escapeMarkdown(report.dast.targetUrl)}`, '');
+    const mode = report.scan.dastMode ?? report.dast.mode ?? 'PASSIVE';
+    lines.push(`## DAST observations (${mode})`, '', `Target: ${escapeMarkdown(report.dast.targetUrl)}`, '');
     for (const observation of report.dast.observations) {
       lines.push(
         `- ${observation.method} ${escapeMarkdown(observation.endpoint)} — HTTP ${observation.status}, ${observation.responseTimeMs} ms, ${observation.bodyBytes} bytes inspected${observation.bodyTruncated ? ' (bounded body truncated)' : ''}`,
@@ -212,6 +295,16 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
       `- Finding ID: \`${finding.id}\``,
       `- Fingerprint: \`${finding.fingerprint}\``,
       ...(finding.cwe === undefined ? [] : [`- CWE: ${finding.cwe}`]),
+      ...(finding.astContext === undefined ? [] : finding.astContext.kind === 'SECRETS_STRING_LITERAL'
+        ? ['- AST context: matched value overlaps a parsed string literal; this does not verify the credential.']
+        : [`- AST response script ${finding.astContext.script}, line ${finding.astContext.line}, column ${finding.astContext.column}: ${finding.astContext.category} flow heuristic; category-selected rule, exact check not established.`]),
+      ...(finding.astFlow === undefined ? [] : [
+        `- AST attribution: ${finding.astFlow.mode}, ${finding.astFlow.category}, category-selected reporter (exact rule pattern not established).`,
+        ...(finding.astFlow.source === undefined ? ['- Source location: not recorded'] : [
+          `- Source: ${escapeMarkdown(finding.astFlow.source.file)}:${finding.astFlow.source.line}:${finding.astFlow.source.column}`,
+          ...(finding.astFlow.via ?? []).map((step) => `- Call: ${escapeMarkdown(step.file)}:${step.line}:${step.column}`),
+        ]),
+      ]),
       '',
       escapeMarkdown(finding.description),
       '',
@@ -224,7 +317,8 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
         '#### Remediation workflow (snapshot)',
         '',
         `- User workflow state: ${workflow.state}${workflow.state === 'RESOLVED' ? ' (user-marked addressed; not proof of technical remediation)' : ''}`,
-        `- Verification: ${workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'not observed in the latest completed same-scanner scan with complete finding details; this is not proof of a fix' : 'observed in the latest completed same-scanner scan with complete finding details'}`,
+        `- Verification: ${workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'not observed in the recorded verification scan; this is not proof of a fix' : 'observed in the recorded verification scan'}`,
+        '- Partial or truncated scans do not verify absence; the recorded verification can predate the latest scan. Check the recorded scan coverage, including for older records.',
         `- Last verification scan: \`${workflow.lastVerificationScanId}\` (${escapeMarkdown(workflow.lastVerificationAt)})`,
         `- Last observed: \`${workflow.lastObservedScanId}\` (${escapeMarkdown(workflow.lastObservedAt)})`,
         ...workflow.notes.flatMap((note) => [
@@ -302,6 +396,7 @@ interface SarifResult {
   message: { text: string };
   locations: SarifLocation[];
   fingerprints: Record<string, string>;
+  properties?: { 'drobon/astFlow'?: AstFlowTrace; 'drobon/astContext'?: DastAstContext | SecretAstContext };
 }
 
 type SarifLocation =
@@ -351,6 +446,10 @@ export function renderSecurityReportSarif(report: SecurityReport): string {
       message: { text: `${finding.title} — ${finding.description}` },
       locations: [location],
       fingerprints: { 'drobon/v1': finding.fingerprint },
+      ...(finding.astFlow === undefined && finding.astContext === undefined ? {} : { properties: {
+        ...(finding.astFlow === undefined ? {} : { 'drobon/astFlow': finding.astFlow }),
+        ...(finding.astContext === undefined ? {} : { 'drobon/astContext': finding.astContext }),
+      } }),
     });
   }
   const log = {
@@ -376,7 +475,23 @@ export function renderSecurityReportSarif(report: SecurityReport): string {
           'drobon/scanId': report.scan.id,
           'drobon/scanType': report.scan.scanType,
           'drobon/dependencyIntelligence': report.dependencyIntelligence.status,
-          'drobon/honesty': 'Findings reflect pattern-based analysis of this snapshot; dependency vulnerability intelligence status is carried verbatim and is not a verdict when NOT_ASSESSED.',
+          'drobon/honesty': 'A bounded scan cannot establish safety; dependency intelligence is not a verdict when NOT_ASSESSED.',
+          ...(report.scan.resultSummary?.astParser === undefined ? {} : {
+            'drobon/astParser': report.scan.resultSummary.astParser,
+            'drobon/astParserScope': report.scan.resultSummary.astCoverage === undefined
+              ? 'JavaScript, TypeScript, JSX and TSX only; findings require applicable rules.'
+              : 'JavaScript, TypeScript, JSX, TSX, Python, PHP and Java; bounded JS/TS project flow; findings require applicable rules.',
+            ...(report.scan.resultSummary.astCoverage === undefined ? {} : { 'drobon/astCoverage': report.scan.resultSummary.astCoverage }),
+          }),
+          ...(report.scan.resultSummary?.astSupplement === undefined ? {} : { 'drobon/astSupplement': report.scan.resultSummary.astSupplement }),
+          ...(report.sac === undefined ? {} : {
+            'drobon/assessmentLevel': report.sac.assessmentLevel,
+            'drobon/coverageVerdict': report.sac.verdict,
+            'drobon/residualRisk': report.sac.residualRisk.status,
+            'drobon/compliance': report.sac.compliance.status,
+            'drobon/coverage': report.sac.scannerCoverage,
+            'drobon/limitations': report.sac.limitations,
+          }),
         },
       },
     ],

@@ -1,10 +1,13 @@
 # SCA Declaration Readers — ৯টি parser, ১,০০০টি rule
 
+> **বর্তমান সংশোধন (2026-10-28):** ৯টি reader-এর নাম নিবন্ধিত হলেও সব document shape সম্পূর্ণ সমর্থিত নয়। আগের “১,০০০ rule scan-reachable” দাবি সঠিক ছিল না: dotfile/source-path সীমা ও bounded parser coverage আছে। Status এখন শুধু parser ও uploadable artifact অনুযায়ী *সম্ভাব্য* eligible rule গোনে; non-JSON reader ব্যবহার করা স্ক্যান `PARTIAL`। আগের round-trip mismatch-এর কিছু ক্ষেত্রে reader ভুল document ফেরত দিতে পারে, সেগুলো সবসময় `NOT_EVALUATED` হয় না।
+
+
 **তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। ডেটাসেট repo / ডেটাবেস / নতুন npm dependency — কিছুই নেই। বিদ্যমান SCA declaration engine-এর উপর **additive**।
 
 > **আপনি যা চেয়েছিলেন:** "বাকি ৮ document reader → আরও ৫৬৮ rule scan-এ চলবে"।
 >
-> **যা পেলেন:** ৯টি parser kind-এর জন্যই bounded reader (`json`, `toml`, `yaml`, `xml`, `ini`, `properties`, `requirements`, `gradle`, `lockfile-text`)। Status-এ `scaDeclarationScanReachableRules: 432 → 1000`। নতুন করে **কোনো npm dependency যোগ করা হয়নি** — সব reader নিজে লেখা, bounded, pure TypeScript।
+> **যা পেলেন:** ৯টি parser kind-এর জন্যই bounded reader (`json`, `toml`, `yaml`, `xml`, `ini`, `properties`, `requirements`, `gradle`, `lockfile-text`)। Status-এ parser এবং uploadable artifact অনুযায়ী সম্ভাব্য rule count দেখায়, পূর্ণ coverage নয়। নতুন করে **কোনো npm dependency যোগ করা হয়নি** — সব reader নিজে লেখা, bounded, pure TypeScript।
 
 ---
 
@@ -13,7 +16,7 @@
 | | আগে | এখন |
 |---|---|---|
 | Readable parsers | `["json"]` | **৯টি** (dataset-এর সব kind) |
-| Scan-reachable rules | **৪৩২** | **১,০০০** |
+| Parser-eligible rules | JSON-এ সীমিত | Artifact upload ও subset parser-এর সীমাসাপেক্ষ |
 | Non-JSON manifest | evaluate হত না | ✅ evaluate হয় (Pipfile, pom.xml, requirements.txt, go.mod …) |
 | যাচাই | শুধু declared-test parity | + **round-trip reader parity** (raw text → document → evaluator) |
 
@@ -51,11 +54,11 @@
 | Evaluations / scan | ১০,০০০ |
 | Findings / scan | ২০০ |
 
-কোনো network, কোনো file execution, কোনো `eval`/`child_process`, কোনো regex `g/y` flag — সব pure text work। Static-safety gate-এর জন্য সব regex `String.match`/`matchAll` দিয়ে চলে।
+কোনো network বা source-code execution নেই। Parsers bounded text-এর উপর `String.match`/`matchAll` ব্যবহার করে; subset হওয়ায় সব ফরম্যাট বোঝার নিশ্চয়তা নেই।
 
 ---
 
-## ৪) যাচাই (সৎ সংখ্যা)
+## ৪) আগের যাচাইয়ের রেকর্ড (2026-10-26; এই আপডেটের পর পুনরায় চালানো হয়নি)
 
 `npm run verify:dataset -- --path ../Drobon-Dataset` এখন একটি নতুন **round-trip harness** চালায়: dataset-এর প্রতিটি non-JSON declared test-এর PARSED document-কে realistic raw manifest text-এ render করে (`scripts/sca-reader-fixtures.mjs`), তারপর **অ্যাপের reader** দিয়ে parse করে একই rule-এর evaluator-এ চালায়।
 
@@ -64,13 +67,13 @@
 | Reader-declared tests | **২,২৭৩** |
 | Rendered raw fixtures | **২,২৬১** |
 | Parsed documents | **২,২৩৬** |
-| Verdict parity | **৯৫.১২%** (২,১৬২/২,২৭৩) |
-| Residual mismatches | **১১১** (budget ১৮২ = ৮%) |
+| Verdict parity (parse failure-সহ সংশোধিত হিসাব) | **৯৩.৪৯%** (২,১২৫/২,২৭৩) |
+| Residual mismatches | **১১১**, পাশাপাশি ৩৭ parse failure |
 | Parse failures | ৩৭ |
 | **JSON / XML / properties reader** | **০ mismatch** |
 | TOML ৪, YAML ৮, INI ২, requirements ৫, Gradle ৩৮, lockfile-text ৫৪ | — |
 
-> **১১১টি mismatch মানে reader ভেঙে গেছে না** — বরং dataset-এর কিছু declared document shape (গভীর nested Gradle/lockfile/INI object) আমাদের bounded subset reader-এর চেয়ে বেশি rich। Verification harness সেগুলোকে লুকোয় না: per-parser counts `docs/DATASET_INTEGRATION_EVIDENCE.json`-এ আছে, আর gate-টি ≥৯২% parity-র regression guard। বাস্তব scan-এ এমন shape এলে rule-টি **not-evaluated** হিসেবে গোনা হয়, কখনো ভুয়া match/clean নয়।
+> এই historical পরীক্ষায় ১১১টি mismatch ও ৩৭টি parse failure ছিল। Mismatch মানে reader ভুল ফলও দিতে পারে; সেগুলো সবসময় `not-evaluated` হিসেবে ধরা যায় না। তাই subset-parser ব্যবহারের scan এখন `partial`। Regression gate parse failure-কেও ব্যর্থতা হিসেবে গণনা করে; এটি পূর্ণ coverage-এর দাবি নয়।
 
 **অন্যান্য verify:** `npm run verify` **PASS ১১/১১** · `npm test` **PASS ১,৩৬৭/১,৩৬৭** (shared ১৮৩ + api ৮৯০ + worker ২৮ + web ২৬৬) · `verify:dataset` **PASS** · SCA declared-test parity **৪,০০১/৪,০০১, 0 mismatch** (অক্ষত) · ১২টি নতুন reader test + engine integration test · lint/typecheck/builds/boundaries/secrets/repo-integrity সব PASS।
 
@@ -79,7 +82,7 @@
 ## ৫) দুটি সৎ সীমা (গুরুত্বপূর্ণ)
 
 1. **Dotfile artifact upload-ই করা যায় না।** Shared `SOURCE_PATH_PATTERN` dotfile reject করে। তাই `.npmrc` (২১), `.yarnrc.yml` (১০), `.pypirc` (২), `.yarnrc` (১), `.cargo/config.toml` (৩), `.Rprofile` (১), `.condarc` (৩) — **মোট ৪১টি rule structurally unreachable**। Reader থাকা সত্ত্বেও এগুলোর artifact snapshot-ে আসতে পারে না। Evidence JSON-এ `unuploadableArtifacts` + `rulesWithUnuploadableArtifact: 41` হিসেবে স্পষ্ট করে দেখানো হয় — "reachable" বলা হয় না। (`SOURCE_BLOCKED_EXTENSIONS`-ও `.env`/key ফাইল বাদ দেয় — credential safety।)
-2. **Subset parsers ≠ full grammar.** TOML/YAML/XML/Gradle-এর সব construct parse করা হয় না (JSONP, anchors, namespaces, Groovy DSL closure …)। এই কারণেই ৯৫% parity, ১০০% নয়। Full parser চাইলে নতুন dependency লাগবে — আপনার নির্দেশে সেটি আনিনি।
+2. **Subset parsers ≠ full grammar.** TOML/YAML/XML/Gradle-এর সব construct parse করা হয় না (JSONP, anchors, namespaces, Groovy DSL closure …)। আগের fixture-এ parse failure-সহ প্রায় ৯৩.৪৯% parity ছিল; বর্তমান code পুনরায় পরীক্ষা করা প্রয়োজন। Full parser চাইলে নতুন dependency লাগবে — আপনার নির্দেশে সেটি আনিনি।
 
 ---
 
@@ -99,6 +102,6 @@
 
 ## ৭) পরবর্তী ধাপ (ঐচ্ছিক)
 
-1. Gradle/lockfile reader-কে richer nested shapes-এ extend করে parity ৯৫% → ৯৯%+ করা।
+1. Gradle/lockfile reader-এর unsupported shape ও false-positive/false-negative কমানো; বাস্তব fixture দিয়ে পুনরায় যাচাই করা।
 2. Dotfile artifact-গুলোর জন্য নিরাপদ allowlist (credential-safety বজায় রেখে) — এটা shared path-policy decision, শুধু মেইন অ্যাপেই করা যাবে।
 3. Cross-file import resolution / control-flow-sensitive AST (Deep SAST roadmap)।

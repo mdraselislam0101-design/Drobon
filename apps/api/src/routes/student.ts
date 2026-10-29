@@ -3,6 +3,7 @@ import { badRequest, conflict, notFound, unauthorized, validationError } from '.
 import type { Route } from '../http.js';
 import type { ProjectStore } from '../projects/store.js';
 import type { ScanStore } from '../scans/store.js';
+import { selectLatestAttempt } from '../reports/portfolio.js';
 import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import type { Schema, ValidationIssue, ValidationResult } from '../lib/validate.js';
@@ -237,8 +238,13 @@ export function createStudentRoutes(deps: StudentRouteDeps): Route[] {
           throw conflict('No identification evidence yet: complete the IDENTIFY stage first.');
         }
         const workflow = await scans.getFindingWorkflow(hit.projectId, hit.fingerprint);
-        if (workflow?.verificationState !== 'NOT_OBSERVED_IN_LATEST_SCAN') {
-          throw conflict('Fix not verified yet: apply the fix, upload the corrected file, and run SAST again — the finding must no longer be observed in the latest completed scan.');
+        const latest = selectLatestAttempt(await scans.listByProject(hit.projectId), 'SAST');
+        if (workflow?.verificationState !== 'NOT_OBSERVED_IN_LATEST_SCAN' || latest.kind !== 'SELECTED' ||
+            latest.scan.id !== workflow.lastVerificationScanId || latest.scan.status !== 'COMPLETED' ||
+            latest.scan.resultSummary === undefined || latest.scan.resultSummary.partial === true ||
+            latest.scan.resultSummary.truncated === true || latest.scan.resultSummary.astSupplement?.status === 'PARTIAL' ||
+            latest.scan.resultSummary.findingsTotal !== (latest.scan.findings ?? []).length) {
+          throw conflict('Fix not verified yet: run a complete SAST scan with no reported coverage gaps; a partial or newer attempt does not verify absence.');
         }
         const lessons = await student.recordVerify(actor.id, lesson.id, workflow.lastVerificationScanId, at);
         sendSuccess(res, ctx, { lessons: lessons.filter((entry) => entry.lessonId === lesson.id) });

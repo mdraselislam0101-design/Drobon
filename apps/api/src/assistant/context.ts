@@ -108,6 +108,7 @@ function scanContent(scan: ScanRecord): string {
     `Persisted details: ${countAgreement}`,
     ...(summary?.partial === true ? [`Partial: ${summary.partialReason ?? 'some content was not inspected'}`] : []),
     ...(summary?.truncated === true ? ['Finding list was truncated by the scanner limit.'] : []),
+    ...(summary?.astSupplement === undefined ? [] : [`Supplemental AST ${summary.astSupplement.mode}: ${summary.astSupplement.status}; parsed ${summary.astSupplement.parsed}, incomplete ${summary.astSupplement.incomplete}, skipped ${summary.astSupplement.skipped}. This is bounded syntax analysis, not proof of security.`]),
     ...(scan.sca === undefined ? [] : [`Dependency records: ${scan.sca.dependencies.length} persisted of ${scan.sca.summary.dependenciesTotal}${scan.sca.summary.truncated ? ' (truncated)' : ''}${sca}`]),
   ].join('\n');
 }
@@ -239,7 +240,7 @@ export function buildAssistantContext(sources: AssistantContextSources): Assista
       createdAt: workflow.updatedAt,
       content: [
         `Finding: ${workflow.findingId}; lifecycle state: ${workflow.state}.`,
-        `Verification: ${workflow.verificationState}; latest verification scan: ${workflow.lastVerificationScanId} at ${workflow.lastVerificationAt}.`,
+        `Verification: ${workflow.verificationState}; last verification scan: ${workflow.lastVerificationScanId} at ${workflow.lastVerificationAt}. A later partial scan does not verify absence.`,
         'A user-selected RESOLVED status is workflow metadata, not technical proof that a fix was applied.',
       ].join('\n'),
     });

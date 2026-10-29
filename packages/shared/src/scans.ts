@@ -141,6 +141,57 @@ export const SCAN_ID_PATTERN =
  */
 export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
+/** Bounded syntax-parser pass, separate from the older shallow AST pass. */
+export interface StructuredAstSummary {
+  /** Files successfully parsed and examined by this pass. */
+  parsedFiles: number;
+  /** Files not fully processed because of invalid syntax, limits or worker failure. */
+  incompleteFiles: number;
+  /** Successfully parsed files with no applicable AST flow reporter rule. */
+  filesWithoutRules: number;
+  /** Additional findings contributed by this pass after deduplication. */
+  findings: number;
+}
+
+export const AST_FLOW_KINDS = ['command', 'sql', 'html', 'code'] as const;
+export type AstFlowKind = (typeof AST_FLOW_KINDS)[number];
+export const AST_PARSER_FAMILIES = ['javascript', 'typescript', 'jsx', 'tsx', 'python', 'php', 'java'] as const;
+export type AstParserFamily = (typeof AST_PARSER_FAMILIES)[number];
+export type AstFileStatus = 'OK' | 'SYNTAX_ERROR' | 'LIMIT' | 'ERROR' | 'TIMEOUT' | 'UNAVAILABLE' | 'ABORTED';
+
+/** Optional scan-time facts. Old scans do not have this field. */
+export interface AstAnalysisCoverage {
+  rules: {
+    source: 'DATASET' | 'EXPLICIT' | 'NONE';
+    count: number;
+    /** Hash of the effective converted SAST rules, not a signature or a full dataset hash. */
+    sha256: string;
+    packId?: string;
+    packVersion?: string;
+  };
+  parsers: { typescript: string; python: string; php: string; java: string };
+  families: Array<{ family: AstParserFamily; reporters: Partial<Record<AstFlowKind, string>> }>;
+  files: Array<{ path: string; family: AstParserFamily; status: AstFileStatus }>;
+  unstructuredFiles: number;
+  projectFlow: { status: 'RAN' | 'INCOMPLETE' | 'NOT_RUN'; examinedFiles: number; unresolvedImports: number; findings: number };
+}
+
+/** Additional AST work on the actual input of a non-SAST scanner. Optional
+ * so older persisted scans retain their original meaning. `signals` means
+ * response-flow findings, secret findings with literal context, or syntactic
+ * package.json dependency entries respectively; it is not a safety verdict. */
+export interface AstSupplementSummary {
+  mode: 'DAST_RESPONSE_SCRIPTS' | 'SECRETS_LITERAL_CONTEXT' | 'SCA_JSON_MANIFEST';
+  status: 'RAN' | 'PARTIAL' | 'NOT_APPLICABLE';
+  parsed: number;
+  incomplete: number;
+  skipped: number;
+  signals: number;
+  parserVersion: string;
+  /** Category reporter only for DAST; its exact check need not have matched. */
+  reporterRuleId?: string;
+}
+
 /**
  * Engine-produced result summary (only present on COMPLETED scans, and
  * only ever produced by a real engine — never fabricated). The base
@@ -191,8 +242,14 @@ export interface ScanResultSummary {
   declarationRulesNotEvaluated?: number;
   /** Files analyzed by the bounded AST/dataflow pass (Pump 16). */
   astFilesAnalyzed?: number;
-  /** Findings produced by the bounded AST/dataflow pass. */
+  /** Findings produced by the bounded AST/dataflow passes after deduplication. */
   astFlowsFound?: number;
+  /** Syntax-parser coverage; absent on older scans. */
+  astParser?: StructuredAstSummary;
+  /** Saved rule/parser provenance, missing categories and bounded file-level coverage. */
+  astCoverage?: AstAnalysisCoverage;
+  /** Bounded AST supplement on DAST responses, Secrets source, or SCA JSON manifests. */
+  astSupplement?: AstSupplementSummary;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -217,10 +274,97 @@ const SUMMARY_ALLOWED_KEYS = [
   // Bounded AST/dataflow pass (Pump 16): honest coverage counters.
   'astFilesAnalyzed',
   'astFlowsFound',
+  'astParser',
+  'astCoverage',
+  'astSupplement',
 ] as const;
 
 function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function hasKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+}
+function isAstCoverage(value: unknown, summary: Record<string, unknown>): value is AstAnalysisCoverage {
+  if (!isRecord(value) || !hasKeys(value, ['rules', 'parsers', 'families', 'files', 'unstructuredFiles', 'projectFlow'])) return false;
+  const { rules, parsers, families, files, unstructuredFiles, projectFlow } = value;
+  if (!isRecord(rules) || !hasKeys(rules, ['source', 'count', 'sha256'], ['packId', 'packVersion']) ||
+      typeof rules['source'] !== 'string' || !['DATASET', 'EXPLICIT', 'NONE'].includes(rules['source']) || !isCount(rules['count']) || rules['count'] > 100_000 ||
+      (rules['source'] === 'NONE' && rules['count'] !== 0) || typeof rules['sha256'] !== 'string' || !/^[0-9a-f]{64}$/.test(rules['sha256'])) return false;
+  if (Object.hasOwn(rules, 'packId') || Object.hasOwn(rules, 'packVersion')) {
+    if (rules['source'] !== 'DATASET' || typeof rules['packId'] !== 'string' || !/^[a-z0-9-]{1,64}$/.test(rules['packId']) ||
+        typeof rules['packVersion'] !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(rules['packVersion'])) return false;
+  }
+  if (!isRecord(parsers) || !hasKeys(parsers, ['typescript', 'python', 'php', 'java']) ||
+      Object.values(parsers).some((item) => typeof item !== 'string' || !/^[A-Za-z0-9.+-]{1,64}$/.test(item))) return false;
+  if (!Array.isArray(families) || families.length > AST_PARSER_FAMILIES.length || !Array.isArray(files) || files.length > 200 ||
+      !isCount(unstructuredFiles) || unstructuredFiles > 200) return false;
+  const byFamily = new Map<string, number>();
+  for (const item of families) {
+    if (!isRecord(item) || !hasKeys(item, ['family', 'reporters']) || typeof item['family'] !== 'string' ||
+        !(AST_PARSER_FAMILIES as readonly string[]).includes(item['family']) || byFamily.has(item['family']) || !isRecord(item['reporters'])) return false;
+    const reporters = item['reporters'];
+    if (Object.keys(reporters).some((key) => !(AST_FLOW_KINDS as readonly string[]).includes(key)) ||
+        Object.values(reporters).some((id) => typeof id !== 'string' || !/^(?:DG|DPK)-SAST-[0-9]{3,6}$/.test(id))) return false;
+    byFamily.set(item['family'], Object.keys(reporters).length);
+  }
+  let parsed = 0;
+  let withoutRules = 0;
+  let missing = false;
+  const paths = new Set<string>();
+  for (const file of files) {
+    if (!isRecord(file) || !hasKeys(file, ['path', 'family', 'status']) || !isValidSourcePath(file['path']) || paths.has(file['path']) ||
+        typeof file['family'] !== 'string' || !byFamily.has(file['family']) || typeof file['status'] !== 'string' ||
+        !['OK', 'SYNTAX_ERROR', 'LIMIT', 'ERROR', 'TIMEOUT', 'UNAVAILABLE', 'ABORTED'].includes(file['status'])) return false;
+    paths.add(file['path']);
+    const count = byFamily.get(file['family']) ?? 0;
+    if (count < AST_FLOW_KINDS.length) missing = true;
+    if (file['status'] === 'OK') { parsed += 1; if (count === 0) withoutRules += 1; }
+  }
+  if (!isRecord(projectFlow) || !hasKeys(projectFlow, ['status', 'examinedFiles', 'unresolvedImports', 'findings']) ||
+      typeof projectFlow['status'] !== 'string' || !['RAN', 'INCOMPLETE', 'NOT_RUN'].includes(projectFlow['status']) || !isCount(projectFlow['examinedFiles']) ||
+      projectFlow['examinedFiles'] > 64 || !isCount(projectFlow['unresolvedImports']) || projectFlow['unresolvedImports'] > 30_000 ||
+      (projectFlow['unresolvedImports'] > 0 && projectFlow['status'] !== 'INCOMPLETE') ||
+      !isCount(projectFlow['findings']) || projectFlow['findings'] > MAX_FINDINGS_PER_SCAN ||
+      (projectFlow['status'] === 'NOT_RUN' && (projectFlow['examinedFiles'] !== 0 || projectFlow['unresolvedImports'] !== 0 || projectFlow['findings'] !== 0))) return false;
+  const parser = summary['astParser'];
+  if (!isRecord(parser) || parser['parsedFiles'] !== parsed || parser['incompleteFiles'] !== files.length - parsed ||
+      parser['filesWithoutRules'] !== withoutRules || typeof parser['findings'] !== 'number' || projectFlow['findings'] > parser['findings'] ||
+      (typeof summary['filesScanned'] === 'number' && files.length + unstructuredFiles > summary['filesScanned']) ||
+      ((missing || unstructuredFiles > 0 || projectFlow['status'] === 'INCOMPLETE') && summary['partial'] !== true)) return false;
+  return true;
+}
+
+function isAstSupplement(value: unknown, summary: Record<string, unknown>): value is AstSupplementSummary {
+  if (!isRecord(value) || !hasKeys(value, ['mode', 'status', 'parsed', 'incomplete', 'skipped', 'signals', 'parserVersion'], ['reporterRuleId'])) return false;
+  const { mode, status, parsed, incomplete, skipped, signals, parserVersion, reporterRuleId } = value;
+  if (!['DAST_RESPONSE_SCRIPTS', 'SECRETS_LITERAL_CONTEXT', 'SCA_JSON_MANIFEST'].includes(typeof mode === 'string' ? mode : '') ||
+      !['RAN', 'PARTIAL', 'NOT_APPLICABLE'].includes(typeof status === 'string' ? status : '') ||
+      !isCount(parsed) || !isCount(incomplete) || !isCount(skipped) || !isCount(signals) ||
+      parsed + incomplete > 200 || skipped > 200 || signals > 100_000 ||
+      typeof parserVersion !== 'string' || !/^[A-Za-z0-9.+-]{1,64}$/.test(parserVersion)) return false;
+  if (status === 'RAN' && (parsed === 0 || incomplete > 0 || skipped > 0)) return false;
+  if (status === 'NOT_APPLICABLE' && (parsed > 0 || incomplete > 0 || skipped > 0 || signals > 0)) return false;
+  if ((mode === 'DAST_RESPONSE_SCRIPTS' || mode === 'SECRETS_LITERAL_CONTEXT') &&
+      (typeof summary['findingsTotal'] !== 'number' || signals > summary['findingsTotal'])) return false;
+  if (mode === 'DAST_RESPONSE_SCRIPTS') {
+    if (parsed + incomplete > 8 || (reporterRuleId !== undefined &&
+        (typeof reporterRuleId !== 'string' || !/^(?:DG|DPK)-DAST-[0-9]{3,6}$/.test(reporterRuleId)))) return false;
+    if (parsed > 0 && reporterRuleId === undefined && status !== 'PARTIAL') return false;
+  } else if (reporterRuleId !== undefined) return false;
+  return true;
+}
+
+/** A supplement cannot be transplanted onto a different scanner's record. */
+export function isAstSupplementForScanType(summary: ScanResultSummary, scanType: ScanType): boolean {
+  const mode = summary.astSupplement?.mode;
+  return mode === undefined || (mode === 'DAST_RESPONSE_SCRIPTS' && scanType === 'DAST') ||
+    (mode === 'SECRETS_LITERAL_CONTEXT' && scanType === 'SECRETS') || (mode === 'SCA_JSON_MANIFEST' && scanType === 'SCA');
 }
 
 export function isScanResultSummary(value: unknown): value is ScanResultSummary {
@@ -306,6 +450,23 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   if (record['astFlowsFound'] !== undefined && !isCount(record['astFlowsFound'])) {
     return false;
   }
+  if (record['astParser'] !== undefined) {
+    const parser = record['astParser'];
+    if (typeof parser !== 'object' || parser === null || Array.isArray(parser)) return false;
+    const values = parser as Record<string, unknown>;
+    const fields = ['parsedFiles', 'incompleteFiles', 'filesWithoutRules', 'findings'] as const;
+    if (Object.keys(values).length !== fields.length || fields.some((key) => !Object.hasOwn(values, key) || !isCount(values[key]))) return false;
+    const parsed = values['parsedFiles'] as number;
+    const incomplete = values['incompleteFiles'] as number;
+    const withoutRules = values['filesWithoutRules'] as number;
+    const findings = values['findings'] as number;
+    if (parsed + incomplete > 200 || withoutRules > parsed || findings > MAX_FINDINGS_PER_SCAN || findings > record['findingsTotal'] ||
+        (typeof record['astFlowsFound'] === 'number' && findings > record['astFlowsFound']) ||
+        (typeof record['filesScanned'] === 'number' && parsed + incomplete > record['filesScanned']) ||
+        ((incomplete > 0 || withoutRules > 0) && record['partial'] !== true)) return false;
+  }
+  if (record['astCoverage'] !== undefined && !isAstCoverage(record['astCoverage'], record)) return false;
+  if (record['astSupplement'] !== undefined && !isAstSupplement(record['astSupplement'], record)) return false;
   return true;
 }
 
@@ -501,6 +662,28 @@ interface FindingBase {
   fingerprint: string;
 }
 
+export interface DastAstContext {
+  kind: 'DAST_RESPONSE_FLOW';
+  category: 'html' | 'code';
+  attribution: 'CATEGORY_REPORTER';
+  /** Position within the observed inline/direct script, not the whole HTML page. */
+  script: number;
+  line: number;
+  column: number;
+}
+export interface SecretAstContext { kind: 'SECRETS_STRING_LITERAL' }
+
+export interface AstTraceLocation { file: string; line: number; column: number }
+export interface AstFlowTrace {
+  mode: 'SHALLOW' | 'STRUCTURED' | 'PROJECT';
+  category: AstFlowKind;
+  /** The loaded rule identifies the flow category; its exact pattern need not have matched. */
+  attribution: 'CATEGORY_REPORTER';
+  /** Only project-flow results currently record source and call locations. */
+  source?: AstTraceLocation;
+  via?: AstTraceLocation[];
+}
+
 /**
  * Source/manifest finding produced by SAST, Secrets, or the SCA
  * declaration evaluator (Pump 14). Declaration findings carry a manifest
@@ -516,6 +699,10 @@ export interface SourceFinding extends FindingBase {
   column: number;
   /** Project context is explicit on new findings; optional for legacy stored rows. */
   projectId?: string;
+  /** Redacted parser attribution and, where recorded, source/call locations. */
+  astFlow?: AstFlowTrace;
+  /** The matched span overlaps a parsed string literal; no credential is returned. */
+  astContext?: SecretAstContext;
   targetUrl?: never;
   endpoint?: never;
   method?: never;
@@ -528,6 +715,8 @@ export interface SourceFinding extends FindingBase {
 
 /** HTTP observation finding produced by the passive DAST engine. */
 export interface DastFinding extends FindingBase {
+  astFlow?: never;
+  astContext?: DastAstContext;
   scanner: 'DAST';
   projectId: string;
   targetUrl: string;
@@ -554,7 +743,7 @@ export function isFinding(value: unknown): value is Finding {
     'id', 'scanId', 'ruleId', 'scanner', 'severity', 'title', 'description', 'cwe',
     'file', 'line', 'column', 'evidence', 'remediation', 'confidence', 'fingerprint',
     'projectId', 'targetUrl', 'endpoint', 'method', 'responseStatus', 'responseTimeMs',
-    'contentType', 'observedAt', 'observedHeaders',
+    'contentType', 'observedAt', 'observedHeaders', 'astFlow', 'astContext',
   ];
   if (Object.keys(record).some((key) => !allowed.includes(key))) return false;
   if (
@@ -585,9 +774,17 @@ export function isFinding(value: unknown): value is Finding {
       !Array.isArray(record['observedHeaders']) || record['observedHeaders'].length > 12 ||
       !record['observedHeaders'].every((header) => isSafeFindingText(header, 120)) ||
       record['file'] !== undefined || record['line'] !== undefined || record['column'] !== undefined ||
-      record['confidence'] !== undefined
+      record['confidence'] !== undefined || record['astFlow'] !== undefined
     ) return false;
     if (record['contentType'] !== undefined && !isSafeFindingText(record['contentType'], 120)) return false;
+    if (record['astContext'] !== undefined) {
+      const context = record['astContext'];
+      if (!isRecord(context) || !hasKeys(context, ['kind', 'category', 'attribution', 'script', 'line', 'column']) ||
+          context['kind'] !== 'DAST_RESPONSE_FLOW' || (context['category'] !== 'html' && context['category'] !== 'code') ||
+          context['attribution'] !== 'CATEGORY_REPORTER' || !isCount(context['script']) || context['script'] < 1 || context['script'] > 8 ||
+          !isCount(context['line']) || context['line'] < 1 || context['line'] > 32_768 ||
+          !isCount(context['column']) || context['column'] < 1 || context['column'] > 32_768) return false;
+    }
     const target = new URL(record['targetUrl']);
     const endpoint = new URL(record['endpoint']);
     if (
@@ -609,6 +806,21 @@ export function isFinding(value: unknown): value is Finding {
     record['contentType'] !== undefined || record['observedAt'] !== undefined || record['observedHeaders'] !== undefined
   ) return false;
   if (record['confidence'] !== undefined && !isFindingConfidence(record['confidence'])) return false;
+  if (record['astContext'] !== undefined &&
+      (record['scanner'] !== 'SECRETS' || !isRecord(record['astContext']) ||
+       !hasKeys(record['astContext'], ['kind']) || record['astContext']['kind'] !== 'SECRETS_STRING_LITERAL')) return false;
+  if (record['astFlow'] !== undefined) {
+    const flow = record['astFlow'];
+    if (record['scanner'] !== 'SAST' || !isRecord(flow) || !hasKeys(flow, ['mode', 'category', 'attribution'], ['source', 'via']) ||
+        typeof flow['mode'] !== 'string' || !['SHALLOW', 'STRUCTURED', 'PROJECT'].includes(flow['mode']) ||
+        !(AST_FLOW_KINDS as readonly unknown[]).includes(flow['category']) || flow['attribution'] !== 'CATEGORY_REPORTER') return false;
+    const isLocation = (location: unknown): boolean => isRecord(location) && hasKeys(location, ['file', 'line', 'column']) &&
+      isValidSourcePath(location['file']) && isCount(location['line']) && location['line'] > 0 && location['line'] <= 10_000_000 &&
+      isCount(location['column']) && location['column'] > 0 && location['column'] <= 10_000_000;
+    if (flow['mode'] === 'PROJECT') {
+      if (!isLocation(flow['source']) || !Array.isArray(flow['via']) || flow['via'].length > 4 || !flow['via'].every(isLocation)) return false;
+    } else if (flow['source'] !== undefined || flow['via'] !== undefined) return false;
+  }
   return true;
 }
 
@@ -792,6 +1004,10 @@ export function isScan(value: unknown): value is Scan {
   }
   if (record['resultSummary'] !== undefined && !isScanResultSummary(record['resultSummary'])) {
     return false;
+  }
+  if (isScanResultSummary(record['resultSummary'])) {
+    if ((record['resultSummary'].astParser !== undefined || record['resultSummary'].astCoverage !== undefined) && record['scanType'] !== 'SAST') return false;
+    if (!isAstSupplementForScanType(record['resultSummary'], record['scanType'])) return false;
   }
   // Lifecycle invariants — the server-side state machine, enforced on
   // every untrusted payload (a client must never be able to conjure a

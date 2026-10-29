@@ -7,16 +7,15 @@
  *
  * WHAT IT DOES TODAY (stated honestly):
  *  - reads the project's stored virtual content tree (never the filesystem);
- *  - for artifacts whose declared `parser` is JSON, parses the text into a
- *    document and evaluates every matching declaration rule against it;
+ *  - parses supported artifacts into bounded documents and evaluates matching
+ *    declaration rules. Non-JSON readers implement subsets, not full grammars;
  *  - emits real, persisted `scanner: 'SCA'` findings with stable fingerprints;
  *  - counts the rules it could NOT evaluate (artifact absent, or a parser kind
  *    the app does not read yet) instead of pretending they ran.
  *
  * WHAT IT DOES NOT DO: no downloads, no package install, no execution, no
- * advisory lookup, no auto-remediation, no TOML/YAML/XML/INI/text parsing yet.
- * A declared VALUE (which can be a registry token) is NEVER copied into a
- * finding — evidence carries only the rule id, artifact, check and matched key.
+ * advisory lookup or auto-remediation. A source value OR key may be a secret,
+ * so neither is copied into the evidence — only a fixed redacted marker is used.
  *
  * BOUNDS: documents, evaluations and findings are hard-capped; the caller's
  * `shouldStop` (deadline/abort) is checked inside the evaluation loop.
@@ -59,6 +58,8 @@ export interface DeclarationScanOutcome {
   severityCounts: Record<FindingSeverity, number>;
   rulesEvaluated: number;
   rulesNotEvaluated: number;
+  /** At least one supported non-JSON reader is incomplete or an input was unreadable. */
+  partial: boolean;
   truncated: boolean;
 }
 
@@ -118,16 +119,13 @@ function buildFinding(
   compiled: CompiledScaDeclarationRule,
   file: DeclarationFile,
   record: ScanRecord,
-  match: { path: string; key?: string },
   content: string,
 ): Finding {
   const { rule } = compiled;
   const { line, column } = locatePath(content, rule.check.path);
-  const keyPart = match.key === undefined ? '' : ` key=${safeText(match.key, 60)}`;
-  const evidence = safeText(
-    `${rule.id} ${file.path.split('/').pop() ?? rule.artifact} ${rule.check.type} ${safeText(match.path, 80)}${keyPart} (values withheld)`,
-    FINDING_EVIDENCE_MAX_LENGTH,
-  );
+  // Object keys and path segments may themselves be credentials. Never put
+  // untrusted document keys or values into evidence or the fingerprint.
+  const evidence = safeText(`${rule.id}: declaration matched (values withheld)`, FINDING_EVIDENCE_MAX_LENGTH);
   const fingerprint = findingFingerprint({
     scanner: 'SCA',
     projectId: record.projectId,
@@ -165,6 +163,7 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
     severityCounts: emptySeverityCounts(),
     rulesEvaluated: 0,
     rulesNotEvaluated: 0,
+    partial: false,
     truncated: false,
   };
   const compiled = compileScaDeclarationRules(options.rawRules);
@@ -185,11 +184,12 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
     byArtifact.set(entry.rule.artifact, list);
   }
 
-  const candidates = options.files
+  const eligibleFiles = options.files
     .filter((file) => isValidSourcePath(file.path) && !isIgnoredPath(file.path))
     .filter((file) => byArtifact.has(file.path.split('/').pop() ?? ''))
-    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    .slice(0, SCA_MAX_MANIFESTS_PER_SCAN);
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const candidates = eligibleFiles.slice(0, SCA_MAX_MANIFESTS_PER_SCAN);
+  const candidateTruncated = eligibleFiles.length > candidates.length;
 
   const evaluatedRules = new Set<string>();
   const seenFindings = new Set<string>();
@@ -199,19 +199,23 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
   outer: for (const file of candidates) {
     const basename = file.path.split('/').pop() ?? '';
     const rules = byArtifact.get(basename) ?? [];
-    // One document per FILE (parser is fixed by the artifact's rules). All
-    // rules for a basename share the same declared parser in the dataset;
-    // parse once and reuse. Unparseable text → no rule is evaluated.
-    const parserForFile = rules[0]?.rule.parser;
-    const document = parserForFile === undefined ? undefined : parseDeclarationDocument(parserForFile, basename, file.content);
+    // A basename may be represented by rules for different parser kinds.
+    // Cache per (file, parser), never reuse a JSON-shaped document for a
+    // different declared reader merely because the basename is the same.
+    const documents = new Map<string, unknown>();
     for (const entry of rules) {
       if (evaluations >= MAX_DECLARATION_EVALUATIONS || (options.shouldStop?.() ?? false)) {
         stopped = true;
         break outer;
       }
       evaluations += 1;
-      // A malformed/unreadable artifact is NOT a "no match": it is not
-      // evaluated, and the caller reports the coverage honestly.
+      if (!documents.has(entry.rule.parser)) {
+        documents.set(entry.rule.parser, parseDeclarationDocument(entry.rule.parser, basename, file.content));
+      }
+      const document = documents.get(entry.rule.parser);
+      // Non-JSON readers are bounded subset parsers. Even if a check runs,
+      // their output cannot prove that the entire artifact was understood.
+      if (entry.rule.parser !== 'json' || document === undefined) outcome.partial = true;
       if (document === undefined) continue;
       evaluatedRules.add(entry.rule.id);
       const match = findScaMatch(entry, document);
@@ -219,7 +223,7 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
       const dedupe = `${entry.rule.id}\n${file.path}`;
       if (seenFindings.has(dedupe)) continue;
       seenFindings.add(dedupe);
-      outcome.findings.push(buildFinding(entry, file, options.record, match, file.content));
+      outcome.findings.push(buildFinding(entry, file, options.record, file.content));
       outcome.severityCounts[entry.rule.severity] += 1;
       if (outcome.findings.length >= maxFindings) {
         stopped = true;
@@ -230,6 +234,7 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
 
   outcome.rulesEvaluated = evaluatedRules.size;
   outcome.rulesNotEvaluated += (compiled.length - unreadable.length) - evaluatedRules.size;
-  outcome.truncated = stopped;
+  outcome.truncated = stopped || candidateTruncated;
+  outcome.partial ||= stopped || candidateTruncated;
   return outcome;
 }

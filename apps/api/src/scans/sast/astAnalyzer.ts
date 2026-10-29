@@ -11,7 +11,8 @@
  *    dangerous call or a credential-shaped literal cannot create a finding;
  *  - dotted/member chains (`req.body.name`, `os.system`, `db.query`) instead
  *    of loose identifier tokens — fewer false positives from unrelated names;
- *  - sanitizer calls and parameterized SQL placeholders suppress a finding;
+ *  - a narrow constant-query-plus-parameters pattern suppresses SQL findings;
+ *    arbitrary sanitizer calls do not erase taint across different contexts;
  *  - template-literal interpolations are visible to taint;
  *  - ONE level of interprocedural propagation via function parameter
  *    summaries, with a single bounded extra iteration (NO fixpoint).
@@ -30,7 +31,6 @@ import type { SastRule } from './rules.js';
 import type { AstFlowKind, AstLanguageProfile } from './astProfiles.js';
 import {
   astProfileFor,
-  isSanitizerChain,
   isSourceChain,
   sinkKindForChain,
 } from './astProfiles.js';
@@ -96,7 +96,9 @@ export function astReporterRules(rules: readonly SastRule[], family: string): As
     const hints = CATEGORY_HINTS[kind];
     const candidates = rules
       .filter((rule) => rule.languages === undefined || rule.languages.includes(family))
-      .filter((rule) => hints.some((hint) => rule.category.toLowerCase().includes(hint)))
+      // Exact normalized category only: e.g. "nosql" is not SQL injection,
+      // and an unrelated category containing "command" is not a match.
+      .filter((rule) => hints.includes(rule.category.trim().toLowerCase().replace(/[_.\s]+/g, '-')))
       .map((rule) => rule.id)
       .sort();
     const chosen = candidates[0];
@@ -202,17 +204,6 @@ function references(tokens: readonly Token[], from: number, to: number): string[
   return out;
 }
 
-function rangeHasSanitizer(profile: AstLanguageProfile, tokens: readonly Token[], from: number, to: number): boolean {
-  for (let i = from; i < to; i += 1) {
-    const token = tokens[i];
-    if (token?.kind !== 'ident') continue;
-    const chain = chainAt(tokens, i);
-    const next = tokens[chain.next];
-    if (next?.kind === 'open' && next.value === '(' && isSanitizerChain(profile, chain.chain)) return true;
-  }
-  return false;
-}
-
 function rangeHasSource(profile: AstLanguageProfile, tokens: readonly Token[], from: number, to: number): boolean {
   for (let i = from; i < to; i += 1) {
     const token = tokens[i];
@@ -233,12 +224,13 @@ function rangeHasSource(profile: AstLanguageProfile, tokens: readonly Token[], f
 }
 
 function rangeIsParameterized(profile: AstLanguageProfile, tokens: readonly Token[], from: number, to: number): boolean {
-  for (let i = from; i < to; i += 1) {
-    const token = tokens[i];
-    if (token === undefined || (token.kind !== 'string' && token.kind !== 'template')) continue;
-    if (profile.parameterizedSql.some((marker) => token.value.includes(marker))) return true;
-  }
-  return false;
+  // Only a literal first argument followed directly by a separate parameter
+  // argument can be treated as a parameterized query. A marker elsewhere,
+  // a template literal or concatenation does NOT establish parameterization.
+  const query = tokens[from];
+  const separator = tokens[from + 1];
+  if (query?.kind !== 'string' || separator?.kind !== 'sep' || separator.value !== ',' || from + 2 >= to) return false;
+  return profile.parameterizedSql.some((marker) => query.value.includes(marker));
 }
 
 interface PassContext {
@@ -316,7 +308,6 @@ function runPass(context: PassContext, collectTaint: boolean): void {
       if ((context.perRule.get(ruleId) ?? 0) >= MAX_AST_FINDINGS_PER_RULE_PER_FILE) continue;
       if (context.candidates.length >= MAX_AST_FINDINGS_TOTAL) continue;
       if (!argsTainted) continue;
-      if (rangeHasSanitizer(profile, tokens, argFrom, argTo)) continue;
       if (kind === 'sql' && rangeIsParameterized(profile, tokens, argFrom, argTo)) continue;
       const key = `${ruleId}\n${token.line}`;
       if (context.seen.has(key)) continue;
@@ -351,11 +342,10 @@ function runPass(context: PassContext, collectTaint: boolean): void {
     if (lhs === '') continue;
     const rhsFrom = assignIndex + 1;
     const rhsTainted = isTainted(rhsFrom, tokens.length) || rangeHasSource(profile, tokens, rhsFrom, tokens.length);
-    const sanitized = rangeHasSanitizer(profile, tokens, rhsFrom, tokens.length);
 
     // `el.innerHTML = tainted` is an HTML sink without a call.
     const htmlRuleId = reporters.html;
-    if (htmlRuleId !== undefined && sinkKindForChain(profile, lhsChain) === 'html' && rhsTainted && !sanitized) {
+    if (htmlRuleId !== undefined && sinkKindForChain(profile, lhsChain) === 'html' && rhsTainted) {
       const lhsToken = tokens.find((item) => item.kind === 'ident' && item.value === lhs);
       const key = `${htmlRuleId}\n${lhsToken?.line ?? 1}`;
       if (!context.seen.has(key) && (context.perRule.get(htmlRuleId) ?? 0) < MAX_AST_FINDINGS_PER_RULE_PER_FILE) {
@@ -370,8 +360,9 @@ function runPass(context: PassContext, collectTaint: boolean): void {
       }
     }
 
-    if (sanitized) context.tainted.delete(lhs);
-    else if (rhsTainted) {
+    // Encoding or escaping for one context is not automatically safe for
+    // another. Keep taint conservatively; findings still need human review.
+    if (rhsTainted) {
       if (context.tainted.size < MAX_TAINTED_VARS) context.tainted.add(lhs);
     } else {
       context.tainted.delete(lhs);

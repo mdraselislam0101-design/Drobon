@@ -188,6 +188,72 @@ describe('declaration scan layer: non-JSON rules now produce real findings', () 
     const declaration = (outcome.findings ?? []).filter((finding) => finding.ruleId.startsWith('DPK-SCA-'));
     expect(declaration).toHaveLength(1);
     expect(outcome.resultSummary.findingsTotal).toBe((outcome.findings ?? []).length);
+    expect(outcome.resultSummary.partial).toBe(true);
+    expect(outcome.resultSummary.partialReason).toContain('bounded subsets');
     expect(isFinding(declaration[0] as never)).toBe(true);
   });
+});
+
+describe('untrusted declaration input safety and coverage', () => {
+  test('attacker-controlled map keys cannot alter Object.prototype', () => {
+    const magic = ['__', 'proto', '__'].join('');
+    const probe = 'drobon_pollution_probe';
+    expect(Object.hasOwn(Object.prototype, probe)).toBe(false);
+    const toml = parseDeclarationDocument('toml', 'Cargo.toml', `[${magic}]\n${probe} = true\n`);
+    const ini = parseDeclarationDocument('ini', 'setup.cfg', `[${magic}]\n${probe}=true\n`);
+    const yaml = parseDeclarationDocument('yaml', 'pubspec.yaml', `${magic}:\n  ${probe}: true\n`);
+    expect(toml).toBeDefined();
+    expect(ini).toBeDefined();
+    expect(yaml).toBeDefined();
+    expect(Object.hasOwn(Object.prototype, probe)).toBe(false);
+    expect(({} as Record<string, unknown>)[probe]).toBeUndefined();
+  });
+
+  test('rejects malformed XML, XML entities and over-limit inputs rather than interpreting a prefix', () => {
+    expect(parseDeclarationDocument('xml', 'pom.xml', '<project><a></project>')).toBeUndefined();
+    expect(parseDeclarationDocument('xml', 'pom.xml', '<!DOCTYPE project [<!ENTITY x "value">]><project>&x;</project>')).toBeUndefined();
+    expect(parseDeclarationDocument('toml', 'Pipfile', 'a = "x"\n'.repeat(8_001))).toBeUndefined();
+  });
+
+  test('does not expose arbitrary matching keys in SCA evidence', () => {
+    const secretKey = 'sensitive-key-example-123456'; // fake fixture, not a secret
+    const rule = rawRule('json', 'package.json', {
+      check: { type: 'sca-key-matches', path: 'dependencies', keyPattern: '^sensitive-key' },
+    });
+    const result = evaluateScaDeclarations({
+      rawRules: [rule], files: [{ path: 'package.json', content: JSON.stringify({ dependencies: { [secretKey]: '*' } }) }],
+      record: record(),
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(JSON.stringify(result.findings)).not.toContain(secretKey);
+  });
+
+  test('parses rules for the same artifact according to each rule’s parser, and marks subset coverage partial', () => {
+    const json = rawRule('json', 'Pipfile', { id: 'DPK-SCA-9011' });
+    const toml = rawRule('toml', 'Pipfile', { id: 'DPK-SCA-9012' });
+    const result = evaluateScaDeclarations({
+      rawRules: [json, toml], files: [{ path: 'Pipfile', content: '[packages]\nrequests = "*"\n' }], record: record(),
+    });
+    expect(result.findings.map((finding) => finding.ruleId)).toEqual(['DPK-SCA-9012']);
+    expect(result.rulesEvaluated).toBe(1);
+    expect(result.rulesNotEvaluated).toBe(1);
+    expect(result.partial).toBe(true);
+  });
+});
+
+test('excessively nested YAML is rejected without stack exhaustion', () => {
+  const nested = Array.from({ length: 80 }, (_, index) => `${'  '.repeat(index)}node:`).join('\n');
+  expect(parseDeclarationDocument('yaml', 'pubspec.yaml', nested)).toBeUndefined();
+});
+
+test('unsupported lockfile shapes and over-limit object graphs remain unevaluated', () => {
+  expect(parseDeclarationDocument('lockfile-text', 'unknown.lock', 'some unrecognized syntax')).toBeUndefined();
+  const huge = JSON.stringify({ dependencies: Object.fromEntries(Array.from({ length: 2_100 }, (_, i) => [`package${i}`, '1.0.0'])) });
+  expect(parseDeclarationDocument('json', 'package.json', huge)).toBeUndefined();
+});
+
+test('malformed nested tables and overly deep inline arrays fail closed', () => {
+  expect(parseDeclarationDocument('toml', 'Pipfile', 'a = [1]\n[[a.b]]\nx = 1\n')).toBeUndefined();
+  const deep = `value = ${'['.repeat(80)}1${']'.repeat(80)}\n`;
+  expect(parseDeclarationDocument('toml', 'Pipfile', deep)).toBeUndefined();
 });

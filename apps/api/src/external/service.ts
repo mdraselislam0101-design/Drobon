@@ -10,6 +10,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isValidSourcePath } from '@drobon/shared';
 import type {
   DatasetOverallStatus, DatasetCategoryStatus, DatasetAvailability,
   DatasetPackIdentity, VulnIntelCounts,
@@ -19,13 +20,16 @@ import { SCA_READABLE_PARSERS } from './scaDeclaration.js';
 
 const PACK_FAMILIES: readonly PackFamily[] = ['sast', 'secrets', 'dast', 'sca'];
 
-/** Honest coverage: how many loaded declaration rules a REAL scan can read today. */
+/** Potentially eligible rules: parser exists and the exact artifact can be uploaded.
+ * This is NOT a guarantee that a bounded reader understands every shape. */
 function reachableScaRuleCount(rules: readonly unknown[]): number {
   let count = 0;
   for (const raw of rules) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
     const parser = (raw as Record<string, unknown>)['parser'];
-    if (typeof parser === 'string' && (SCA_READABLE_PARSERS as readonly string[]).includes(parser)) count += 1;
+    const artifact = (raw as Record<string, unknown>)['artifact'];
+    if (typeof parser === 'string' && (SCA_READABLE_PARSERS as readonly string[]).includes(parser) &&
+        isValidSourcePath(artifact) && !artifact.includes('/')) count += 1;
   }
   return count;
 }
@@ -79,7 +83,9 @@ export function createDatasetService(options: { datasetPath?: string | undefined
     logger?.warn?.('[dataset] STARTUP: VULN_INTEL_PROVIDER=none — no external Drobon-Dataset. SAST/Secrets/DAST have 0 rules, remediation is UNAVAILABLE, SCA stays NOT_ASSESSED. Set VULN_INTEL_PROVIDER=filesystem + DATASET_PATH to unlock.');
   }
 
-  let loaded = false;
+  // Share the in-flight load across concurrent scans. Marking a cache loaded
+  // before the awaits finished exposed transient empty rule sets to callers.
+  let loading: Promise<void> | undefined;
   let overall: DatasetOverallStatus | null = null;
 
   let sastPackRules: unknown[] = [];
@@ -98,9 +104,12 @@ export function createDatasetService(options: { datasetPath?: string | undefined
     sast: emptyPackReport(), secrets: emptyPackReport(), dast: emptyPackReport(), sca: emptyPackReport(),
   };
 
-  async function ensureLoaded(): Promise<void> {
-    if (loaded) return;
-    loaded = true;
+  function ensureLoaded(): Promise<void> {
+    if (loading === undefined) loading = loadOnce();
+    return loading;
+  }
+
+  async function loadOnce(): Promise<void> {
     if (!configured || !datasetPath) {
       overall = buildOverall(new Date().toISOString());
       logger?.info?.('[dataset] No external dataset configured: scanners run with honest NOT_CONFIGURED / NO_DATA_LOADED states.');

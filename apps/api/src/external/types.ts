@@ -40,7 +40,7 @@ export interface DatasetConformanceStatus {
   scaDeclarationEvaluator: 'AVAILABLE' | 'NOT_IMPLEMENTED';
   /** Parser kinds the SCAN-TIME declaration reader can turn into a document (v1: JSON). */
   scaDeclarationScanParsers?: readonly string[];
-  /** Loaded declaration rules whose parser is readable in a real scan. */
+  /** Potentially eligible rules: supported reader + uploadable basename. Not full format coverage. */
   scaDeclarationScanReachableRules?: number;
 }
 

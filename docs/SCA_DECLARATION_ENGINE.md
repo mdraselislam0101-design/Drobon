@@ -1,8 +1,11 @@
 # SCA Declaration Engine — মেইন অ্যাপে নতুন ইঞ্জিন
 
+> **বর্তমান সংশোধন (2026-10-28):** আগের ৪৩২/১,০০০ reachability সংখ্যা পূর্ণ scan coverage নয়। dotfile upload সীমা, subset readers এবং অসম্পূর্ণ document বোঝার ঝুঁকি এখনও আছে; non-JSON declaration analysis এখন `PARTIAL`। বর্তমান সীমা: [`SECURITY_OPERATIONS_COVERAGE.md`](SECURITY_OPERATIONS_COVERAGE.md)।
+
+
 **তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধুমাত্র `Drobon` (main app) — পুরনো কোডের উপর additive update। `Drobon-Dataset` বা `Drobon-Database` repo-তে **কোনো পরিবর্তন করা হয়নি**, কোনো database/migration কাজ হয়নি।
 
-> **সংক্ষিপ্ত (বাংলা):** আগে SCA declaration pack-এর ১,০০০টি rule অ্যাপে load ও validate হত, কিন্তু কোনো scan-এ evaluate হত না — ৪,০০১টি declared test `skippedTests` হিসেবে গোনা হত এবং status দেখাত `NOT_IMPLEMENTED`। এখন অ্যাপের নিজস্ব **declaration-document evaluator** আছে: ৪,০০১/৪,০০১ declared test load-time-এ execute হয় (0 failure, 0 skipped), আর বাস্তব SCA scan-এ JSON artifact-এর ৪৩২টি rule চলে এবং সত্যিকারের persisted `scanner: "SCA"` finding তৈরি করে। বাকি ৫৬৮টি rule-এর জন্য document reader এখনো নেই — সেগুলো `declarationRulesNotEvaluated` হিসেবে সৎভাবে দেখানো হয়, কখনো "pass" বলা হয় না।
+> **সংক্ষিপ্ত (বাংলা):** আগে SCA declaration pack-এর ১,০০০টি rule অ্যাপে load ও validate হত, কিন্তু কোনো scan-এ evaluate হত না — ৪,০০১টি declared test `skippedTests` হিসেবে গোনা হত এবং status দেখাত `NOT_IMPLEMENTED`। এখন অ্যাপের নিজস্ব **declaration-document evaluator** আছে: ৪,০০১/৪,০০১ declared test load-time-এ execute হয় (0 failure, 0 skipped), আর বাস্তব SCA scan-এ JSON artifact-এর ৪৩২টি rule চলে এবং সত্যিকারের persisted `scanner: "SCA"` finding তৈরি করে। বাকি parser-গুলোর জন্য bounded reader আছে, তবে সম্পূর্ণ format coverage নয়; এসব স্ক্যান partial হিসেবে দেখানো হয়।
 
 ---
 
@@ -66,7 +69,7 @@ Path grammar: `a.b`, `a.*`, `a[]`, `a.*[]` — সর্বোচ্চ ১২ s
 
 ## ৩) Scan-time coverage — সৎ হিসাব (Pump 18 আপডেট)
 
-**Pump 18 আপডেট:** এখন **৯টি parser kind-এরই** bounded reader আছে (`docs/SCA_READERS.md`)। আগে শুধু `json` পড়া যেত (৪৩২ rule); বাকি ৮টি reader যোগ হওয়ায় **১,০০০টি rule-ই scan-reachable**। JSON parser-এর artifact ছিল ১১টি:
+**Pump 18 আপডেট:** এখন **৯টি parser kind-এরই** bounded reader আছে (`docs/SCA_READERS.md`)। আগে শুধু `json` পড়া যেত (৪৩২ rule); বাকি ৮টি reader যোগ হয়েছে, তবে সব rule কার্যত reachable নয়। JSON parser-এর artifact ছিল ১১টি:
 
 ```
 Package.resolved, auth.json, composer.json, composer.lock, conan.lock,
@@ -74,9 +77,9 @@ package-lock.json, package.json, packages.lock.json, renv.lock,
 vcpkg-configuration.json, vcpkg.json
 ```
 
-বাকি ৮ parser-এর reader যোগ হয়েছে; তবে সেগুলো **bounded subset parser** — dataset-এর সব declared document shape ঠিকমতো reproduce করে না (round-trip parity ~৯৫%)। যে shape পড়া যায় না, সেটি false "no match" দেয় না; `declarationRulesNotEvaluated`-এ গোনা হয়। এছাড়া dotfile artifact (`.npmrc`, `.yarnrc.yml` …) source-path policy-তে upload-ই করা যায় না — ৪১টি rule এই কারণে structurally unreachable; evidence JSON-এ আলাদা করে দেখানো হয়।
+বাকি ৮ parser-এর reader যোগ হয়েছে; তবে সেগুলো **bounded subset parser** — dataset-এর সব declared document shape ঠিকমতো reproduce করে না (historical round-trip parity parse failure-সহ প্রায় ৯৩.৪৯%)। কিছু unsupported shape `not evaluated` হয়; অন্য কিছু ভুলভাবে পড়াও হতে পারে, তাই scan `partial` চিহ্নিত হয়। এছাড়া dotfile artifact (`.npmrc`, `.yarnrc.yml` …) source-path policy-তে upload-ই করা যায় না — ৪১টি rule এই কারণে structurally unreachable; evidence JSON-এ আলাদা করে দেখানো হয়।
 
-Status surface (`GET /api/v1/dataset/status` → `data.dataset.conformance`):
+আগের dataset-এর উদাহরণ (বর্তমান count কনফিগার করা pack অনুযায়ী বদলায়; পুনরায় পরীক্ষা প্রয়োজন):
 
 ```json
 {
@@ -84,7 +87,7 @@ Status surface (`GET /api/v1/dataset/status` → `data.dataset.conformance`):
            "failedTests": 0, "accepted": 1000 },
   "scaDeclarationEvaluator": "AVAILABLE",
   "scaDeclarationScanParsers": ["json","toml","yaml","xml","ini","properties","requirements","gradle","lockfile-text"],
-  "scaDeclarationScanReachableRules": 1000
+  "scaDeclarationScanReachableRules": 959
 }
 ```
 

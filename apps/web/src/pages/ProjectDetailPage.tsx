@@ -5,6 +5,7 @@ import {
   PROJECT_NAME_MAX_LENGTH,
   ASSISTANT_QUESTION_MAX_LENGTH,
   SCAN_TYPES,
+  AST_FLOW_KINDS,
   isAssessmentHostname,
   engagementStatus,
   type Assessment,
@@ -19,11 +20,15 @@ import {
   type FindingLifecycleState,
   type FindingsPageResponse,
   type SecurityReportResponse,
+  type SocPosture,
   type AssessmentSummaryResponse,
   type ScanComparisonResponse,
   type ScanDetailResponse,
   type ScanType,
   type Scan,
+  type StructuredAstSummary,
+  type AstAnalysisCoverage,
+  type AstSupplementSummary,
   type FindingSeverity,
   type ScaEcosystem,
   type SourceSnapshotResponse,
@@ -34,6 +39,8 @@ import { useApiClient } from '../api/context.js';
 import { useAuth } from '../auth/context.js';
 import { ErrorState } from '../components/ErrorState.js';
 import { LoadingState } from '../components/LoadingState.js';
+import { AstWorkflowGuide } from '../components/AstWorkflowGuide.js';
+import { FindingTaskDraft } from '../components/FindingTaskDraft.js';
 
 /**
  * One project: view, edit, archive/unarchive (Pump 6).
@@ -61,6 +68,76 @@ import { LoadingState } from '../components/LoadingState.js';
  *   redaction is enforced before any serialization).
  * - no localStorage, no URL-derived project state beyond the id.
  */
+
+/** Read-only operations snapshot from saved scan data, loaded only on request. */
+function SocOverview({ projectId }: { projectId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [posture, setPosture] = useState<SocPosture | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try { setPosture((await client.getSocPosture(projectId)).posture); }
+    catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not load the operations snapshot.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <section id="soc-overview" aria-labelledby="soc-title" data-testid="soc-overview">
+      <h2 id="soc-title">Security operations overview</h2>
+      <p className="muted">A read-only view of saved scan results and coverage gaps—not live intrusion monitoring or proof of compromise.</p>
+      <button type="button" className="button button-secondary" onClick={() => void load()} disabled={busy} data-testid="soc-load">
+        {busy ? 'Loading…' : posture === null ? 'Load operations snapshot' : 'Refresh operations snapshot'}
+      </button>
+      {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
+      {posture !== null && (
+        <div data-testid="soc-content">
+          <p>Reviewed {posture.scansReviewed} saved scan(s){posture.scansOmitted > 0 ? `; ${posture.scansOmitted} older scan(s) omitted` : ''}. Rule source: {posture.sources.dataset}; advisory source: {posture.sources.advisory} (current configuration).</p>
+          <ul>{posture.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.lastCompletedAt ?? 'no completed scan among those reviewed'}</li>)}</ul>
+          {posture.truncated && <p className="muted">This overview is truncated; review the full scan history.</p>}
+          {posture.alerts.length === 0 ? <p>No observations were produced from the reviewed records. This is not a security guarantee.</p> : (
+            <ul>{posture.alerts.map((alert) => <li key={alert.id}><strong>{alert.severity}: {alert.title}</strong> — {alert.detail}</li>)}</ul>
+          )}
+          <details><summary>Overview limitations</summary><ul>{posture.limitations.map((item) => <li key={item}>{item}</li>)}</ul></details>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The structured parser is a SAST pass, not an additional scan type. */
+function AstParserCoverage({ summary, coverage, testId }: { summary: StructuredAstSummary; coverage?: AstAnalysisCoverage | undefined; testId: string }): React.JSX.Element {
+  return (
+    <div className="muted" data-testid={testId}>
+      <p>AST syntax parser ({coverage === undefined ? 'JavaScript, TypeScript, JSX, TSX' : 'JavaScript, TypeScript, JSX, TSX, Python, PHP, Java'}): {summary.parsedFiles} parsed · {summary.incompleteFiles} incomplete · {summary.filesWithoutRules} without applicable AST rules · {summary.findings} additional finding(s).</p>
+      <p>Other languages use earlier bounded analysis. Each flow class needs an applicable rule; missing categories, false positives and missed vulnerabilities remain possible. Findings need human review and are not a safety guarantee.</p>
+      {coverage !== undefined && <details data-testid={`${testId}-details`}>
+        <summary>Rule, parser and file coverage</summary>
+        <p>Rules: {coverage.rules.source} · {coverage.rules.count} effective · SHA-256 <code>{coverage.rules.sha256}</code> (not a signature). Pack: {coverage.rules.packId === undefined ? 'not recorded' : `${coverage.rules.packId} ${coverage.rules.packVersion ?? ''}`}.</p>
+        <p>Parser versions: TypeScript {coverage.parsers.typescript} · Python/Lezer {coverage.parsers.python} · PHP {coverage.parsers.php} · Java/Lezer {coverage.parsers.java}.</p>
+        <p>Bounded JS/TS project flow: {coverage.projectFlow.status} · {coverage.projectFlow.examinedFiles} files · {coverage.projectFlow.unresolvedImports} unresolved relative named imports · {coverage.projectFlow.findings} additional findings. Files without structured parser: {coverage.unstructuredFiles}.</p>
+        <ul>{coverage.families.map(({ family, reporters }) => <li key={family}>{family}: {AST_FLOW_KINDS.filter((kind) => reporters[kind] !== undefined).map((kind) => `${kind}=${reporters[kind]}`).join(', ') || 'no category reporters'}; missing: {AST_FLOW_KINDS.filter((kind) => reporters[kind] === undefined).join(', ') || 'none'}.</li>)}</ul>
+        {coverage.files.some((file) => file.status !== 'OK') && <><p>Incomplete parser files:</p><ul>{coverage.files.filter((file) => file.status !== 'OK').map((file) => <li key={file.path}><code>{file.path}</code> · {file.family} · {file.status}</li>)}</ul></>}
+        <p>AST reporter rules are selected by category; their exact pattern may not have matched. Severity is inherited from the selected rule.</p>
+      </details>}
+    </div>
+  );
+}
+
+function AstSupplementCoverage({ summary, testId }: { summary: AstSupplementSummary; testId: string }): React.JSX.Element {
+  const explanation = summary.mode === 'DAST_RESPONSE_SCRIPTS'
+    ? 'Only already-observed inline/direct JavaScript is parsed; external scripts are not fetched and code is never executed. Flow candidates need a category reporter and manual verification.'
+    : summary.mode === 'SECRETS_LITERAL_CONTEXT'
+      ? 'AST adds string-literal context to existing redacted secret matches. It does not verify credentials, suppress matches, or cover all languages.'
+      : 'Only package.json JSON syntax is counted. Declaration entries are not installed-package or vulnerability proof; other manifests may be skipped.';
+  const signal = summary.mode === 'DAST_RESPONSE_SCRIPTS' ? 'additional candidates'
+    : summary.mode === 'SECRETS_LITERAL_CONTEXT' ? 'matches with literal context' : 'syntactic declaration entries';
+  return <div className="muted" data-testid={testId}>
+    <p>AST supplement: <strong>{summary.status}</strong> · {summary.parsed} parsed · {summary.incomplete} incomplete · {summary.skipped} skipped · {summary.signals} {signal}. Parser: {summary.parserVersion}.</p>
+    <p>{explanation}</p>
+    {summary.mode === 'DAST_RESPONSE_SCRIPTS' && <p>Category reporter: {summary.reporterRuleId ?? 'not available'}; its exact check is not established.</p>}
+  </div>;
+}
 
 type ProjectState =
   | { status: 'loading' }
@@ -200,6 +277,7 @@ export function ProjectDetailPage(): React.JSX.Element {
             <a className="nav-link" href="#source-snapshot">Source</a>
             {showAssessmentTools && <a className="nav-link" href="#assessments">Assessments</a>}
             <a className="nav-link" href="#security-scans">Scans, findings &amp; reports</a>
+            <a className="nav-link" href="#soc-overview">Operations</a>
             <a className="nav-link" href="#assistant-title">Assistant</a>
           </nav>
 
@@ -246,6 +324,9 @@ export function ProjectDetailPage(): React.JSX.Element {
               </button>
             )}
           </div>
+
+          <AstWorkflowGuide userType={state.status === 'ready' ? state.user.userType : null} />
+          <SocOverview projectId={project.project.id} />
 
           <DastTargetSection
             projectId={project.project.id}
@@ -641,6 +722,7 @@ function AssessmentsSection({
       <h2 id="assessments-title">Structured security assessments</h2>
       <p className="muted">Assessments are project-scoped records for objectives, exact hostname scope, scan links, findings/remediation follow-up, reports and history. Scope is an assessment control context—not permission to access a project, target, scanner or plan entitlement. Subdomains are not implicitly included.</p>
       <p className="muted"><strong>Third-party permission is not independently verified.</strong> A saved URL or user statement is never proof of legal authorization and never bypasses the existing passive DAST safety policy.</p>
+      <p className="muted">For linked DAST scans, the current engagement scope is checked again before each request. Declarations are not independently verified, and an in-flight request cannot be recalled.</p>
       {error !== null && <div className="form-alert" role="alert"><p data-testid="assessment-error">{error}</p></div>}
       {loading ? <p className="muted">Loading assessments…</p> : (
         <>
@@ -740,7 +822,26 @@ function ScansSection({
   const [assessmentLoadError, setAssessmentLoadError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [portfolioBusy, setPortfolioBusy] = useState(false);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+
+  const downloadPortfolio = async (): Promise<void> => {
+    setPortfolioBusy(true);
+    setPortfolioError(null);
+    try {
+      const file = await client.downloadProjectReport(projectId);
+      const href = URL.createObjectURL(file.blob);
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = file.filename;
+      anchor.rel = 'noopener';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (caught: unknown) {
+      setPortfolioError(caught instanceof ApiClientError ? caught.message : 'Could not download the project PDF.');
+    } finally { setPortfolioBusy(false); }
+  };
 
   const load = useCallback(async (): Promise<void> => {
     setScansError(null);
@@ -871,9 +972,9 @@ function ScansSection({
               <label htmlFor="dast-mode">DAST mode</label>
               <select id="dast-mode" value={dastMode} onChange={(event) => setDastMode(event.target.value as 'PASSIVE' | 'ACTIVE_SAFE')} data-testid="dast-mode-select">
                 <option value="PASSIVE">Passive — bounded GET requests + header checks (≤3 requests, safe)</option>
-                <option value="ACTIVE_SAFE">Active Safe — crawl + safe injection probes (≤20 requests, consent required)</option>
+                <option value="ACTIVE_SAFE">Active Safe — bounded crawl + path marker probes (≤20 requests, consent required)</option>
               </select>
-              <p className="field-hint">Passive: no crawl/injection, headers/body only. Active Safe: same-host crawl (≤10 links) + 1 safe payload per param (XSS/SQLi/redirect/traversal/CRLF) via GET query param; throttled 200ms; public-address &amp; HTTPS downgrade blocked; ≤10 injections.</p>
+              <p className="field-hint">Passive: no crawl or injection, headers/body only. Active Safe may inspect up to 10 same-host links and attempt up to 10 bounded path-based GET marker probes, with a 200ms throttle. Query-bearing links and query-parameter probes are blocked by the current target safety policy. Browser execution, authentication, broad fuzzing and exploitability checks are not provided.</p>
               {dastMode === 'ACTIVE_SAFE' && (
                 <label style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', fontWeight: 500 }}>
                   <input type="checkbox" checked={dastConsent} onChange={(e) => setDastConsent(e.target.checked)} data-testid="dast-consent-checkbox" /> I confirm I have permission to actively test this target and accept the assessment scope.
@@ -902,8 +1003,8 @@ function ScansSection({
           </button>
           <p className="muted">
             SAST, Secrets and SCA analyze the uploaded source snapshot; files are never executed, credentials are never verified, and secret evidence is redacted before persistence.
-            SCA advisories remain not assessed without a vulnerability dataset. DAST Passive: bounded GET requests + header checks (≤3). DAST Active Safe: same-host crawl (≤10) + safe GET injection probes (≤10) with 200ms throttle; reflected-payload observations only — not proof of exploitability; absence is not proof of safety.
-            It does not use a browser, execute JavaScript, authenticate, crawl, fuzz, or exploit. Configure a target above to enable DAST.
+            SCA advisories remain not assessed without a vulnerability dataset. DAST Passive: bounded GET requests + header checks (≤3). Active Safe may perform a bounded same-host crawl and path marker probes; query-bearing URLs are not supported. Reflections are not proof of exploitability; absence is not proof of safety.
+            Neither mode uses a browser, executes JavaScript, authenticates or exploits. AST examines only already-observed response scripts without extra fetches. Configure a target above to enable DAST.
           </p>
           {formError !== null && (
             <div className="form-alert" role="alert">
@@ -915,6 +1016,11 @@ function ScansSection({
       {scans !== null && scans.length > 0 && (
         <section className="security-overview" data-testid="project-security-overview">
           <h3>Project security overview</h3>
+          <p className="muted">The project PDF includes the latest attempted scan for each type, including failed or incomplete scans. Scan scopes may differ; it is not a security certification.</p>
+          <button type="button" className="button button-ghost" onClick={() => void downloadPortfolio()} disabled={portfolioBusy} data-testid="download-project-pdf">
+            {portfolioBusy ? 'Preparing PDF…' : 'Download project summary PDF'}
+          </button>
+          {portfolioError !== null && <div className="form-alert" role="alert"><p>{portfolioError}</p></div>}
           {(() => {
             const completed = scans.filter((scan) => scan.status === 'COMPLETED');
             const findingsTotal = completed.reduce((sum, scan) => sum + (scan.resultSummary?.findingsTotal ?? 0), 0);
@@ -1021,16 +1127,22 @@ function ScansSection({
                   {scan.scanType === 'SCA'
                     ? `Dependencies: ${scan.resultSummary.dependenciesTotal ?? 0} (${scan.resultSummary.directDependencies ?? 0} direct)`
                     : scan.scanType === 'DAST'
-                      ? `Requests: ${scan.resultSummary.requestsMade ?? 0} · redirects: ${scan.resultSummary.redirectsFollowed ?? 0} · passive findings: ${scan.resultSummary.findingsTotal}${scan.resultSummary.partial === true ? ' · partial' : ''}`
+                      ? `Requests: ${scan.resultSummary.requestsMade ?? 0} · redirects: ${scan.resultSummary.redirectsFollowed ?? 0} · findings: ${scan.resultSummary.findingsTotal}${scan.resultSummary.partial === true ? ' · partial' : ''}`
                       : `Findings: ${scan.resultSummary.findingsTotal}${
                           scan.resultSummary.partial === true
                             ? ` — partial scan: ${scan.resultSummary.partialReason ?? 'some content was not inspected'}`
                             : scan.resultSummary.truncated === true
-                              ? ' (findings truncated)'
+                              ? ' (scan or findings truncated)'
                               : ''
                         }`}
                 </p>
               )}
+              {scan.status === 'COMPLETED' && scan.scanType === 'SAST' && scan.resultSummary?.astParser !== undefined && (
+                <AstParserCoverage summary={scan.resultSummary.astParser} coverage={scan.resultSummary.astCoverage} testId="scan-ast-coverage" />
+              )}
+              {scan.status === 'COMPLETED' && scan.scanType !== 'SAST' && (scan.resultSummary?.astSupplement === undefined
+                ? <p className="muted">This saved scan has no scanner-specific AST supplement record; coverage is unknown.</p>
+                : <AstSupplementCoverage summary={scan.resultSummary.astSupplement} testId="scan-ast-supplement" />)}
               {scan.status === 'COMPLETED' && (
                 <FindingsView projectId={projectId} scanId={scan.id} scanType={scan.scanType} />
               )}
@@ -1654,7 +1766,11 @@ function FindingsView({
           {scanDetail?.scan.dast !== undefined && (
             <section className="dast-observations" data-testid="dast-observations">
               <h4>Observed responses</h4>
-              <p className="muted">Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.</p>
+              {scanDetail.scan.dastMode === 'ACTIVE_SAFE' || scanDetail.scan.dast.mode === 'ACTIVE_SAFE' ? (
+                <p className="muted">The recorded active-safe mode may include bounded GET probes and static-link crawling. Observations do not prove exploitability; no browser or authenticated session was used.</p>
+              ) : (
+                <p className="muted">Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.</p>
+              )}
               <p data-testid="dast-target-url">Target: <code>{scanDetail.scan.dast.targetUrl}</code></p>
               {scanDetail.scan.dast.partial && <p className="muted" data-testid="dast-partial-note">Partial result: {scanDetail.scan.dast.partialReason ?? 'some response checks were not completed'}</p>}
               <ul className="scan-list">
@@ -1715,6 +1831,19 @@ function FindingsView({
                 {selectedFinding.cwe !== undefined && <div className="fact"><dt>CWE</dt><dd>{selectedFinding.cwe}</dd></div>}
                 <div className="fact"><dt>Where</dt><dd>{selectedFinding.scanner === 'DAST' ? `${selectedFinding.method} ${selectedFinding.endpoint}` : `${selectedFinding.file}:${selectedFinding.line}:${selectedFinding.column}`}</dd></div>
               </dl>
+              {selectedFinding.astFlow !== undefined && <div data-testid="finding-ast-flow">
+                <p>AST {selectedFinding.astFlow.mode} · {selectedFinding.astFlow.category}: rule selected by category; its exact pattern may not have matched, and severity is inherited.</p>
+                {selectedFinding.astFlow.source === undefined ? <p>Source location was not recorded.</p> : <>
+                  <p>Source: <code>{selectedFinding.astFlow.source.file}:{selectedFinding.astFlow.source.line}:{selectedFinding.astFlow.source.column}</code></p>
+                  {(selectedFinding.astFlow.via ?? []).map((step, index) => <p key={`${step.file}-${step.line}-${index}`}>Call: <code>{step.file}:{step.line}:{step.column}</code></p>)}
+                  <p>Sink: <code>{selectedFinding.file}:{selectedFinding.line}:{selectedFinding.column}</code></p>
+                </>}
+              </div>}
+              {selectedFinding.astContext !== undefined && <div data-testid="finding-ast-context">
+                {selectedFinding.astContext.kind === 'SECRETS_STRING_LITERAL'
+                  ? <p>AST context: the redacted match overlaps a parsed string literal; the credential was not verified.</p>
+                  : <p>AST response script {selectedFinding.astContext.script}, line {selectedFinding.astContext.line}, column {selectedFinding.astContext.column} · {selectedFinding.astContext.category}: category-selected reporter, exact rule check and exploitability not established.</p>}
+              </div>}
               <p><strong>Finding description</strong></p>
               <p>{selectedFinding.description}</p>
               <p><strong>Supporting scanner evidence</strong></p><pre><code data-testid="finding-evidence">{selectedFinding.evidence}</code></pre>
@@ -1722,6 +1851,7 @@ function FindingsView({
               {selected.guidance !== undefined && (
                 <section className="workflow-guidance" aria-label="Remediation guidance" data-testid="finding-guidance">
                   <h5>Rule-specific guidance · {selected.guidance.status.replaceAll('_', ' ')}</h5>
+                  {(selectedFinding.astFlow !== undefined || selectedFinding.astContext?.kind === 'DAST_RESPONSE_FLOW') && <p className="muted">This guidance belongs to the category-selected reporter and may not apply to this particular flow; its rule pattern was not established.</p>}
                   <p><strong>Why it matters:</strong> {selected.guidance.whyItMatters}</p>
                   <p><strong>What to do next</strong></p>
                   <ul>{selected.guidance.actions.map((action, index) => <li key={`${selected.guidance?.ruleId}-${index}`}>{action}</li>)}</ul>
@@ -1740,14 +1870,15 @@ function FindingsView({
               {selected.guidance === undefined && (
                 <p className="muted">Rule-specific explanation is unavailable for this finding. Review only the recorded description, evidence, and scanner remediation; no missing technical facts are inferred.</p>
               )}
+              <FindingTaskDraft key={selectedFinding.id} detail={selected} />
               {selected.workflow !== undefined && (
                 <section className="finding-workflow" aria-label="Finding remediation workflow" data-testid="finding-workflow">
                   <h5>Remediation workflow</h5>
-                  <p className="muted">User-managed status is separate from scanner evidence. Marking a finding resolved does not verify a fix; only a later completed same-scanner scan with complete finding details updates observation status.</p>
+                  <p className="muted">User-managed status is separate from scanner evidence. A reported observation can update the workflow, but a partial or truncated scan cannot verify absence. The verification scan below may be older than the latest scan; no state proves a fix.</p>
                   <dl className="facts">
                     <div className="fact"><dt>Lifecycle</dt><dd data-testid="finding-lifecycle-state">{selected.workflow.state}</dd></div>
-                    <div className="fact"><dt>Verification</dt><dd data-testid="finding-verification-state">{selected.workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'Not observed in latest completed same-scanner scan with complete finding details' : 'Observed in latest completed same-scanner scan with complete finding details'}</dd></div>
-                    <div className="fact"><dt>Latest verification scan</dt><dd><code>{selected.workflow.lastVerificationScanId}</code> · {selected.workflow.lastVerificationAt}</dd></div>
+                    <div className="fact"><dt>Verification</dt><dd data-testid="finding-verification-state">{selected.workflow.verificationState === 'NOT_OBSERVED_IN_LATEST_SCAN' ? 'Not observed in the recorded verification scan; check its coverage' : 'Observed in the recorded verification scan'}</dd></div>
+                    <div className="fact"><dt>Last verification scan</dt><dd><code>{selected.workflow.lastVerificationScanId}</code> · {selected.workflow.lastVerificationAt}</dd></div>
                   </dl>
                   {selected.project.status === 'ARCHIVED' ? (
                     <p className="muted">Archived projects are read-only; lifecycle changes and notes are disabled.</p>
@@ -1823,7 +1954,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
     catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not retrieve the report.'); }
     finally { setBusy(false); }
   };
-  const download = async (format: 'json' | 'markdown' | 'sarif'): Promise<void> => {
+  const download = async (format: 'json' | 'markdown' | 'sarif' | 'pdf'): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
@@ -1868,6 +1999,24 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
         <>
           <p data-testid="report-id">Report <code>{report.reportId}</code> · generated {report.generatedAt}</p>
           <p className="muted">{report.findingSummary.total} persisted findings · content SHA-256 <code data-testid="report-content-digest">{report.contentDigest}</code></p>
+          {report.sac === undefined ? (
+            <p className="muted" data-testid="report-coverage-legacy">This older report has no coverage ledger. Missing coverage cannot be inferred.</p>
+          ) : (
+            <section className="report-coverage" data-testid="report-sac-coverage">
+              <h5>Coverage and residual risk</h5>
+              <p><strong>{report.sac.verdict}</strong> — {report.sac.verdictStatement}</p>
+              <p>Residual risk: <strong>{report.sac.residualRisk.status}</strong>. Compliance: <strong>{report.sac.compliance.status}</strong>.</p>
+              <p className="muted">{report.sac.compliance.statement} Rule-pack version at scan time was not recorded.</p>
+              <ul>{report.sac.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.status} — {entry.reason}</li>)}</ul>
+              <details><summary>What this report does not establish</summary><ul>{report.sac.limitations.map((item) => <li key={item}>{item}</li>)}</ul></details>
+            </section>
+          )}
+          {report.scan.resultSummary?.astParser !== undefined && (
+            <AstParserCoverage summary={report.scan.resultSummary.astParser} coverage={report.scan.resultSummary.astCoverage} testId="report-ast-coverage" />
+          )}
+          {report.scan.scanType !== 'SAST' && (report.scan.resultSummary?.astSupplement === undefined
+            ? <p className="muted">This saved scan has no scanner-specific AST supplement record; coverage is unknown.</p>
+            : <AstSupplementCoverage summary={report.scan.resultSummary.astSupplement} testId="report-ast-supplement" />)}
           {report.dependencyIntelligence.status === 'NOT_ASSESSED' ? (
             <p className="muted" data-testid="report-not-assessed">Dependency vulnerability intelligence: NOT ASSESSED. {report.dependencyIntelligence.reason}</p>
           ) : (
@@ -1883,7 +2032,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
           ) : (
             <section className="report-workflows" data-testid="report-workflow-snapshot">
               <h5>Point-in-time remediation workflow snapshot</h5>
-              <p className="muted">A user-selected RESOLVED state is not technical verification. Absence means only not observed in the latest completed same-scanner scan with complete finding details.</p>
+              <p className="muted">A user-selected RESOLVED state is not technical verification. Absence means only not observed in the recorded verification scan; check its coverage. Later partial or truncated scans do not verify absence.</p>
               {report.findingWorkflows.length === 0 ? <p className="muted">No findings were present in this report snapshot.</p> : (
                 <ul>{report.findingWorkflows.map((workflow) => (
                   <li key={workflow.id}>
@@ -1897,11 +2046,12 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
           <ul className="report-coverage" data-testid="report-scanner-coverage">
             {report.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.status}{entry.reason === undefined ? '' : ` — ${entry.reason}`}</li>)}
           </ul>
-          {report.dast !== undefined && <p className="muted">Passive DAST observations: {report.dast.observations.length}; bounded response metadata only.</p>}
+          {report.dast !== undefined && <p className="muted">DAST observations ({report.scan.dastMode ?? report.dast.mode ?? 'PASSIVE'}): {report.dast.observations.length}; bounded response metadata only.</p>}
           <div className="hero-actions">
             <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
             <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>
             <button type="button" className="button button-ghost" onClick={() => void download('sarif')} disabled={busy} data-testid="download-report-sarif">Download SARIF</button>
+            <button type="button" className="button button-ghost" onClick={() => void download('pdf')} disabled={busy} data-testid="download-report-pdf">Download PDF</button>
             <button type="button" className="button button-ghost" onClick={() => void downloadSbom()} disabled={busy} data-testid="download-report-sbom">Download SBOM (CycloneDX)</button>
             <button type="button" className="button button-ghost" onClick={() => void retrieve()} disabled={busy} data-testid="refresh-report">Retrieve saved report</button>
             <button type="button" className="button button-secondary" onClick={() => void generate()} disabled={busy} data-testid="refresh-report-snapshot">Regenerate current snapshot</button>

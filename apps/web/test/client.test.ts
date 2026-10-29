@@ -193,6 +193,30 @@ describe('createApiClient', () => {
     expect(new Headers(init.headers).get('x-request-id')).toBe('download-test');
   });
 
+  test('downloads project and scan PDFs only with valid headers and PDF signature', async () => {
+    const projectId = 'prj_00000000-0000-4000-8000-0000000000aa';
+    const responses = [
+      new Response('%PDF-1.3\n%%EOF', { headers: { 'content-type': 'application/pdf', 'content-disposition': `attachment; filename="drobon-project-${projectId}.pdf"` } }),
+      new Response('%PDF-1.3\n%%EOF', { headers: { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="drobon-rpt_0123456789abcdef01234567.pdf"' } }),
+      new Response('<html>not a PDF</html>', { headers: { 'content-type': 'application/pdf', 'content-disposition': `attachment; filename="drobon-project-${projectId}.pdf"` } }),
+      new Response('%PDF-1.3', { headers: { 'content-type': 'text/html', 'content-disposition': `attachment; filename="drobon-project-${projectId}.pdf"` } }),
+    ];
+    const fetchImpl: FetchImpl = vi.fn(async () => {
+      const response = responses.shift();
+      if (response === undefined) throw new Error('unexpected request');
+      return response;
+    });
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    expect((await client.downloadProjectReport(projectId)).filename).toBe(`drobon-project-${projectId}.pdf`);
+    expect((await client.downloadReport(projectId, 'scan_id', 'pdf')).blob.type).toBe('application/pdf');
+    await expect(client.downloadProjectReport(projectId)).rejects.toMatchObject({ kind: 'invalid-response' });
+    await expect(client.downloadProjectReport(projectId)).rejects.toMatchObject({ kind: 'invalid-response' });
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/reports/portfolio/download`);
+    expect(new Headers(calls[0]?.[1].headers).get('accept')).toBe('application/pdf');
+    expect(calls[1]?.[0]).toContain('/report/download?format=pdf');
+  });
+
   test('rejects unsafe report filenames and streamed bodies that exceed the bound', async () => {
     const unsafeFetch: FetchImpl = vi.fn(async () => new Response('{}', {
       status: 200,
@@ -282,5 +306,26 @@ describe('createApiClient', () => {
     expect(((await clientB.getStatus().catch((e: unknown) => e)) as ApiClientError).kind).toBe(
       'invalid-response',
     );
+  });
+});
+
+describe('SOC operations API client', () => {
+  test('uses an authenticated, project-scoped read and validates the response', async () => {
+    const projectId = 'prj_00000000-0000-4000-8000-000000000001';
+    const posture = {
+      schemaVersion: '1.0', projectId, generatedAt: '2026-10-28T12:00:00.000Z', scansReviewed: 0, scansOmitted: 0,
+      scannerCoverage: ['SAST', 'SCA', 'SECRETS', 'DAST'].map((scanner) => ({ scanner, lastCompletedAt: null })),
+      sources: { dataset: 'NOT_CONFIGURED', advisory: 'NOT_CONFIGURED' }, alerts: [],
+      limitations: ['Saved scan records only.'], truncated: false,
+    };
+    const fetchImpl: FetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { posture }, meta: { requestId: 'soc-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, data: { posture: { ...posture, scansReviewed: -1 } }, meta: { requestId: 'soc-2' } }));
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    expect((await client.getSocPosture(projectId)).posture.projectId).toBe(projectId);
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/soc`);
+    expect(calls[0]?.[1].credentials).toBe('include');
+    await expect(client.getSocPosture(projectId)).rejects.toMatchObject({ kind: 'invalid-response' });
   });
 });

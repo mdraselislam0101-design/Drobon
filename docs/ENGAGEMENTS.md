@@ -1,5 +1,8 @@
 # Third-party Engagement / Authorization Record
 
+> **বর্তমান সীমা (2026-10-28):** Engagement ছাড়া পুরনো `UNVERIFIED` scan path এখনও খোলা; এই ব্যবস্থা সবার জন্য লিখিত অনুমতি বাধ্যতামূলক করে না। Assessment-linked DAST-এ বর্তমান scope প্রতিটি request-এর আগে পুনরায় দেখা হয়, কিন্তু স্বাধীন legal verification নয় এবং ইতোমধ্যে চলা request প্রত্যাহার করা যায় না।
+
+
 **তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। ডেটাসেট repo / ডেটাবেস / নতুন npm dependency — কিছুই নেই। বিদ্যমান `apps/api/src/assessments/` store-এর উপর **additive**।
 
 > **কেন:** আপনি টুলটা বানাচ্ছেন **অন্য কারো ওয়েবসাইট/অ্যাপ** সুরক্ষা দেওয়ার জন্য। আগে অ্যাপ শুধু project ownership + network safety চেক করত; "ওই সাইট scan করার আমার অনুমতি আছে" — তার কোনো অডিটেবল রেকর্ড ছিল না (`UNVERIFIED`)। এখন সেটার জন্য একটি **লিখিত, সময়-বাঁধা, scope-বাঁধা, append-only engagement record** আছে, আর সেটি linked scan-এর gate হিসেবে কাজ করে।

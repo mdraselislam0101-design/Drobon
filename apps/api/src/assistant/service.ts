@@ -115,8 +115,13 @@ function findingSort(findings: readonly Finding[]): Finding[] {
   return [...findings].sort(compareFindings);
 }
 
+function scanIsPartial(scan: ScanRecord): boolean {
+  return mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true ||
+    scan.resultSummary?.astSupplement?.status === 'PARTIAL' || scan.dast?.partial === true;
+}
+
 function isPartial(scans: readonly ScanRecord[], context: AssistantContextBuild): boolean {
-  return scans.some((scan) => mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true) || context.summary.truncated;
+  return scans.some(scanIsPartial) || context.summary.truncated;
 }
 
 export class AssistantService {
@@ -277,7 +282,7 @@ export class AssistantService {
       if (workflow === undefined) return unsupported('Finding lifecycle details are unavailable for this record.', 'PARTIALLY_SUPPORTED');
       const facts = [
         `Current workflow state: ${workflow.state}.`,
-        `Latest verification state: ${workflow.verificationState}.`,
+        `Last recorded verification state: ${workflow.verificationState}.`,
         `Last verification scan: ${workflow.lastVerificationScanId} at ${workflow.lastVerificationAt}.`,
         `Recent lifecycle events available: ${historyEvents.length}.`,
       ];
@@ -295,11 +300,12 @@ export class AssistantService {
       const findings = applicableScans.flatMap((scan) => scan.findings ?? []);
       const reported = applicableScans.reduce((total, scan) => total + (scan.resultSummary?.findingsTotal ?? 0), 0);
       const persisted = findings.length;
-      const partial = applicableScans.some((scan) => mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true);
+      const partial = applicableScans.some(scanIsPartial);
       const facts = applicableScans.map((scan) => [
         `${scan.scanType} scan ${scan.id}: completed ${scan.completedAt ?? 'time unavailable'}; summary reports ${scan.resultSummary?.findingsTotal ?? 'unavailable'} finding(s), ${scan.findings?.length ?? 0} detail record(s) persisted${scan.resultSummary?.partial === true ? ' (partial)' : ''}${scan.resultSummary?.truncated === true ? ' (truncated)' : ''}.`,
+        ...(scan.resultSummary?.astSupplement === undefined ? [] : [`Supplemental AST: ${scan.resultSummary.astSupplement.mode} ${scan.resultSummary.astSupplement.status}; parsed ${scan.resultSummary.astSupplement.parsed}, incomplete ${scan.resultSummary.astSupplement.incomplete}, skipped ${scan.resultSummary.astSupplement.skipped}.`]),
         ...(scan.sca === undefined ? [] : [`SCA: ${scan.sca.summary.assessmentState}; dataset ${scan.sca.summary.datasetStatus}; provider ${scan.sca.summary.providerId}.`]),
-        ...(scan.dast === undefined ? [] : [`Passive DAST: ${scan.dast.observations.length} bounded response observation(s), ${scan.dast.redirectsFollowed} redirect(s).`]),
+        ...(scan.dast === undefined ? [] : [`${scan.dast.mode === 'ACTIVE_SAFE' ? 'Active-safe' : 'Passive'} DAST: ${scan.dast.observations.length} bounded response observation(s), ${scan.dast.redirectsFollowed} redirect(s).`]),
       ].join(' '));
       const state: AssistantState = partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED';
       const scope = request.scanId === undefined ? 'Latest completed scan per available engine' : 'Selected completed scan';
@@ -307,7 +313,7 @@ export class AssistantService {
         evidence, facts,
         limitations: [
           'Only completed persisted scans are summarized; engines not run are not assessed by this answer.',
-          ...(partial ? ['At least one engine summary is partial, truncated, or disagrees with persisted finding details.'] : []),
+          ...(partial ? ['At least one engine or AST supplement is partial or truncated, or disagrees with persisted finding details.'] : []),
           'SCA inventory and vulnerability intelligence are separate; NOT_ASSESSED is not a clean result.',
         ],
       });
@@ -334,7 +340,7 @@ export class AssistantService {
       const missingWorkflow = projectWorkflowSummary === undefined ? rows.filter((entry) => entry.workflow === undefined).length : 0;
       const unresolvedCount = projectWorkflowSummary?.unresolved ?? unresolved.length;
       const findingIdentityCount = projectWorkflowSummary?.currentObserved ?? rows.length;
-      const resultPartial = applicableScans.some((scan) => mismatch(scan) || scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true) ||
+      const resultPartial = applicableScans.some(scanIsPartial) ||
         (projectWorkflowSummary === undefined && (missingWorkflow > 0 || omittedFindingDetails > 0 || context.summary.truncated));
       const severityCounts = new Map<string, number>();
       if (projectWorkflowSummary === undefined) {
@@ -378,9 +384,9 @@ export class AssistantService {
         projectWorkflowSummary === undefined
           ? 'Counts are bounded to the selected completed scan and at most ten persisted finding details; they are not a lifetime or external-data total.'
           : 'Counts use persisted project finding identities/workflows only; they are not external intelligence or a complete security-coverage claim.',
-        ...(notObserved > 0 ? ['NOT_OBSERVED_IN_LATEST_SCAN records are not proof of remediation or global absence.'] : []),
+        ...(notObserved > 0 ? ['NOT_OBSERVED_IN_LATEST_SCAN records refer to the recorded verification scan, which may predate a partial scan; they are not proof of remediation or global absence.'] : []),
         ...(hasResolvedWorkflow ? ['RESOLVED is user-managed workflow state and does not prove a technical fix.'] : []),
-        ...(resultPartial ? ['At least one applicable scan is partial/truncated, finding details disagree with an engine summary, or the selected-scan view omits workflow detail.'] : []),
+        ...(resultPartial ? ['At least one applicable scan or AST supplement is partial/truncated, finding details disagree with an engine summary, or the selected-scan view omits workflow detail.'] : []),
       ];
       const answer = intent === 'UNRESOLVED_FINDINGS'
         ? projectWorkflowSummary === undefined
@@ -388,7 +394,7 @@ export class AssistantService {
           : `Persisted project workflows show ${unresolvedCount} unresolved records among ${findingIdentityCount} unique finding identities.`
         : intent === 'VERIFICATION_SUMMARY'
           ? `Across ${findingIdentityCount} persisted finding identities, verification-state counts are OBSERVED=${observed} and NOT_OBSERVED_IN_LATEST_SCAN=${notObserved}. Neither state proves a fix.`
-          : `Available persisted records show ${unresolvedCount} unresolved workflow record(s), ${applicableScans.filter((scan) => scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true).length} partial/truncated engine result(s), and ${applicableScans.filter((scan) => scan.sca?.summary.assessmentState === 'NOT_ASSESSED').length} latest SCA result(s) with vulnerability intelligence NOT_ASSESSED. This is not a global risk ranking or a claim of complete coverage.`;
+          : `Available persisted records show ${unresolvedCount} unresolved workflow record(s), ${applicableScans.filter(scanIsPartial).length} partial/truncated or incomplete engine result(s), and ${applicableScans.filter((scan) => scan.sca?.summary.assessmentState === 'NOT_ASSESSED').length} latest SCA result(s) with vulnerability intelligence NOT_ASSESSED. This is not a global risk ranking or a claim of complete coverage.`;
       return response(resultPartial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED', answer, context, providerState, { evidence: summaryEvidence, facts, limitations });
     }
 
@@ -399,20 +405,26 @@ export class AssistantService {
       if (dastScan?.dast === undefined) {
         return unsupported(request.scanId === undefined
           ? 'No completed DAST result with persisted observations is available for this project.'
-          : 'The selected completed scan has no passive DAST observations to explain.', 'UNAVAILABLE');
+          : 'The selected completed scan has no DAST observations to explain.', 'UNAVAILABLE');
       }
       const statusCounts = new Map<number, number>();
       for (const observation of dastScan.dast.observations) statusCounts.set(observation.status, (statusCounts.get(observation.status) ?? 0) + 1);
       const statusSummary = [...statusCounts.entries()].sort(([a], [b]) => a - b).map(([status, count]) => `HTTP ${status}: ${count}`).join('; ') || 'No response observations persisted.';
-      const partial = dastScan.dast.partial || isPartial([dastScan], context);
+      const partial = isPartial([dastScan], context);
+      const active = dastScan.dast.mode === 'ACTIVE_SAFE';
+      const supplement = dastScan.resultSummary?.astSupplement;
       const facts = [
         `DAST scan ${dastScan.id} recorded ${dastScan.dast.observations.length} bounded GET response observation(s) from ${dastScan.dast.requestCount} request(s); ${dastScan.dast.redirectsFollowed} redirect(s) followed.`,
         `Observed response status counts: ${statusSummary}.`,
         ...(dastScan.dast.partialReason === undefined ? [] : [`Partial result reason: ${dastScan.dast.partialReason}.`]),
+        ...(supplement === undefined ? [] : [`Response AST: ${supplement.status}; parsed ${supplement.parsed}, incomplete ${supplement.incomplete}, skipped ${supplement.skipped}.`]),
       ];
-      return response(partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED', `The persisted passive DAST result contains ${dastScan.dast.observations.length} bounded response observation(s): ${statusSummary}. These are HTTP observations, not by themselves vulnerability findings or proof that the target is safe.`, context, providerState, {
+      return response(partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED', `The persisted ${active ? 'active-safe' : 'passive'} DAST result contains ${dastScan.dast.observations.length} bounded response observation(s): ${statusSummary}. These are HTTP observations, not by themselves vulnerability findings or proof that the target is safe.`, context, providerState, {
         evidence, facts,
-        limitations: ['DAST is limited to the recorded single target and bounded passive requests; this does not imply crawling, browser testing, complete route coverage, or absence of vulnerabilities.', ...(partial ? ['The persisted DAST or scan result is partial.'] : [])],
+        limitations: [active
+          ? 'Active-safe requests are bounded and consent-gated; they do not imply browser execution, complete route coverage, independent permission verification, or absence of vulnerabilities.'
+          : 'DAST is limited to the recorded single target and bounded passive requests; this does not imply crawling, browser testing, complete route coverage, or absence of vulnerabilities.',
+        ...(partial ? ['The persisted DAST scan or AST supplement is partial.'] : [])],
       });
     }
 
@@ -428,14 +440,14 @@ export class AssistantService {
       const after = new Set((selectedScan.findings ?? []).map((entry) => entry.fingerprint));
       const added = [...after].filter((fingerprint) => !before.has(fingerprint)).length;
       const notInSelected = [...before].filter((fingerprint) => !after.has(fingerprint)).length;
-      const partial = mismatch(selectedScan) || mismatch(comparedScan);
+      const partial = scanIsPartial(selectedScan) || scanIsPartial(comparedScan);
       const state: AssistantState = partial ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED';
       const facts = [
         `Selected scan ${selectedScan.id} persisted ${selectedScan.findings?.length ?? 0} finding details (summary: ${selectedScan.resultSummary?.findingsTotal ?? 'unavailable'}).`,
         `Compared scan ${comparedScan.id} persisted ${comparedScan.findings?.length ?? 0} finding details (summary: ${comparedScan.resultSummary?.findingsTotal ?? 'unavailable'}).`,
         `Deterministic fingerprint comparison: ${added} new identities in the selected scan; ${notInSelected} prior identities not observed there.`,
       ];
-      const limitations = partial ? ['One or both scan summaries disagree with persisted finding details; fingerprint differences are incomplete and do not prove fixes.'] : ['A fingerprint absent from the selected scan is only not observed there, not proof of remediation.'];
+      const limitations = partial ? ['One or both scans or AST supplements are partial, truncated, or disagree with persisted finding details; fingerprint differences are incomplete and do not prove fixes.'] : ['A fingerprint absent from the selected scan is only not observed there, not proof of remediation.'];
       return response(state, `Compared persisted finding fingerprints between the selected scans: ${added} new identity(ies); ${notInSelected} prior identity(ies) not observed in the selected scan.`, context, providerState,
         { evidence, facts, limitations });
     }
@@ -510,7 +522,8 @@ export class AssistantService {
         `Latest selected completed scan: ${latest.scanType}, completed ${latest.completedAt ?? 'time unavailable'}.`,
         `Engine summary reports ${total ?? 'an unavailable number of'} findings; ${persistedCount} finding detail record(s) are persisted.`,
         ...(latest.sca === undefined ? [] : [`SCA assessment: ${latest.sca.summary.assessmentState}; dataset: ${latest.sca.summary.datasetStatus}.`]),
-        ...(latest.dast === undefined ? [] : [`Passive DAST recorded ${latest.dast.observations.length} bounded observation(s); response bodies are not returned to this assistant.`]),
+        ...(latest.dast === undefined ? [] : [`${latest.dast.mode === 'ACTIVE_SAFE' ? 'Active-safe' : 'Passive'} DAST recorded ${latest.dast.observations.length} bounded observation(s); response bodies are not returned to this assistant.`]),
+        ...(latest.resultSummary?.astSupplement === undefined ? [] : [`Supplemental AST: ${latest.resultSummary.astSupplement.mode} ${latest.resultSummary.astSupplement.status}.`]),
       ];
       const answer = incomplete
         ? `The ${latest.scanType} scan completed, but the engine summary and persisted finding details do not agree. The summary reports ${total ?? 'an unknown number of'} findings; only ${persistedCount} detail record(s) are available, so this is incomplete evidence.`

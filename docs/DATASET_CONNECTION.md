@@ -19,7 +19,7 @@ evaluators, validators, resolvers) lives here — that split is the product desi
 | SAST packs | `packs/sast/v1/rules/*.json` | `external/conformance.ts` → `packIntegration.ts` → `SastEngine` | 1,000 | `AVAILABLE` (`drobon-sast-starter@1.0.0`) |
 | Secrets packs | `packs/secrets/v1/rules/*.json` | same → `SecretsEngine` | 1,000 | `AVAILABLE` (`drobon-secrets-starter@1.0.0`) |
 | DAST packs | `packs/dast/v1/rules/*.json` | same → `DastEngine` / active engine | 1,007 | `AVAILABLE` (`drobon-dast-starter@1.0.0`) |
-| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` → `external/scaDeclaration.ts` → `scans/sca/declarationScan.ts` → `ScaEngine` | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **evaluated** (all 4,001 declared tests; all 9 parser kinds readable, 1,000 rules scan-reachable) |
+| SCA declaration packs | `packs/sca/v1/rules/*.json` | `external/service.ts` → `external/scaDeclaration.ts` → `scans/sca/declarationScan.ts` → `ScaEngine` | 1,000 | `AVAILABLE` (`drobon-sca-dependency-hygiene@1.0.0`) — **evaluated** (all 4,001 declared tests; 9 parser kinds have bounded readers; upload and format limitations still apply) |
 | Remediation | `knowledge/remediation/*.json` | `external/guidance.ts` → assistant / finding detail / reports | 4,007 | `AVAILABLE`, surfaced as `RULE_SPECIFIC` |
 | CWE | `knowledge/cwe/*.json` | `external/knowledge.ts` | 102 | `AVAILABLE` |
 | Lessons | `learning/lessons/*.json` | `external/lessonProvider.ts` | 6 (2 `lsn_dev_*`) | `AVAILABLE` |
@@ -84,12 +84,10 @@ skipped/failed tests, rejected rules). Inspection:
    `external/scaDeclaration.ts` evaluator (six closed predicates, bounded
    path/name walks). Status now reports
    `scaDeclarationEvaluator: "AVAILABLE"`, `scaDeclarationScanParsers:
-   all 9 kinds]`, `scaDeclarationScanReachableRules: 1000`. Pump 18 added
+   all 9 kinds]`, `scaDeclarationScanReachableRules` counts potentially eligible rules, excluding blocked artifacts. Pump 18 added
    bounded readers for the eight remaining kinds (TOML/YAML/XML/INI/properties/
    Gradle/requirements/lockfile-text) — see [`SCA_READERS.md`](SCA_READERS.md).
-   Real SCA scans now evaluate non-JSON manifests too; a shape the bounded
-   reader cannot represent is counted as `declarationRulesNotEvaluated`, never
-   pretended. Dotfile artifacts (`.npmrc`, `.yarnrc.yml` …) remain blocked by
+   Real SCA scans can evaluate non-JSON manifests, but bounded readers can also misinterpret unsupported shapes. These scans are marked partial; not every mismatch becomes `declarationRulesNotEvaluated`. Dotfile artifacts (`.npmrc`, `.yarnrc.yml` …) remain blocked by
    the source-path policy and are reported separately in the evidence JSON.
 5. `pack.json` identity (`packId` + `version`) is surfaced on the status and
    pack-inspection routes, so a finding's `DPK-*` rule id can be traced to a
