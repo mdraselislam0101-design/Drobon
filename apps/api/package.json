@@ -2,24 +2,32 @@
   "name": "@drobon/api",
   "version": "0.1.0",
   "private": true,
-  "description": "Drobon Aegis AI — HTTP API foundation (zero runtime dependencies).",
+  "description": "Drobon Aegis AI — HTTP API and bounded security analysis.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node ../../scripts/copy-api-assets.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@drobon/shared": "^0.1.0"
+    "@drobon/shared": "^0.1.0",
+    "@lezer/java": "^1.1.5",
+    "@lezer/python": "^1.1.19",
+    "fontkit": "^2.0.4",
+    "parse5": "^7.3.0",
+    "pdfkit": "^0.20.2",
+    "php-parser": "^3.7.0",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
+    "@types/fontkit": "^2.0.9",
     "@types/node": "^22.0.0",
+    "@types/pdfkit": "^0.17.7",
     "tsx": "^4.0.0",
-    "typescript": "^5.4.0",
     "vitest": "^4.1.11"
   }
 }

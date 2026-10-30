@@ -134,7 +134,8 @@ describe('Pump 14 assistant API authorization and honest behavior', () => {
     const result = await data<{ state: string; mode: string; providerState: string; answer: string; facts: string[]; recommendations: string[]; evidence: Array<{ projectId: string; scanId?: string }> }>(remediation);
     expect(result.mode).toBe('DETERMINISTIC');
     expect(result.providerState).toBe('NONE');
-    expect(result.state).toBe('SUPPORTED');
+    // No dataset mounted in this suite: guidance is honestly UNAVAILABLE.
+    expect(result.state).toBe('PARTIALLY_SUPPORTED');
     expect(result.answer).toContain('guidance');
     expect(result.recommendations.length).toBeGreaterThan(0);
     expect(result.evidence.every((reference) => reference.projectId === projectId)).toBe(true);

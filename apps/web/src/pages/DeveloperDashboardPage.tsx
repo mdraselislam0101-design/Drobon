@@ -10,6 +10,7 @@ import { useApiClient } from '../api/context.js';
 import { useAuth } from '../auth/context.js';
 import { ErrorState } from '../components/ErrorState.js';
 import { LoadingState } from '../components/LoadingState.js';
+import { AstWorkflowGuide } from '../components/AstWorkflowGuide.js';
 
 type DashboardState =
   | { status: 'loading' }
@@ -95,6 +96,7 @@ export function DeveloperDashboardPage(): React.JSX.Element {
               ? 'Review server-configured project targets, bounded passive DAST observations, findings, retest state and reports. Targets and scans remain project-owned; this is not an unrestricted testing surface.'
               : 'An account-owned summary of persisted projects, scans, finding workflows and reports. It is activity history—not a claim that every security area is clear or assessed.'}
       </p>
+      <AstWorkflowGuide userType={authState.status === 'ready' ? authState.user.userType : null} />
       {dashboard.status === 'loading' && <LoadingState label="Loading your security overview…" />}
       {dashboard.status === 'error' && (
         <ErrorState

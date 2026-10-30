@@ -130,7 +130,9 @@ describe('SCA engine: the happy path (real dependency analysis)', () => {
     expect(summary.directDependencies).toBe(6);
     expect(summary.transitiveDependencies).toBe(1);
     expect(summary.unclassifiedDependencies).toBe(0);
-    expect(summary.transitiveGraph).toBe('AVAILABLE');
+    // Python declarations have no lockfile evidence, so the whole mixed
+    // inventory cannot claim a complete transitive graph.
+    expect(summary.transitiveGraph).toBe('UNAVAILABLE');
     expect(summary.manifestsAnalyzed).toBe(4);
     expect(summary.truncated).toBe(false);
 
@@ -169,7 +171,8 @@ describe('SCA engine: the happy path (real dependency analysis)', () => {
     expect(sbom.components).toHaveLength(7);
     expect(sbom.dependencies).toHaveLength(1); // only evidenced root→direct edges
     const rootEdge = sbom.dependencies[0];
-    expect(rootEdge?.dependsOn).toHaveLength(6); // every direct dep (incl. dev)
+    expect(rootEdge?.dependsOn).toHaveLength(3); // only this package.json's direct deps (incl. dev)
+    expect(sbom.components.find((component) => component.name === 'flask')?.version).toBe('2.3.2');
     const expressComponent = sbom.components.find((c) => c.name === 'express');
     expect(expressComponent).toMatchObject({
       version: '4.18.2',
@@ -382,7 +385,7 @@ describe('SCA engine: dataset honesty (the Pump 9 core guarantee)', () => {
         );
         expect(hit).toBeDefined();
         return {
-          datasetStatus: 'DATASET_UNAVAILABLE' as const,
+          datasetStatus: 'DATASET_AVAILABLE' as const,
           providerId: 'stub-intel',
           advisories:
             hit === undefined

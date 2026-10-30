@@ -58,7 +58,10 @@ import { createSecretsEngine } from './scans/secrets/engine.js';
 import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createFilesystemIntelligenceProvider } from './scans/sca/filesystemProvider.js';
 import { createDatasetService } from './external/service.js';
+import { createAdvisoryService, type AdvisoryService } from './external/advisory.js';
+import { createAdvisoryRoutes } from './routes/advisory.js';
 import { createDatasetRoutes } from './external/routes.js';
+import { createGuidanceLookup } from './external/guidance.js';
 import { createEngineRegistry, type ScanEngine, type ScanEngineRegistry } from './scans/engines.js';
 import { createScanProcessor, type ScanProcessor } from './scans/processor.js';
 import { createScanRoutes } from './routes/scans.js';
@@ -83,6 +86,8 @@ import type { DastTransport } from './scans/dast/http.js';
 import { createDastEngine } from './scans/dast/engine.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from './assessments/store.js';
 import { createAssessmentRoutes } from './routes/assessments.js';
+import { createSocRoutes } from './routes/soc.js';
+import { createAssessmentDastAuthorizer } from './scans/dast/authorization.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -148,6 +153,8 @@ export interface AppDeps {
   dastTargetPolicy?: DastTargetPolicy;
   /** Test-only network seam; production uses the bounded pinned Node HTTP transport. */
   dastTransport?: DastTransport;
+  /** Optional injected generic advisory service (Pump 15). Defaults to config.advisoryPath. */
+  advisory?: AdvisoryService;
   /**
    * Scan processor interval (Pump 7; default 5s, injectable for tests).
    */
@@ -324,14 +331,26 @@ export function createApp(deps: AppDeps): App {
       ? createFilesystemIntelligenceProvider({ datasetPath: config.datasetPath, logger })
       : createNullIntelligenceProvider();
   const datasetService = createDatasetService({ datasetPath: config.datasetPath, providerId: config.vulnIntelProvider, logger });
+  // Pump 15: generic, data-driven advisory engine. The pack is operator
+  // supplied at runtime (ADVISORY_PATH); no advisory bytes live in this repo.
+  const advisoryService = deps.advisory ?? createAdvisoryService({
+    ...(config.advisoryPath === undefined ? {} : { path: config.advisoryPath }),
+    logger,
+  });
+  // One shared, cached resolver so assistant / finding-detail / reports all
+  // surface the same dataset-backed guidance for a rule (or the same honest
+  // UNAVAILABLE fallback when no dataset is configured).
+  const guidance = createGuidanceLookup(datasetService);
   const scanEngines: ScanEngineRegistry = createEngineRegistry(
     deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore, dataset: datasetService }),
-      createScaEngine({ sources: sourceStore, provider: intelligenceProvider }),
+      createScaEngine({ sources: sourceStore, provider: intelligenceProvider, dataset: datasetService, advisory: advisoryService }),
       createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
       createDastEngine({
         targetPolicy: dastTargetPolicy,
+        authorize: createAssessmentDastAuthorizer(assessmentStore, clock),
         dataset: datasetService,
+        advisory: advisoryService,
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
       }),
     ],
@@ -364,7 +383,9 @@ export function createApp(deps: AppDeps): App {
     ...createWorkspaceRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createStudentRoutes({ config, projects: projectStore, scans: scanStore, student: studentStore, now: clock, dataset: datasetService }),
     ...createDatasetRoutes({ config, dataset: datasetService }),
+    ...createAdvisoryRoutes({ config, advisory: advisoryService }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
+    ...createSocRoutes({ projects: projectStore, scans: scanStore, dataset: datasetService, advisory: advisoryService, now: clock }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
     ...createScanRoutes({
       config,
@@ -378,8 +399,8 @@ export function createApp(deps: AppDeps): App {
       dastTargetPolicy,
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
-    ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock }),
-    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore }),
+    ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock, guidance }),
+    ...createAssistantRoutes({ config, projects: projectStore, scans: scanStore, guidance }),
     ...(deps.extraRoutes ?? []),
   ];
 

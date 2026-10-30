@@ -32,8 +32,10 @@ import { createSastEngine } from '../src/scans/sast/engine.js';
 import { createScaEngine } from '../src/scans/sca/engine.js';
 import { createSecretsEngine } from '../src/scans/secrets/engine.js';
 import { createDastEngine } from '../src/scans/dast/engine.js';
+import { createAssessmentDastAuthorizer } from '../src/scans/dast/authorization.js';
 import { createNullIntelligenceProvider } from '../src/scans/sca/provider.js';
 import { TEST_SAST_RULES, TEST_SECRETS_RULES, TEST_DAST_RULES } from './fixtures/testData.js';
+import type { AdvisoryService } from '../src/external/advisory.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
 import type { EntitlementStore } from '../src/entitlements/store.js';
@@ -84,6 +86,8 @@ export interface TestServer {
 
 export type TestServerOverrides = Partial<ApiConfig> & {
   extraRoutes?: Route[];
+  /** Inject a generic advisory service (Pump 15); defaults to NOT_CONFIGURED. */
+  advisory?: AdvisoryService;
   users?: UserRepository;
   sessions?: SessionStore;
   /** Use a real JSON file store at a temp path instead of memory. */
@@ -169,6 +173,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
   const logs: string[] = [];
   const {
     extraRoutes,
+    advisory,
     users,
     sessions,
     authStoreDir,
@@ -330,12 +335,14 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
   // let the app's dataset service provide DPK rules instead.
   const effectiveDastTargetPolicy = dastTargetPolicy ?? createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] });
   const effectiveDastTransport = dastTransport ?? FIXTURE_DAST_TRANSPORT;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   const hasRealDataset = (configOverrides as any).datasetPath !== undefined || overrides.vulnIntelProvider === 'filesystem';
   const effectiveScanEngines = scanEngines ?? (hasRealDataset ? undefined : [
     createSastEngine({ sources: resolvedSourceStore, rules: TEST_SAST_RULES }),
     createScaEngine({ sources: resolvedSourceStore, provider: createNullIntelligenceProvider() }),
     createSecretsEngine({ sources: resolvedSourceStore, rules: TEST_SECRETS_RULES }),
-    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, packRules: TEST_DAST_RULES as any }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, authorize: createAssessmentDastAuthorizer(resolvedAssessmentStore), packRules: TEST_DAST_RULES as any }),
   ]);
   const started: StartedServer = await startServer({
     config: configWithStore,
@@ -360,6 +367,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     // starts the processor itself.
     scanProcessorAutoStart: false,
     ...(extraRoutes === undefined ? {} : { extraRoutes }),
+    ...(advisory === undefined ? {} : { advisory }),
   });
   return {
     baseUrl: started.url,

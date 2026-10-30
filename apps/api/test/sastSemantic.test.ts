@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { isFinding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
-import { TEST_SAST_RULES } from './fixtures/testData.js';
+import { ALL_TEST_SAST_RULES } from './fixtures/testData.js';
 import {
   createSastEngine,
   type SourceSnapshotProvider,
@@ -14,7 +14,6 @@ import {
   MAX_FLOW_VARS,
   flowRulesForFamily,
 } from '../src/scans/sast/semantic.js';
-import { SAST_RULES } from '../src/scans/sast/rules.js';
 
 /**
  * Bounded semantic layer tests (deep-semantic pump).
@@ -69,16 +68,16 @@ describe('literal masking', () => {
 });
 
 describe('bounded flow analysis (unit)', () => {
-  const flowRules = flowRulesForFamily('javascript', SAST_RULES);
-  const pyFlowRules = flowRulesForFamily('python', SAST_RULES);
+  const flowRules = flowRulesForFamily('javascript', ALL_TEST_SAST_RULES);
+  const pyFlowRules = flowRulesForFamily('python', ALL_TEST_SAST_RULES);
 
-  test('flow rules are registered for the right families (fixtures have none — dataset provides them)', () => {
+  test('flow rules are registered for the right families (test-only flow fixtures)', () => {
     const jsIds = flowRules.map((r) => r.id).sort();
     expect(jsIds).toEqual(['DG-SAST-048', 'DG-SAST-049', 'DG-SAST-050']);
     const pyIds = pyFlowRules.map((r) => r.id).sort();
     expect(pyIds).toEqual(['DG-SAST-048', 'DG-SAST-049', 'DG-SAST-050']);
     // A config family has no flow rules at all.
-    expect(flowRulesForFamily('yaml', SAST_RULES)).toEqual([]);
+    expect(flowRulesForFamily('yaml', ALL_TEST_SAST_RULES)).toEqual([]);
   });
 
   test('positive: source → variable → sink across lines fires at the SINK line', () => {
@@ -254,7 +253,7 @@ function providerFor(record: SourceSnapshotRecord | undefined): SourceSnapshotPr
 const ctx = { signal: new AbortController().signal };
 
 async function scan(files: Array<{ path: string; content: string }>): Promise<ReturnType<ReturnType<typeof createSastEngine>['execute']>> {
-  const engine = createSastEngine({ rules: TEST_SAST_RULES, sources: providerFor(snapshot(files)) });
+  const engine = createSastEngine({ rules: ALL_TEST_SAST_RULES, sources: providerFor(snapshot(files)) });
   return engine.execute(scanRecord(), ctx);
 }
 
@@ -283,10 +282,10 @@ describe('engine × semantic integration', () => {
     expect(flow?.remediation.length).toBeGreaterThan(10);
   });
 
-  test('the sanitized twin produces NO finding (precision, not count)', async () => {
-    // Same sink shape as the vulnerable case, but the value passes
-    // through a listed sanitizer — neither the flow rule nor a line
-    // rule fires (argument-vector form, no concat).
+  test('URL encoding does not suppress cross-context AST review of a process call', async () => {
+    // The earlier lexical flow pass may suppress URL-encoded input, but URL
+    // encoding is not a general-purpose shell or process sanitizer. The
+    // bounded AST pass reports a review candidate, not confirmed injection.
     const outcome = await scan([
       {
         path: 'srv/safe.js',
@@ -299,7 +298,8 @@ describe('engine × semantic integration', () => {
     ]);
     expect(outcome.kind).toBe('completed');
     if (outcome.kind !== 'completed') return;
-    expect(outcome.findings ?? []).toHaveLength(0);
+    expect(outcome.resultSummary.astFlowsFound).toBeGreaterThan(0);
+    expect((outcome.findings ?? []).length).toBeGreaterThan(0);
   });
 
   test('the vulnerable twin (same shape, no sanitizer) DOES produce the flow finding', async () => {

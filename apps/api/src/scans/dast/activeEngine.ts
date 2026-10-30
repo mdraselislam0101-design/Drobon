@@ -5,6 +5,7 @@ import {
   type ScanFailureCode,
   type ScanResultSummary,
 } from '@drobon/shared';
+import { INSPECTED_RESPONSE_HEADERS } from './observedHeaders.js';
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
@@ -14,6 +15,8 @@ import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type Re
 import { findingFingerprint } from '../findingIdentity.js';
 import { extractCrawlCandidates, injectionPointsFromUrls, buildInjectedUrl } from './crawler.js';
 import { payloadsForBudget, type ActivePayload } from './payloads.js';
+import { isDastRequestAuthorized, type DastRequestAuthorizer } from './authorization.js';
+import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } from './ast.js';
 
 /**
  * Active DAST engine — safe, bounded, opt-in complement to passive DAST.
@@ -50,8 +53,11 @@ export interface ActiveDastEngineOptions {
   maxRedirects?: number;
   maxResponseBytes?: number;
   throttleMs?: number;
-  packRules?: readonly { id: string; title: string; description: string; severity: FindingSeverity; cwe?: string; remediation: string; check: any }[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+  packRules?: readonly { id: string; title: string; description: string; severity: FindingSeverity; category?: string; cwe?: string; remediation: string; check: any }[];
   dataset?: DatasetService;
+  /** Revalidate assessment-linked authorization before each request. */
+  authorize?: DastRequestAuthorizer;
 }
 
 function statusCounts(findings: readonly Finding[]): Record<FindingSeverity, number> {
@@ -70,15 +76,11 @@ function responseHeader(response: DastProbeResponse, name: string): string | und
   return typeof v === 'string' ? v : undefined;
 }
 
-const INSPECTED_HEADERS = new Set([
-  'content-type', 'strict-transport-security', 'x-content-type-options', 'x-frame-options',
-  'content-security-policy', 'access-control-allow-origin', 'access-control-allow-credentials',
-  'server', 'x-powered-by', 'set-cookie', 'location',
-]);
+
 
 function boundedHeaders(headers: DastProbeResponse['headers']): DastProbeResponse['headers'] {
   const b: DastProbeResponse['headers'] = {};
-  for (const n of INSPECTED_HEADERS) {
+  for (const n of INSPECTED_RESPONSE_HEADERS) {
     const v = headers[n];
     if (typeof v === 'string') b[n] = v.slice(0, 2048);
     else if (Array.isArray(v)) b[n] = v.slice(0, 5).map((e) => e.slice(0, 2048));
@@ -92,8 +94,10 @@ function boundProbeResponse(resp: DastProbeResponse, maxBytes: number): DastProb
       typeof resp.bodyTruncated !== 'boolean' || typeof resp.headers !== 'object' || resp.headers === null) return undefined;
   const bytes = Buffer.from(resp.body, 'utf8');
   const clipped = bytes.length > maxBytes;
-  const body = clipped ? bytes.subarray(0, maxBytes).toString('utf8') : resp.body;
-  return { status: resp.status, headers: boundedHeaders(resp.headers), body, bodyTruncated: resp.bodyTruncated || clipped, elapsedMs: Math.min(30_000, Math.trunc(resp.elapsedMs)) };
+  let body = clipped ? bytes.subarray(0, maxBytes).toString('utf8') : resp.body;
+  while (body.length > 0 && Buffer.byteLength(body, 'utf8') > Math.max(0, maxBytes)) body = body.slice(0, -1);
+  // Findings and their observation must use the same contract-bounded time.
+  return { status: resp.status, headers: boundedHeaders(resp.headers), body, bodyTruncated: resp.bodyTruncated || clipped, elapsedMs: Math.min(15_000, Math.trunc(resp.elapsedMs)) };
 }
 
 function safeContentType(resp: DastProbeResponse): string | undefined {
@@ -153,12 +157,19 @@ function activeReflectionFinding(_record: ScanRecord, _targetUrl: string, endpoi
   }
   if (!reflected) return undefined;
   const severity: FindingSeverity = payload.category === 'xss-reflected' ? 'MEDIUM' : payload.category === 'sqli-error' ? 'HIGH' : 'LOW';
+  // Active markers are built-in probe observations, not dataset rule IDs.
+  // Numeric DG identifiers satisfy the persisted Finding contract.
+  const ruleIdByCategory: Record<ActivePayload['category'], string> = {
+    'xss-reflected': 'DG-DAST-990001', 'sqli-error': 'DG-DAST-990002',
+    'open-redirect': 'DG-DAST-990003', 'path-traversal': 'DG-DAST-990004',
+    'crlf-injection': 'DG-DAST-990005',
+  };
   return {
-    ruleId: `DPK-DAST-${payload.id.replace('ACT-','')}`, // e.g. DPK-DAST-XSS-01, maps to shared FINDING_RULE_ID_PATTERN
+    ruleId: ruleIdByCategory[payload.category],
     severity,
     title: `Active probe: ${payload.description}`,
-    description: `A safe active probe (${payload.value.slice(0,24)}…) was reflected in the response from ${endpoint.slice(0,80)}. This is an observation of reflection, not confirmed exploitability — verify manually.`,
-    evidence: `Payload ${payload.id} (${payload.category}) reflected at ${endpoint.slice(0,100)} — verify manually; safe probe only.`,
+    description: `A bounded active probe produced a matching response observation from ${endpoint.slice(0,80)}. This is not confirmed exploitability — verify manually.`,
+    evidence: `Payload ${payload.id} (${payload.category}) matched a response at ${endpoint.slice(0,100)} — verify manually.`,
     remediation: 'Validate and encode user input before reflection; apply output encoding and parameterized queries.',
     ...(payload.category === 'xss-reflected' ? { cwe: 'CWE-79' } : payload.category === 'sqli-error' ? { cwe: 'CWE-89' } : payload.category === 'open-redirect' ? { cwe: 'CWE-601' } : {}),
     observedHeaders: [],
@@ -206,16 +217,48 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       let redirectsFollowed = 0;
       let partialReason: string | undefined;
       let baselineBody = '';
+      let authorizationRefused = false;
+      let astObservation: DastAstObservation | undefined;
+      let probingBaseline = true;
+      // The same response rules apply to every bounded probe in this scan.
+      let allPackRules = options.packRules ?? [];
+      if (options.dataset?.configured) {
+        try {
+          const { getMergedDastRules } = await import('../../external/packIntegration.js');
+          const loaded = await getMergedDastRules(options.dataset);
+          if (loaded.length > 0) allPackRules = loaded;
+        } catch { /* optional pack unavailable; coverage is marked below */ }
+      }
+      const astRules: readonly DastAstRule[] = allPackRules;
+      const markMissingRules = (): void => {
+        if (allPackRules.length === 0) {
+          partialReason = `${partialReason === undefined ? '' : `${partialReason} `}No DAST response rules were available.`.slice(0, 200);
+        }
+      };
+      const applyAst = async () => {
+        const ast = await analyzeDastResponseAst({ record, ...(astObservation === undefined ? {} : { observation: astObservation }),
+          rules: astRules, signal: context.signal, remainingMs: deadline - now(), availableFindings: MAX_FINDINGS_PER_SCAN - findings.length });
+        findings.push(...ast.findings);
+        if (ast.summary.status === 'PARTIAL' && partialReason === undefined) partialReason = 'Response script AST analysis was incomplete; see AST coverage.';
+        return ast.summary;
+      };
 
       // Helper to probe one URL (with re-resolve, throttle, bounded response, passive+active checks)
       const probeOne = async (url: string, payload?: ActivePayload): Promise<{ response: DastProbeResponse; bounded: DastProbeResponse; endpoint: string } | undefined> => {
         if (context.signal.aborted || now() >= deadline) return undefined;
+        if (!(await isDastRequestAuthorized(record, url, options.authorize))) {
+          authorizationRefused = true;
+          partialReason = 'A request was skipped because the linked assessment scope or authorization no longer permits it.';
+          return undefined;
+        }
         if (visited.has(url)) { partialReason = 'A redirect loop was detected; the repeated URL was not requested again.'; return undefined; }
         visited.add(url);
         let resolved: ResolvedDastTarget;
         try { resolved = await policy.resolveNormalized(url); } catch {
           if (observations.length === 0) return undefined;
-          partialReason = 'A redirect destination did not pass target safety checks and was not followed.';
+          partialReason = url.includes('?')
+            ? 'Query-bearing crawl URLs are not supported by the current target safety policy and were not requested.'
+            : 'A crawl or probe destination did not pass target safety checks and was not requested.';
           return undefined;
         }
         // Throttle between requests (except first).
@@ -226,21 +269,35 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         }
         const remainingMs = deadline - now();
         if (remainingMs <= 0) return undefined;
+        // Recheck after DNS and throttling, immediately before transport.
+        if (!(await isDastRequestAuthorized(record, url, options.authorize))) {
+          authorizationRefused = true;
+          partialReason = 'A request was skipped because the linked assessment scope or authorization no longer permits it.';
+          return undefined;
+        }
         let resp: DastProbeResponse;
         try {
           resp = await transport.probe(resolved, { timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)), maxResponseBytes, signal: context.signal });
         } catch (error) {
           if (error instanceof DastHttpError && error.kind === 'timeout') throw new Error('timeout');
           if (context.signal.aborted || (error instanceof DastHttpError && error.kind === 'aborted')) throw new Error('aborted');
+          if (observations.length > 0) partialReason ??= 'A permitted active request failed; its response was not assessed.';
           return undefined;
         }
         const bounded = boundProbeResponse(resp, maxResponseBytes);
-        if (bounded === undefined) return undefined;
+        if (bounded === undefined) {
+          if (observations.length > 0) partialReason ??= 'An active response was unusable and was not assessed.';
+          return undefined;
+        }
         resp = bounded;
         const observedAt = new Date(now()).toISOString();
         const ct = safeContentType(resp);
         const endpoint = resolved.url;
         const headerSummary = safeHeaderSummaries(resp);
+        if (probingBaseline && astObservation === undefined && !isRedirect(resp.status)) {
+          astObservation = { endpoint, content: resp.body, ...(ct === undefined ? {} : { contentType: ct }),
+            bodyTruncated: resp.bodyTruncated, responseStatus: resp.status, responseTimeMs: resp.elapsedMs, observedAt };
+        }
         observations.push({ endpoint, method: 'GET', status: resp.status, observedAt, responseTimeMs: resp.elapsedMs, bodyBytes: Buffer.byteLength(resp.body, 'utf8'), bodyTruncated: resp.bodyTruncated, ...(ct === undefined ? {} : { contentType: ct }), headers: headerSummary });
         // Passive checks on every response (same as passive engine)
         const passiveMatches = evaluateDastObservation({ url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, ...(ct === undefined ? {} : { contentType: ct }) });
@@ -251,16 +308,14 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           if (activeMatch) findings.push(buildFinding(record, configuredUrl, endpoint, resp, activeMatch, observedAt));
         }
         // Dataset packs
-        let allPackRules: typeof options.packRules = options.packRules as any;
-        if (options.dataset?.configured) {
-          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length>0) allPackRules = ds as any; } catch {}
-        }
-        if (allPackRules && allPackRules.length>0) {
+        if (allPackRules.length > 0) {
           const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
           for (const packRule of allPackRules) {
             let matched=false;
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch {}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch { /* fail closed: optional path */ }
             if (matched) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const pm = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
               findings.push(buildFinding(record, configuredUrl, endpoint, resp, pm, observedAt));
               if (findings.length > MAX_FINDINGS_PER_SCAN) break;
@@ -287,7 +342,9 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         }
         const loc = responseHeader(baselineResult!.bounded, 'location');
         if (!isRedirect(baselineResult!.bounded.status) || loc === undefined) break;
-        if (redirectsFollowed >= maxRedirects || observations.length >= maxRequests) { partialReason = 'The redirect/request limit was reached; no additional request was made.'; break; }
+        // Active mode has a one-request baseline budget. Do not claim a
+        // redirect was followed when the loop will not actually request it.
+        if (isActive || redirectsFollowed >= maxRedirects || observations.length >= maxRequests) { partialReason = 'The redirect/request limit was reached; no additional request was made.'; break; }
         try {
           const next = await policy.resolveRedirect(current, loc, originalHostname);
           if (visited.has(next.url)) { partialReason = 'A redirect loop was detected; the repeated URL was not requested again.'; break; }
@@ -296,12 +353,22 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         redirectsFollowed += 1;
       }
 
+      probingBaseline = false;
+      if (observations.length === 0) {
+        return authorizationRefused
+          ? failed('DAST_TARGET_BLOCKED', 'The linked assessment does not authorize this DAST request.')
+          : failed('DAST_REQUEST_FAILED', 'The DAST target did not return a usable HTTP response.');
+      }
       if (!isActive) {
         // Passive mode: done after baseline (matches existing engine behavior but we already handled it)
+        const astSupplement = await applyAst();
+        if (context.signal.aborted || now() >= deadline) return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan exceeded its execution deadline.');
+        markMissingRules();
         const truncated = findings.length > MAX_FINDINGS_PER_SCAN;
+        if (truncated) partialReason = `${partialReason === undefined ? '' : `${partialReason} `}Finding details reached the configured cap.`.slice(0, 200);
         const bounded = findings.slice(0, MAX_FINDINGS_PER_SCAN);
         const partial = partialReason !== undefined;
-        const result: ScanResultSummary = { findingsTotal: bounded.length, findingsBySeverity: statusCounts(bounded), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
+        const result: ScanResultSummary = { astSupplement, findingsTotal: bounded.length, findingsBySeverity: statusCounts(bounded), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
         return { kind: 'completed', resultSummary: result, findings: bounded, dast: { targetUrl: configuredUrl, requestCount: observations.length, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
       }
 
@@ -332,8 +399,15 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           if (observations.length >= maxRequests) break;
           const injected = buildInjectedUrl(point, payload.value);
           if (!injected) continue;
-          // Validate injected URL still passes policy before probing
-          try { await policy.resolveNormalized(injected); } catch { continue; }
+          // Validate injected URL still passes policy before probing. In particular,
+          // query-bearing URLs are forbidden by the existing target policy; do
+          // not silently imply they were inspected or weaken the SSRF boundary.
+          try { await policy.resolveNormalized(injected); } catch {
+            partialReason ??= point.param === '__path__'
+              ? 'Some active probe URLs did not pass target safety checks and were not requested.'
+              : 'Query-parameter probes are not supported by the current target safety policy and were not requested.';
+            continue;
+          }
           try { await probeOne(injected, payload); } catch (e) {
             if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
             if ((e as Error).message === 'aborted') return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it completed.');
@@ -342,11 +416,15 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         }
       }
 
+      const astSupplement = await applyAst();
+      if (context.signal.aborted || now() >= deadline) return timedOut('DAST_SCAN_TIMEOUT', 'The active DAST scan exceeded its execution deadline.');
+      markMissingRules();
       const truncated = findings.length > MAX_FINDINGS_PER_SCAN;
+      if (truncated) partialReason = `${partialReason === undefined ? '' : `${partialReason} `}Finding details reached the configured cap.`.slice(0, 200);
       const boundedFindings = findings.slice(0, MAX_FINDINGS_PER_SCAN);
       const partial = partialReason !== undefined;
-      const result: ScanResultSummary = { findingsTotal: boundedFindings.length, findingsBySeverity: statusCounts(boundedFindings), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
-      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: { targetUrl: configuredUrl, requestCount: observations.length, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
+      const result: ScanResultSummary = { astSupplement, findingsTotal: boundedFindings.length, findingsBySeverity: statusCounts(boundedFindings), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
+      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: { targetUrl: configuredUrl, mode: 'ACTIVE_SAFE', requestCount: observations.length, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
     },
   };
 }

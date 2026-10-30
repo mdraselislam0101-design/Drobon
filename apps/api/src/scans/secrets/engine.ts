@@ -12,6 +12,7 @@ import type { SourceSnapshotRecord } from '../sources.js';
 import { matchSecretsRuleLine, SECRETS_RULES, type SecretsRule } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
 import { findingFingerprint } from '../findingIdentity.js';
+import { addSecretAstContext } from '../supplementAst.js';
 
 /**
  * THE REAL SECRETS ENGINE (Pump 10).
@@ -180,6 +181,7 @@ function evidenceFromLine(
   rule: SecretsRule,
   rawLine: string,
   match: { column: number; text: string },
+  activeRules: readonly SecretsRule[],
 ): string {
   if (rule.matchOnlyEvidence === true) {
     // Safe by contract: the match text carries no secret material.
@@ -206,7 +208,7 @@ function evidenceFromLine(
   // span ANY rule resolved on this line, so the evidence cannot leak
   // the neighbours either.
   const spans: Array<{ start: number; end: number }> = [{ start: absStart, end: absEnd }];
-  for (const other of SECRETS_RULES) {
+  for (const other of activeRules) {
     if (other.matchOnlyEvidence === true) {
       continue; // Header-only rules match safe text, never material.
     }
@@ -264,7 +266,7 @@ function evidenceFromLine(
   // catches a second, DIFFERENT value of the same rule on one line
   // (its matcher returns the first match only, so the neighbour was
   // not blanked above) — the whole evidence fails closed.
-  for (const other of SECRETS_RULES) {
+  for (const other of activeRules) {
     if (other.matchOnlyEvidence === true) {
       continue;
     }
@@ -366,7 +368,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
       let effectiveRules: readonly SecretsRule[] = options.rules ?? SECRETS_RULES;
       if (options.dataset?.configured) {
-        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch {}
+        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch { /* fail closed: optional path */ }
       }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
@@ -413,6 +415,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
       const findings: Finding[] = [];
       const findingsBySeverity = emptySeverityCounts();
       let truncated = false;
+      let filesScanned = 0;
       // Duplicate control: one finding per (rule, file, line) — the
       // same material matched twice on a line collapses; DIFFERENT
       // rules on the same line stay distinct (their ids differ).
@@ -427,6 +430,8 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
             failureMessage: 'The secrets engine exceeded its processing deadline.',
           };
         }
+        // A file with no rules is not a successfully inspected file.
+        if (effectiveRules.length > 0) filesScanned += 1;
         // CRLF/TAB-safe: strip CRs and expand tabs BEFORE matching, so
         // match columns and the evidence's normalized line share one
         // coordinate system (a tab shift would mis-place the redaction
@@ -454,7 +459,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
               continue;
             }
             seenRuleLine.add(dedupeKey);
-            const evidence = evidenceFromLine(rule, line, match);
+            const evidence = evidenceFromLine(rule, line, match, effectiveRules);
             const fingerprint = findingFingerprint({
               scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
               location: file.path, line: index + 1, evidence,
@@ -489,6 +494,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
       // PARTIAL honesty (§ report integrity): the summary must never
       // read as "0 secrets" when content went uninspected.
       const partialReasons: string[] = [];
+      if (effectiveRules.length === 0) partialReasons.push('No secrets rules were available');
       if (discovery.oversize > 0) {
         partialReasons.push(
           `${discovery.oversize} file(s) exceeded the per-file size limit and were not inspected`,
@@ -499,13 +505,20 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
       }
       const partial = partialReasons.length > 0;
 
+      // Context enrichment only applies to files actually reached by the
+      // secrets matcher; do not parse later files after a finding cap.
+      const astSupplement = await addSecretAstContext(discovery.files.slice(0, filesScanned), findings, effectiveRules, ctx.signal, () => deadline - now());
+      if (ctx.signal.aborted || now() >= deadline) {
+        return { kind: 'failed', failureCode: 'SECRETS_SCAN_TIMEOUT', failureMessage: 'The secrets engine exceeded its processing deadline.' };
+      }
       const resultSummary: ScanResultSummary = {
+        astSupplement,
         findingsTotal: findings.length,
         findingsBySeverity,
-        filesScanned: discovery.files.length,
-        filesSkipped: discovery.skipped,
+        filesScanned,
+        filesSkipped: discovery.skipped + discovery.oversize + (discovery.files.length - filesScanned),
         truncated,
-        ...(partial ? { partial: true, partialReason: `${partialReasons.join('; ')}.` } : {}),
+        ...(partial ? { partial: true, partialReason: `${partialReasons.join('; ')}.`.slice(0, 200) } : {}),
       };
       return {
         kind: 'completed',

@@ -1,10 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
-  characterClasses,
   matchSecretsRuleLine,
   SECRETS_RULES,
   secretsRuleById,
-  shannonEntropy,
 } from '../src/scans/secrets/rules.js';
 import { TEST_SECRETS_RULES } from './fixtures/testData.js';
 
@@ -28,11 +26,13 @@ function fires(ruleId: string, line: string): boolean {
   // Try main app rules first (0 embedded), then test fixtures (paid-tool parity: test data in test/)
   let rule = secretsRuleById(ruleId);
   if (rule === undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     rule = TEST_SECRETS_RULES.find((r) => r.id === ruleId) as any;
   }
   if (rule === undefined) {
     throw new Error(`unknown rule ${ruleId}`);
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   return matchSecretsRuleLine(rule as any, line) !== undefined;
 }
 
@@ -41,20 +41,25 @@ describe('secrets rules: registry integrity', () => {
     expect(SECRETS_RULES.length).toBe(0);
     expect(secretsRuleById('DG-SEC-001')).toBeUndefined();
     // Test fixtures provide the legacy DG-SEC rules for unit testing
-    expect(TEST_SECRETS_RULES.map((r) => r.id).sort()).toEqual(['DG-SEC-001', 'DG-SEC-002'].sort());
+    expect(TEST_SECRETS_RULES.map((r) => r.id).sort()).toEqual(
+      ['DG-SEC-001', 'DG-SEC-002', 'DG-SEC-003', 'DG-SEC-004', 'DG-SEC-005', 'DG-SEC-006'].sort(),
+    );
     for (const rule of TEST_SECRETS_RULES) {
       expect(rule.title.length).toBeGreaterThan(0);
       expect(rule.description.length).toBeGreaterThan(0);
       expect(rule.remediation.length).toBeGreaterThan(0);
       expect(rule.limitation.length).toBeGreaterThan(0);
       expect(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).toContain(rule.severity);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       expect(['LOW', 'MEDIUM', 'HIGH']).toContain((rule as any).confidence);
       expect(rule.category.length).toBeGreaterThan(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       expect((rule as any).matchOnlyEvidence === true || (rule as any).valueSpan !== undefined).toBe(true);
     }
   });
 
   test('patterns are linear-time-safe: no g/y flags, no nested quantifiers', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     for (const rule of [...SECRETS_RULES, ...TEST_SECRETS_RULES] as any[]) {
       for (const pattern of rule.patterns) {
         expect(pattern.global).toBe(false);
@@ -66,6 +71,7 @@ describe('secrets rules: registry integrity', () => {
   });
 
   test('no rule text ever claims verification or liveness', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     for (const rule of [...SECRETS_RULES, ...TEST_SECRETS_RULES] as any[]) {
       const text = `${rule.title}\n${rule.description}\n${rule.remediation}`;
       expect(text).not.toMatch(/\b(valid credential|active credential|compromised|has been revoked|is live|verified live)\b/i);
@@ -83,6 +89,7 @@ describe('secrets rules: registry integrity', () => {
     ];
     const start = Date.now();
     for (const line of pathological) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       for (const rule of [...SECRETS_RULES, ...TEST_SECRETS_RULES] as any[]) {
         matchSecretsRuleLine(rule, line);
       }
@@ -110,6 +117,7 @@ describe('DG-SEC-001: private key blocks', () => {
   });
 
   test('the evidence is EXACTLY the header — an inlined body cannot leak', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     const rule = (secretsRuleById('DG-SEC-001') ?? TEST_SECRETS_RULES.find((r) => r.id === 'DG-SEC-001')) as any;
     const hostile = `${PEM_PRIVATE_HEADER}${SYNTH.keyBody}`;
     const match = matchSecretsRuleLine(rule!, hostile);
@@ -160,6 +168,7 @@ describe('cross-rule honesty', () => {
       '# just a comment about tokens in documentation',
     ];
     for (const line of ordinary) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       for (const rule of [...SECRETS_RULES, ...TEST_SECRETS_RULES] as any[]) {
         expect(matchSecretsRuleLine(rule, line), `${rule.id} on: ${line}`).toBeUndefined();
       }
@@ -169,6 +178,7 @@ describe('cross-rule honesty', () => {
   test('the same line can legitimately match multiple rules (fixtures)', () => {
     // With only 2 fixtures, this test verifies fixture isolation, not 005/006
     const line = `aws_key = "${SYNTH.awsKey}" and more ${SYNTH.githubToken}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     const matched = (TEST_SECRETS_RULES as any[]).filter((rule) => matchSecretsRuleLine(rule, line) !== undefined);
     // Both fixtures should fire on a line containing both keys (different patterns, distinct ids)
     expect(matched.length).toBeGreaterThanOrEqual(1);

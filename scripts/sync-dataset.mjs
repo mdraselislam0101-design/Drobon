@@ -65,7 +65,6 @@ function main() {
     const files = run('find', [vulnIntel, '-name', '*.json', '-type', 'f']);
     const count = files.trim().split('\n').filter(Boolean).length;
     console.log(`[sync-dataset] PASS: ${count} advisory files under vuln-intel/`);
-    const npmSamples = join(datasetPath, 'vuln-intel', 'npm');
     console.log(`[sync-dataset] Ready for VULN_INTEL_PROVIDER=filesystem DATASET_PATH=${datasetPath}`);
     return;
   }

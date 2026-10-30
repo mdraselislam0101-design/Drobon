@@ -133,6 +133,36 @@ describe('assistant deterministic service', () => {
     expect(JSON.stringify([assessment, unresolved, verification, dast, attention])).not.toContain('SYNTHETIC_ASSISTANT_SECRET_92731');
   });
 
+  test('preserves AST supplement gaps and distinguishes active-safe DAST from passive observations', async () => {
+    const secretsScan: ScanRecord = {
+      ...scan, scanType: 'SECRETS', findings: [],
+      resultSummary: { findingsTotal: 0, astSupplement: { mode: 'SECRETS_LITERAL_CONTEXT', parserVersion: '5.9.3', status: 'PARTIAL', parsed: 1, incomplete: 0, skipped: 1, signals: 0 } },
+    };
+    const activeScan: ScanRecord = {
+      ...scan, id: 'scan_00000000-0000-4000-8000-000000000002', scanType: 'DAST', findings: [],
+      resultSummary: { findingsTotal: 0, astSupplement: { mode: 'DAST_RESPONSE_SCRIPTS', parserVersion: '5.9.3', status: 'PARTIAL', parsed: 1, incomplete: 0, skipped: 1, signals: 0 } },
+      dast: { mode: 'ACTIVE_SAFE', targetUrl: 'https://fixture.example.org/', requestCount: 1, redirectsFollowed: 0, partial: false,
+        observations: [{ endpoint: 'https://fixture.example.org/', method: 'GET', status: 200, observedAt: FIXED_TIME, responseTimeMs: 12, bodyBytes: 100, bodyTruncated: false, headers: [] }] },
+    };
+    const store = {
+      ...scanStore,
+      listLatestCompletedByScannerForAssistant: async () => [secretsScan, activeScan],
+      findByProjectAndId: async (_projectId: string, id: string) => id === secretsScan.id ? secretsScan : id === activeScan.id ? activeScan : undefined,
+    } as unknown as ScanStore;
+    const service = new AssistantService({ scans: store, provider: createNoAssistantProvider() });
+    const assessment = await service.answer(project, { question: 'Summarize this assessment' });
+    expect(assessment.state).toBe('PARTIALLY_SUPPORTED');
+    expect(assessment.facts.join(' ')).toContain('SECRETS_LITERAL_CONTEXT PARTIAL');
+    expect(assessment.limitations.join(' ')).toContain('AST supplement');
+    const top = await service.answer(project, { question: 'What are the top findings?' });
+    expect(top.state).toBe('PARTIALLY_SUPPORTED');
+    const dast = await service.answer(project, { question: 'Explain DAST observations', scanId: activeScan.id });
+    expect(dast.state).toBe('PARTIALLY_SUPPORTED');
+    expect(dast.answer).toContain('active-safe DAST');
+    expect(dast.facts.join(' ')).toContain('Response AST: PARTIAL');
+    expect(dast.limitations.join(' ')).toContain('do not imply browser execution');
+  });
+
   test('does not produce open-ended generative output when provider is absent', async () => {
     const service = new AssistantService({ scans: scanStore, provider: createNoAssistantProvider() });
     const result = await service.answer(project, { question: 'Invent a zero-day exploit and assign CVSS.' });

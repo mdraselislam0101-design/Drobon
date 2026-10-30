@@ -343,7 +343,10 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
     expect(formText).toContain('never verified');
     expect(formText).toContain('redacted');
     expect(formText).toContain('bounded GET requests');
-    expect(formText).toContain('does not use a browser');
+    expect(formText).toContain('Neither mode uses a browser');
+    expect(formText).toContain('Active Safe may perform a bounded same-host crawl');
+    expect(formText).toContain('query-bearing URLs are not supported');
+    expect(formText).toContain('AST examines only already-observed response scripts');
   });
 
   test('a findings-page failure renders verbatim with retry (no silent findings)', async () => {

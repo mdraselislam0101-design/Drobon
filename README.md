@@ -14,14 +14,20 @@ state (ACTIVE/INACTIVE/CANCELLED/EXPIRED) on the existing account
 store, a single server-authoritative entitlement decision point, a
 read-only self-only `GET /api/v1/subscription`, and plan/entitlement
 views on the Account page. Role and UserType never grant PRO.
-Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 added Student-first routing and progress/history over the shared overview. Pump 19 added Security Professional-first routing and a bounded assessment dashboard over the same overview and shared engines. Pump 20 added Pentester-first routing and server-derived configured-target indicators. Pump 22 adds owner/project-bound assessment scope, objectives, lifecycle, timestamped user declarations, and links to existing scan/finding/remediation/report workflows. A timestamped target statement may be `USER_DECLARED`, but is never independent proof; third-party permission remains unverified. `UserType` remains classification only; role, server entitlement, ownership, quota, rate limits and DAST safety remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools; Pump 11 DAST is strictly passive HTTP, not a browser or full DAST crawler.
+Pump 17 added a Developer classification selector, Developer-first login routing and a bounded self-scoped overview. Pump 18 added Student-first routing and progress/history over the shared overview. Pump 19 added Security Professional-first routing and a bounded assessment dashboard over the same overview and shared engines. Pump 20 added Pentester-first routing and server-derived configured-target indicators. Pump 22 adds owner/project-bound assessment scope, objectives, lifecycle, timestamped user declarations, and links to existing scan/finding/remediation/report workflows. A timestamped target statement may be `USER_DECLARED`, but is never independent proof; third-party permission remains unverified. `UserType` remains classification only; role, server entitlement, ownership, quota, rate limits and DAST safety remain authoritative. There is still **no database phase, online payment gateway, automated payment verification, account enabled/disabled model, or bundled security dataset**. Pump 15 provides manual reference submission and allowlisted admin review; Pump 16 platform operations remain gated by a server-configured administrator ID list plus the live `ADMIN` role. Existing scanners are bounded analysis tools. DAST defaults to passive HTTP; the repository also contains consent-gated active-safe code whose product boundary is unresolved. Neither mode is a browser or full DAST crawler.
+
+## Current scan and reporting scope
+
+SAST, SCA, Secrets and bounded DAST remain the four scan types. A project operations overview derives alerts from saved scans; it is not a live SOC/SIEM. New single-scan reports include a coverage ledger, unknown residual risk and no compliance certification. A zero-finding scan is not proof of safety. Rule/advisory sources may be unconfigured or stale, and third-party authorization must be obtained independently. See [`docs/SECURITY_OPERATIONS_COVERAGE.md`](docs/SECURITY_OPERATIONS_COVERAGE.md).
+
+SAST uses bounded syntax parsers for JS/TS/JSX/TSX, Python, PHP and Java, plus a limited JS/TS cross-file flow pass. DAST can statically inspect already-observed response scripts without extra requests or execution; Secrets adds literal context to redacted matches; SCA counts package.json syntax entries. Reports and saved-scan SOC/SAC surfaces disclose partial AST coverage and limitations. User type changes guidance, not permissions. None proves complete detection; see [`docs/AST_ANALYSIS.md`](docs/AST_ANALYSIS.md).
 
 ## Layout
 
 ```
 Drobon/
 ├── apps/
-│   ├── api/          # HTTP API (zero runtime dependencies) + auth layer
+│   ├── api/          # HTTP API, bounded analysis + auth layer
 │   ├── web/          # React + Vite web application (auth UI + guards)
 │   └── worker/       # Background worker (in-memory execution)
 ├── packages/
@@ -140,10 +146,11 @@ scan experience lives inside each project. See `docs/SCANS.md`.
 **PLUS Pump 8 (Real SAST engine)**: the first REAL scanner — static
 analysis of an uploaded source snapshot (project-scoped, path-policy
 validated, 200 files / 256 KiB / 768 KiB caps, key material rejected).
-Six deterministic rules (command injection, SQL injection, raw-HTML
-sinks, eval, hardcoded credentials, weak hashes) produce genuine
-findings: stable rule ids, fixed severities, CWE mappings, bounded
-redacted evidence and remediation. Analysis only — source files are
+Historical test fixtures included six deterministic rules (command injection,
+SQL injection, raw-HTML sinks, eval, hardcoded credentials, weak hashes).
+Production SAST rules are loaded from the configured external dataset and may
+be unavailable; AST flow findings use category reporters rather than proving
+an exact rule-pattern match. Analysis only — source files are
 NEVER executed; every dimension is capped (files, bytes, findings,
 10 s deadline) with fail-closed codes. Findings persist atomically
 with COMPLETED, are readable only via the scan detail route, and

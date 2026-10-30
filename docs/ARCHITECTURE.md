@@ -101,10 +101,13 @@ browser bundle and the servers can all consume it:
 
 Consumers import the **built** package (`dist/`), never `src/`.
 
-### `@drobon/api` — HTTP API (`apps/api`, zero runtime dependencies)
+### `@drobon/api` — HTTP API (`apps/api`)
 
-Plain Node `http` server with an explicit middleware pipeline (no framework,
-minimal attack surface):
+Plain Node `http` server with an explicit middleware pipeline (no web framework).
+The bounded JS/TS syntax analysis uses `typescript` as an API runtime dependency;
+target source is never executed. See [`AST_ANALYSIS.md`](AST_ANALYSIS.md).
+
+The middleware pipeline is:
 
 ```
 request → requestId → securityHeaders → cors → rateLimit(global)

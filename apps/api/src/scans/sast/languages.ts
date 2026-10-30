@@ -10,10 +10,10 @@ import type { FindingSeverity } from '@drobon/shared';
  * - DETECTION for 53 language/configuration families (extension,
  *   exact filename, shebang, and two documented content tie-breaks), so
  *   polyglot repositories are analyzed as one snapshot;
- * - HONEST MATURITY per family. The engine is lexical/pattern analysis
- *   (analysis depth LEVEL 1–2): it has NO parser, NO AST, NO dataflow
- *   and NO cross-file analysis, therefore NO family is ever labelled
- *   FULL. Maturity is an audit statement, never marketing:
+ * - HONEST MATURITY per family. Lexical matching is supplemented by a
+ *   bounded shallow flow, several limited syntax parsers, and a bounded JS/TS project pass. None
+ *   supplies complete semantic/dataflow or cross-file analysis, therefore
+ *   NO family is labelled FULL. Maturity is an audit statement, never marketing:
  *
  *     PARTIAL          real security rules + evidence + fingerprint +
  *                      remediation + retest + report/SARIF + tests, but
@@ -33,6 +33,8 @@ import type { FindingSeverity } from '@drobon/shared';
  * contains no CVE/NVD/GHSA/OSV/KEV/EPSS data (the dataset lock holds —
  * docs/SAST.md).
  */
+
+import { AST_SUPPORTED_FAMILIES } from './astProfiles.js';
 
 export type SastMaturity = 'FULL' | 'PARTIAL' | 'SYNTAX_ONLY' | 'CONFIG_ANALYSIS' | 'UNSUPPORTED';
 
@@ -117,6 +119,14 @@ export const SAST_LANGUAGE_CATALOG: readonly SastLanguageFamily[] = [
   { id: 'terraform', label: 'Terraform / HCL', maturity: 'CONFIG_ANALYSIS', platforms: ['infra'], extensions: ['.tf', '.hcl', '.tfvars'], note: 'Open-world ingress CIDR detection.' },
   { id: 'github-actions', label: 'GitHub Actions YAML', maturity: 'CONFIG_ANALYSIS', platforms: ['infra'], note: 'Content tie-break from YAML (`runs-on:` + `jobs:`/`on:` — snapshot paths cannot contain `.github` dotfile segments). Dangerous `permissions: write-all`.' },
   { id: 'android-manifest', label: 'AndroidManifest.xml', maturity: 'CONFIG_ANALYSIS', platforms: ['mobile'], filenames: ['androidmanifest.xml'], note: 'Exported-component detection.' },
+
+  // ---- Dataset configuration formats (GAP-040 reachability) ----
+  // One shared family for the 60+ daemon/template ids used by the external
+  // Drobon-Dataset packs. CONFIG_ANALYSIS keeps these files analyzed by the
+  // same bounded, lexical engine; the pack rule's own pattern decides whether
+  // it fires. Detection is by exact filename or a non-conflicting extension,
+  // so existing family detection is unchanged.
+  { id: 'config-file', label: 'Dataset configuration formats', maturity: 'CONFIG_ANALYSIS', platforms: ['config', 'infra'], extensions: ['.ini', '.conf', '.cfg', '.properties', '.tcl', '.bas', '.pas', '.vba', '.awk', '.bat', '.cmd', '.asp', '.cfm', '.gradle', '.service', '.socket', '.timer'], filenames: ['nginx.conf', 'httpd.conf', 'sshd_config', 'my.cnf', 'postgresql.conf', 'redis.conf', 'named.conf', 'smb.conf', 'docker-compose.yml', 'docker-compose.yaml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'jenkinsfile', 'vault.hcl', 'grafana.ini', 'logrotate.conf', 'rsyslog.conf', 'squid.conf', 'traefik.toml', 'supervisord.conf', 'sudoers', 'login.defs', 'proftpd.conf', 'unbound.conf', 'caddyfile', 'mongod.conf', 'haproxy.cfg', 'postfix.cf'], note: 'Shared family for dataset-tagged server/template config ids; rules are gated by their own patterns, never by a claimed parser.' },
 
   // ---- Optional / honestly unsupported (audited, refused) ----
   { id: 'assembly', label: 'Assembly', maturity: 'UNSUPPORTED', platforms: ['native'], extensions: ['.s', '.asm'], note: 'Detected and counted; source-only SAST cannot make memory-safety claims here.' },
@@ -306,3 +316,13 @@ export function sastMaturityCounts(): SastMaturityCounts {
 }
 
 export type { FindingSeverity };
+
+
+/**
+ * Pump 16: families with a bounded shallow-AST/dataflow profile.
+ * This does NOT change `maturity` — a BOUNDED AST is still PARTIAL, never
+ * FULL. It only says an extra structural pass is available for the family.
+ */
+export function supportsBoundedAst(family: string): boolean {
+  return AST_SUPPORTED_FAMILIES.includes(family);
+}

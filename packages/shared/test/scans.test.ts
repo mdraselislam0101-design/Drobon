@@ -81,6 +81,9 @@ describe('scan vocabulary', () => {
       'DAST_REQUEST_FAILED',
       'DAST_REQUEST_TIMEOUT',
       'DAST_SCAN_TIMEOUT',
+      // Bounded active-DAST consent gates (apps/api/src/scans/dast/activeEngine.ts).
+      'DAST_ACTIVE_CONSENT_REQUIRED',
+      'DAST_ACTIVE_NOT_ALLOWED',
     ]);
   });
 
@@ -329,7 +332,10 @@ describe('findings (Pump 8)', () => {
     expect(isFinding({ ...finding, id: 'scan_' + 'a'.repeat(24) })).toBe(false);
     expect(isFinding({ ...finding, fingerprint: 'z'.repeat(64) })).toBe(false);
     expect(isFinding({ ...finding, ruleId: 'SAST-001' })).toBe(false);
-    expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(false);
+    // Pump 16: dataset packs legitimately ship 4-digit ids (DPK-SAST-1000…).
+    // The FAMILY stays closed; only the digit count widened to 3..6.
+    expect(isFinding({ ...finding, ruleId: 'DG-SAST-9999' })).toBe(true);
+    expect(isFinding({ ...finding, ruleId: 'DG-SAST-1234567' })).toBe(false);
     // Pump 10: the rule-id FAMILY pattern (DG-SAST-### | DG-SEC-###).
     expect(isFinding({ ...finding, ruleId: 'DG-SEC-001' })).toBe(true);
     expect(isFinding({ ...finding, ruleId: 'DG-SECRETS-001' })).toBe(false);
@@ -352,6 +358,27 @@ describe('findings (Pump 8)', () => {
     // And it is never a liveness/verification claim shape.
     expect(isFinding({ ...finding, verified: true })).toBe(false);
     expect(isFinding({ ...finding, live: true })).toBe(false);
+  });
+
+  test('AST attribution and paths are closed, bounded and SAST-only', () => {
+    const flow = { mode: 'PROJECT', category: 'command', attribution: 'CATEGORY_REPORTER',
+      source: { file: 'src/input.ts', line: 3, column: 2 }, via: [{ file: 'src/input.ts', line: 4, column: 1 }] };
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: flow })).toBe(true);
+    expect(isFinding({ ...finding, scanner: 'SCA', astFlow: flow })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, source: { file: '../secret.ts', line: 1, column: 1 } } })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, source: { file: 'src/x.ts', line: 0, column: 1 } } })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, via: Array(5).fill(flow.source) } })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, attribution: 'EXACT_PATTERN' } })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, mode: { toString: null, valueOf: null } } })).toBe(false);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, mode: 'STRUCTURED' } })).toBe(false);
+  });
+
+  test('Secrets AST context is closed, redacted and scanner-specific', () => {
+    const contextual = { ...finding, ruleId: 'DG-SEC-002', scanner: 'SECRETS', astContext: { kind: 'SECRETS_STRING_LITERAL' } };
+    expect(isFinding(contextual)).toBe(true);
+    expect(isFinding({ ...contextual, scanner: 'SAST' })).toBe(false);
+    expect(isFinding({ ...contextual, astContext: { kind: 'SECRETS_STRING_LITERAL', value: 'unredacted' } })).toBe(false);
+    expect(isFinding({ ...contextual, astContext: { kind: 'DAST_RESPONSE_FLOW' } })).toBe(false);
   });
 
   test('isFinding enforces severity vocabulary and rejects client input shapes', () => {
@@ -418,6 +445,67 @@ describe('findings (Pump 8)', () => {
     expect(isScanResultSummary({ findingsTotal: 2, cvss: 4.2 })).toBe(false);
     expect(isScanResultSummary({ findingsTotal: 2, truncated: 'no' })).toBe(false);
     expect(isScanResultSummary({ findingsTotal: 2, extra: 1 })).toBe(false);
+  });
+
+  test('structured AST coverage is bounded, consistent and belongs only to SAST', () => {
+    const parser = { parsedFiles: 1, incompleteFiles: 0, filesWithoutRules: 0, findings: 1 };
+    const summary = { findingsTotal: 1, filesScanned: 1, astFlowsFound: 1, astParser: parser };
+    expect(isScanResultSummary(summary)).toBe(true);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, incompleteFiles: 1 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, filesWithoutRules: 2 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, findings: 2 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, extra: 'unsafe' } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, parsedFiles: -1 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astParser: { ...parser, filesWithoutRules: 1 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, partial: true, astParser: { ...parser, filesWithoutRules: 1 } })).toBe(true);
+    const finished = { ...baseScan(), status: 'COMPLETED', startedAt: '2026-10-28', completedAt: '2026-10-28', resultSummary: summary };
+    expect(isScan(finished)).toBe(true);
+    expect(isScan({ ...finished, scanType: 'SCA' })).toBe(false);
+  });
+
+  test('scanner-specific AST summaries are bounded, closed and bound to their scan type', () => {
+    const supplement = { mode: 'SECRETS_LITERAL_CONTEXT', status: 'RAN', parsed: 1, incomplete: 0, skipped: 0, signals: 1, parserVersion: '5.9.3' };
+    const summary = { findingsTotal: 1, astSupplement: supplement };
+    expect(isScanResultSummary(summary)).toBe(true);
+    expect(isScanResultSummary({ ...summary, astSupplement: { ...supplement, signals: 2 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astSupplement: { ...supplement, skipped: 1 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astSupplement: { ...supplement, parserVersion: '<unsafe>' } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astSupplement: { ...supplement, unknown: 'raw source' } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astSupplement: { ...supplement, mode: { toString: null, valueOf: null } } })).toBe(false);
+    const finished = { ...baseScan(), status: 'COMPLETED', startedAt: '2026-10-28', completedAt: '2026-10-28', scanType: 'SECRETS', resultSummary: summary };
+    expect(isScan(finished)).toBe(true);
+    expect(isScan({ ...finished, scanType: 'SAST' })).toBe(false);
+    expect(isScan({ ...finished, scanType: 'SCA' })).toBe(false);
+    const response = { mode: 'DAST_RESPONSE_SCRIPTS', status: 'RAN', parsed: 1, incomplete: 0, skipped: 0, signals: 0, parserVersion: '5.9.3' };
+    expect(isScanResultSummary({ findingsTotal: 0, astSupplement: response })).toBe(false); // no reporter means incomplete
+    expect(isScanResultSummary({ findingsTotal: 0, astSupplement: { ...response, status: 'PARTIAL' } })).toBe(true);
+    expect(isScanResultSummary({ findingsTotal: 0, astSupplement: { ...response, reporterRuleId: 'DG-DAST-900' } })).toBe(true);
+    expect(isScanResultSummary({ findingsTotal: 0, astSupplement: { ...response, reporterRuleId: 'DG-DAST-900', parsed: 9 } })).toBe(false);
+  });
+
+  test('new AST provenance is guarded, internally consistent and SAST-only', () => {
+    const coverage = {
+      rules: { source: 'EXPLICIT', count: 1, sha256: 'a'.repeat(64) },
+      parsers: { typescript: '5.9.3', python: '1.1.19', php: '3.7.0', java: '1.1.5' },
+      families: [{ family: 'javascript', reporters: { command: 'DG-SAST-001' } }],
+      files: [{ path: 'src/app.js', family: 'javascript', status: 'OK' }],
+      unstructuredFiles: 0,
+      projectFlow: { status: 'RAN', examinedFiles: 1, unresolvedImports: 0, findings: 0 },
+    };
+    const summary = { findingsTotal: 0, filesScanned: 1, partial: true, astFlowsFound: 0,
+      astParser: { parsedFiles: 1, incompleteFiles: 0, filesWithoutRules: 0, findings: 0 }, astCoverage: coverage };
+    expect(isScanResultSummary(summary)).toBe(true);
+    expect(isScanResultSummary({ ...summary, partial: false })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, rules: { ...coverage.rules, sha256: 'bad' } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, rules: { ...coverage.rules, source: { toString: null, valueOf: null } } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, files: [{ ...coverage.files[0], path: '../secret.js' }] } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, files: [...coverage.files, ...coverage.files] } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, projectFlow: { ...coverage.projectFlow, unresolvedImports: 1 } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, families: [{ family: 'javascript', reporters: { command: 'INVALID' } }] } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, extra: true } })).toBe(false);
+    const complete = { ...baseScan(), status: 'COMPLETED', startedAt: '2026-10-28', completedAt: '2026-10-28', resultSummary: summary };
+    expect(isScan(complete)).toBe(true);
+    expect(isScan({ ...complete, scanType: 'SCA' })).toBe(false);
   });
 
   test('ScanResultSummary partial honesty (Pump 10): a partial scan says so, bounded', () => {

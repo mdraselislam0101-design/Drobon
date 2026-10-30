@@ -24,10 +24,11 @@ export async function getRemediationMap(dataset: DatasetService): Promise<Map<st
   const map = new Map<string, RemediationEntry>();
   try {
     const raw = await dataset.remediation();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     for (const r of raw as any[]) {
       if (typeof r.ruleId === 'string') map.set(r.ruleId, r as RemediationEntry);
     }
-  } catch {}
+  } catch { /* fail closed: optional path */ }
   return map;
 }
 
@@ -35,9 +36,10 @@ export async function getCweMap(dataset: DatasetService): Promise<Map<string, Cw
   const map = new Map<string, CweEntry>();
   try {
     const raw = await dataset.cwe();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     for (const r of raw as any[]) {
       if (typeof r.id === 'string') map.set(r.id, r as CweEntry);
     }
-  } catch {}
+  } catch { /* fail closed: optional path */ }
   return map;
 }

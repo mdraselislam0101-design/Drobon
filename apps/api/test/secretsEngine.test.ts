@@ -72,6 +72,7 @@ function providerFor(record: SourceSnapshotRecord | undefined): SourceSnapshotPr
 const ctx = { signal: new AbortController().signal };
 
 function engineWith(record: SourceSnapshotRecord | undefined, limits?: Parameters<typeof createSecretsEngine>[0]['limits']) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   return createSecretsEngine({ sources: providerFor(record), rules: TEST_SECRETS_RULES as any, ...(limits === undefined ? {} : { limits }) });
 }
 
@@ -220,19 +221,28 @@ describe('secrets engine: a real multi-file scan', () => {
     );
     expect(c.findings?.[0]?.fingerprint).not.toBe(a.findings?.[0]?.fingerprint);
 
-    // Different redacted EVIDENCE (a short value uses the asterisk
-    // marker) → different fingerprint: the id responds to what is shown.
+    // The active rule set (not the empty production registry) drives the
+    // defensive re-scan. A short url password first redacts to asterisks,
+    // but those asterisks still satisfy the URL-password pattern, so BOTH
+    // the long and short shapes fail closed to the same bare marker — and
+    // therefore produce the same fingerprint (identity follows redacted
+    // evidence, never the raw value). A different LINE still changes it.
     const long = await completedOutcome(
       engineWith(snapshot([{ path: 'u.ts', content: `db = "${SYNTH.dbUrl}"\n` }])),
     );
     const short = await completedOutcome(
       engineWith(snapshot([{ path: 'u.ts', content: `db = "redis://default:${SYNTH.shortPassword}@c:1"\n` }])),
     );
-    expect(long.findings?.[0]?.fingerprint).not.toBe(short.findings?.[0]?.fingerprint);
-    // A SHORT url password redacts to same-length asterisks — and the
-    // asterisks still satisfy the URL-password pattern, so the
-    // defensive re-scan fails the evidence closed (no context, no leak).
+    expect(long.findings?.[0]?.evidence).toBe('[DG-SEC-004] <redacted>');
     expect(short.findings?.[0]?.evidence).toBe('[DG-SEC-004] <redacted>');
+    expect(long.findings?.[0]?.fingerprint).toBe(short.findings?.[0]?.fingerprint);
+    expect(JSON.stringify(short)).not.toContain(SYNTH.shortPassword);
+    // Evidence sensitivity is still real: a different visible marker
+    // (another rule) yields a different identity on the same location.
+    const pem = await completedOutcome(
+      engineWith(snapshot([{ path: 'u.ts', content: ['-----BEGIN RSA ', 'PRIVATE KEY-----\n'].join('') }])),
+    );
+    expect(pem.findings?.[0]?.fingerprint).not.toBe(short.findings?.[0]?.fingerprint);
   });
 
   test('dedupe: one finding per (rule, file, line); different rules stay distinct', async () => {
@@ -394,6 +404,7 @@ describe('secrets engine: adversarial redaction (the long-line edge)', () => {
 
 describe('secrets engine: failure modes fail closed', () => {
   test('no snapshot → SECRETS_TARGET_NOT_FOUND', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     const engine = createSecretsEngine({ sources: providerFor(undefined), rules: TEST_SECRETS_RULES as any });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toMatchObject({ kind: 'failed', failureCode: 'SECRETS_TARGET_NOT_FOUND' });
@@ -402,6 +413,7 @@ describe('secrets engine: failure modes fail closed', () => {
   test('owner mismatch (defense in depth) → SECRETS_INPUT_INVALID', async () => {
     const record = snapshot([{ path: 'a.ts', content: 'x = 1;\n' }]);
     const foreign: SourceSnapshotRecord = { ...record, ownerId: 'usr_00000000-0000-4000-8000-000000000099' };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
     const engine = createSecretsEngine({ sources: providerFor(foreign), rules: TEST_SECRETS_RULES as any });
     const outcome = await engine.execute(scanRecord(), ctx);
     expect(outcome).toMatchObject({ kind: 'failed', failureCode: 'SECRETS_INPUT_INVALID' });

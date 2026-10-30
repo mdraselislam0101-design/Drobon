@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
-import type { StudentLessonCatalogResponse, StudentProgressResponse } from '@drobon/shared';
+import type { StudentLessonCatalogResponse } from '@drobon/shared';
 import { cleanupTempStoreDir, makeTempStoreDir, readJson, sessionCookieFrom, startTestServer, type TestServer } from './helpers.js';
 import { createJsonFileStudentStore, createMemoryStudentStore } from '../src/student/store.js';
 

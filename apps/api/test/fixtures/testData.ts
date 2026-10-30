@@ -22,7 +22,7 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'command-injection',
     remediation: 'Avoid a shell entirely: use execFile/spawn with an argument array and no shell.',
     limitation: 'Lexical, line-based, no dataflow.',
-    patterns: [/\bexec(?:Sync)?\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/],
+    patterns: [/\bexec(?:Sync)?\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/],
   },
   {
     id: 'DG-SAST-002',
@@ -34,7 +34,7 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'code-injection',
     remediation: 'Remove the dynamic evaluation: use data structures, maps or explicit branches.',
     limitation: 'Lexical, line-based, no dataflow.',
-    patterns: [/\beval\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/, /\bnew\s+Function\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/],
+    patterns: [/\beval\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/, /\bnew\s+Function\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/],
   },
   {
     id: 'DG-SAST-003',
@@ -46,7 +46,7 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'sql-injection',
     remediation: 'Use parameterized queries: keep the SQL text a constant and pass values as parameters.',
     limitation: 'Lexical, line-based, no dataflow.',
-    patterns: [/\.query\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/, /\.execute\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/],
+    patterns: [/\.query\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/, /\.execute\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/],
   },
   {
     id: 'DG-SAST-004',
@@ -58,7 +58,7 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'xss',
     remediation: 'Render dynamic values as TEXT (textContent, React children).',
     limitation: 'Lexical, line-based, no dataflow.',
-    patterns: [/\.innerHTML\s*=[^=]*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/, /__html\s*:\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+|[A-Za-z_$][\w$.]*\s*\+)/, /\bdocument\.write(?:ln)?\s*\(\s*(?:`[^`]*\$\{|(['\"]).*?\1\s*\+)/],
+    patterns: [/\.innerHTML\s*=[^=]*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/, /__html\s*:\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+|[A-Za-z_$][\w$.]*\s*\+)/, /\bdocument\.write(?:ln)?\s*\(\s*(?:`[^`]*\$\{|(['"]).*?\1\s*\+)/],
   },
   {
     id: 'DG-SAST-005',
@@ -69,9 +69,9 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'hardcoded-credential',
     remediation: 'Move the value out of source code: read it from the environment or a secret manager.',
     limitation: 'Lexical heuristic on credential-shaped names.',
-    patterns: [/\b(?:[A-Za-z0-9]+_)?(?:password|passwd|pwd|secret|secrets?_?key|apikey|api_key|token|auth_?token|access_?token|client_?secret|private_?key|credentials?)\b\s*[:=]\s*(['\"])(?!(?:changeme|placeholder|example|dummy|redacted|password|secret|token|undefined|xxx+|your[-_a-z]*)\1)[A-Za-z0-9_+/=.\\-]{8,}\1/i],
+    patterns: [/\b(?:[A-Za-z0-9]+_)?(?:password|passwd|pwd|secret|secrets?_?key|apikey|api_key|token|auth_?token|access_?token|client_?secret|private_?key|credentials?)\b\s*[:=]\s*(['"])(?!(?:changeme|placeholder|example|dummy|redacted|password|secret|token|undefined|xxx+|your[-_a-z]*)\1)[A-Za-z0-9_+/=.\\-]{8,}\1/i],
     redactEvidence: (line: string, match: { column: number }): string => {
-      const literal = /(['\"])[A-Za-z0-9_+/=.\\-]{8,}\1/i.exec(line.slice(match.column - 1));
+      const literal = /(['"])[A-Za-z0-9_+/=.\\-]{8,}\1/i.exec(line.slice(match.column - 1));
       if (literal === null) return line;
       const start = match.column - 1 + literal.index;
       const quote = literal[0][0] ?? '"';
@@ -90,9 +90,61 @@ export const TEST_SAST_RULES: readonly SastRule[] = [
     category: 'weak-cryptography',
     remediation: 'Use a modern algorithm (SHA-256 or stronger).',
     limitation: 'Detects the algorithm choice in createHash/createHmac calls only.',
-    patterns: [/\bcreate(?:Hash|Hmac)\s*\(\s*(['\"])(?:md5|sha1)\1/],
+    patterns: [/\bcreate(?:Hash|Hmac)\s*\(\s*(['"])(?:md5|sha1)\1/],
   },
 ];
+
+/**
+ * Flow-enabled SAST test rules (test-only data). The production registry is
+ * empty by design; the bounded semantic layer still needs rule metadata to
+ * build a finding. These three fixtures mirror the old DG-SAST-048/049/050
+ * contracts (command / SQL / HTML flows) WITHOUT shipping detection data in
+ * production `src/` — the dataset provides real rules at runtime.
+ */
+export const TEST_SAST_FLOW_RULES: readonly SastRule[] = [
+  {
+    id: 'DG-SAST-048',
+    title: 'Untrusted value reaches a command sink',
+    description: 'A request-derived value flows into a shell command without an allowlisted sanitizer.',
+    severity: 'HIGH',
+    cwe: 'CWE-78',
+    category: 'command-injection',
+    remediation: 'Use execFile/spawn with an argument array and no shell; validate and allowlist inputs.',
+    limitation: 'Bounded single-pass flow analysis; no interprocedural or cross-file tracking.',
+    patterns: [],
+    languages: ['javascript', 'typescript', 'jsx', 'tsx', 'python', 'php', 'ruby', 'go', 'java', 'kotlin', 'csharp'],
+    flow: 'command',
+  },
+  {
+    id: 'DG-SAST-049',
+    title: 'Untrusted value reaches a SQL sink',
+    description: 'A request-derived value flows into a dynamically built SQL statement.',
+    severity: 'HIGH',
+    cwe: 'CWE-89',
+    category: 'sql-injection',
+    remediation: 'Use parameterized queries and keep the SQL text constant.',
+    limitation: 'Bounded single-pass flow analysis; string-masked literals only.',
+    patterns: [],
+    languages: ['javascript', 'typescript', 'jsx', 'tsx', 'python', 'php', 'ruby', 'go', 'java', 'kotlin', 'csharp'],
+    flow: 'sql',
+  },
+  {
+    id: 'DG-SAST-050',
+    title: 'Untrusted value reaches a raw-HTML sink',
+    description: 'A request-derived value flows into an innerHTML-style raw markup sink.',
+    severity: 'MEDIUM',
+    cwe: 'CWE-79',
+    category: 'xss',
+    remediation: 'Render values as text (textContent / framework children), never as raw HTML.',
+    limitation: 'Bounded single-pass flow analysis; DOM sanitizer libraries are not modelled.',
+    patterns: [],
+    languages: ['javascript', 'typescript', 'jsx', 'tsx', 'python', 'php', 'ruby', 'go', 'java', 'kotlin', 'csharp'],
+    flow: 'html',
+  },
+];
+
+/** All test-only SAST rules, including the flow-enabled fixtures. */
+export const ALL_TEST_SAST_RULES: readonly SastRule[] = [...TEST_SAST_RULES, ...TEST_SAST_FLOW_RULES];
 
 // Secrets test fixtures — 6 rules covering all categories (paid-tool parity: test data in test/, not src/)
 export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
@@ -133,13 +185,13 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
     cwe: 'CWE-798',
     remediation: 'Load the token from the environment or a secret manager at runtime and rotate the exposed value.',
     limitation: 'Requires a 20+ character mixed-class token after `Bearer` (or in a bearer-named assignment); placeholders, templates and short values are excluded.',
-    patterns: [/\bAuthorization\b['\"]?\s*[:=]\s*['\"]?Bearer\s+[A-Za-z0-9+/=_.-]{20,}/i, /\bbearer[_-]?token\b\s*[:=]\s*['\"][A-Za-z0-9+/=_.$-]{20,}['\"]/i],
+    patterns: [/\bAuthorization\b['"]?\s*[:=]\s*['"]?Bearer\s+[A-Za-z0-9+/=_.-]{20,}/i, /\bbearer[_-]?token\b\s*[:=]\s*['"][A-Za-z0-9+/=_.$-]{20,}['"]/i],
     validate: (matched: string) => {
-      const token = matched.split(/[\s'\":=]+/).filter(Boolean).pop() ?? '';
+      const token = matched.split(/[\s'":=]+/).filter(Boolean).pop() ?? '';
       return token.length >= 20 && !matched.toLowerCase().includes('example') && !matched.toLowerCase().includes('changeme');
     },
     valueSpan: (match) => {
-      const token = match.text.split(/[\s'\":=]+/).filter(Boolean).pop() ?? '';
+      const token = match.text.split(/[\s'":=]+/).filter(Boolean).pop() ?? '';
       const index = token.length === 0 ? -1 : match.text.lastIndexOf(token);
       if (index === -1) return undefined;
       return { start: index, end: index + token.length };
@@ -178,17 +230,17 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
     cwe: 'CWE-798',
     remediation: 'Move the key to the environment or a secret manager, load it at runtime, and rotate the exposed value.',
     limitation: 'Requires an api-key-shaped name with a 20+ character, ≥2-class literal; placeholders, templates, UUIDs and plain hex digests are excluded.',
-    patterns: [/(?:[A-Za-z0-9]+[-_])?api[_-]?key\b\s*['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9+/=_.$!-]{20,}['\"]?/i],
+    patterns: [/(?:[A-Za-z0-9]+[-_])?api[_-]?key\b\s*['"]?\s*[:=]\s*['"]?[A-Za-z0-9+/=_.$!-]{20,}['"]?/i],
     validate: (matched: string) => {
-      let value = matched.match(/['\"]([^'\"]+)['\"]/)?.[1] ?? '';
+      let value = matched.match(/['"]([^'"]+)['"]/)?.[1] ?? '';
       if (!value) {
         const sep = matched.search(/[:=]/);
-        if (sep !== -1) value = matched.slice(sep + 1).trim().replace(/^['\"]/, '').replace(/['\"]$/, '');
+        if (sep !== -1) value = matched.slice(sep + 1).trim().replace(/^['"]/, '').replace(/['"]$/, '');
       }
       return value.length >= 20 && !value.toLowerCase().includes('example') && !value.toLowerCase().includes('changeme');
     },
     valueSpan: (match) => {
-      const quoted = match.text.match(/['\"]([^'\"]+)['\"]/);
+      const quoted = match.text.match(/['"]([^'"]+)['"]/);
       if (quoted !== null && quoted.index !== undefined) {
         const start = quoted.index + 1;
         return { start, end: start + (quoted[1] ?? '').length };
@@ -197,7 +249,7 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
       if (separator === -1) return undefined;
       const rest = match.text.slice(separator + 1);
       const leading = rest.length - rest.trimStart().length;
-      const value = rest.trim().replace(/^['\"]/, '').replace(/['\"]$/, '');
+      const value = rest.trim().replace(/^['"]/, '').replace(/['"]$/, '');
       if (value.length === 0) return undefined;
       const start = separator + 1 + leading;
       return { start, end: start + value.length };
@@ -213,9 +265,9 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
     cwe: 'CWE-798',
     remediation: 'Move the value to the environment or a secret manager and rotate it if it may be real.',
     limitation: 'Heuristic: credential-family names with ≥12 chars, ≥2 character classes and ≥3.5 bits/char entropy; placeholders, templates, UUIDs and plain hex digests are excluded.',
-    patterns: [/\b(?:[A-Za-z0-9]+_)?(?:password|passwd|pwd|client_?secret|secret)\b\s*['\"]?\s*[:=]\s*['\"][^'\"]{12,}['\"]/i],
+    patterns: [/\b(?:[A-Za-z0-9]+_)?(?:password|passwd|pwd|client_?secret|secret)\b\s*['"]?\s*[:=]\s*['"][^'"]{12,}['"]/i],
     validate: (matched: string) => {
-      const literal = matched.match(/['\"]([^'\"]+)['\"]/)?.[1] ?? '';
+      const literal = matched.match(/['"]([^'"]+)['"]/)?.[1] ?? '';
       if (literal.length < 12) return false;
       // Simplified strong check for test fixtures: mixed class, not placeholder, not UUID/hash
       const lower = literal.toLowerCase();
@@ -229,10 +281,10 @@ export const TEST_SECRETS_RULES: readonly SecretsRule[] = [
       return classes >= 2;
     },
     valueSpan: (match) => {
-      const literal = match.text.match(/['\"]([^'\"]+)['\"]/);
+      const literal = match.text.match(/['"]([^'"]+)['"]/);
       const value = literal?.[1];
       if (literal === null || value === undefined || value.length === 0) return undefined;
-      const index = (literal.index ?? match.text.search(/['\"]/)) + 1;
+      const index = (literal.index ?? match.text.search(/['"]/)) + 1;
       return { start: index, end: index + value.length };
     },
   },
@@ -242,6 +294,7 @@ export const TEST_SAST_RULE_IDS = TEST_SAST_RULES.map((r) => r.id);
 
 // Minimal DAST test rules — 8 rules mimicking old hardcoded DG-DAST-* logic
 // Each uses a pack check that will match the FIXTURE_DAST_RESPONSE in helpers.ts
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
 export const TEST_DAST_RULES: readonly any[] = [
   {
     id: 'DG-DAST-001',
@@ -326,4 +379,5 @@ export const TEST_DAST_RULES: readonly any[] = [
   },
 ];
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
 export const TEST_DAST_RULE_IDS = TEST_DAST_RULES.map((r: any) => r.id);

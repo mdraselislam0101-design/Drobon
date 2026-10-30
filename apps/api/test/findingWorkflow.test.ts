@@ -186,6 +186,31 @@ describe('finding workflow store, notes, guidance and reports', () => {
     expect((await scans.getFindingWorkflow(project.id, 'b'.repeat(64)))?.id).not.toBe(reopened?.id);
   });
 
+  test('partial and truncated scans cannot verify absence, but positive observations still update the workflow', async () => {
+    const { project } = await fixtureProject();
+    const scans = createMemoryScanStore();
+    const fingerprint = '8'.repeat(64);
+    const first = await completeScan(scans, project.id, makeFinding('scan_placeholder', fingerprint));
+    for (const summary of [
+      { findingsTotal: 0, partial: true, partialReason: 'Some source was not inspected.' },
+      { findingsTotal: 0, truncated: true },
+    ]) {
+      await scans.createScanWithQuota({ ownerId: OWNER_ID, projectId: project.id, scanType: 'SAST', consume: async () => ({ ok: true }) });
+      const running = await scans.claimNextQueued();
+      if (running === undefined) throw new Error('partial scan missing');
+      expect(await scans.completeScan(running.id, summary, [])).toBeDefined();
+      expect(await scans.getFindingWorkflow(project.id, fingerprint)).toMatchObject({ verificationState: 'OBSERVED', lastVerificationScanId: first.scan.id });
+    }
+    await scans.createScanWithQuota({ ownerId: OWNER_ID, projectId: project.id, scanType: 'SAST', consume: async () => ({ ok: true }) });
+    const running = await scans.claimNextQueued();
+    if (running === undefined) throw new Error('positive partial scan missing');
+    const finding = makeFinding(running.id, fingerprint);
+    expect(await scans.completeScan(running.id, { findingsTotal: 1, partial: true, partialReason: 'Some source was not inspected.' }, [finding])).toBeDefined();
+    expect(await scans.getFindingWorkflow(project.id, fingerprint)).toMatchObject({ verificationState: 'OBSERVED', lastVerificationScanId: running.id });
+    const full = await completeScan(scans, project.id);
+    expect(await scans.getFindingWorkflow(project.id, fingerprint)).toMatchObject({ verificationState: 'NOT_OBSERVED_IN_LATEST_SCAN', lastVerificationScanId: full.scan.id });
+  });
+
   test('note-count cap is enforced without partial audit or note writes', async () => {
     const { project } = await fixtureProject();
     const scans = createMemoryScanStore();

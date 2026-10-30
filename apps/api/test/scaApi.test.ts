@@ -267,10 +267,10 @@ describe('SCA API: pre-flight and lifecycle', () => {
       expect(sca.summary.advisoriesTotal).toBe(0);
       expect(sca.advisories).toEqual([]);
       // …and the real dependency analysis is intact.
-      expect(sca.summary.dependenciesTotal).toBe(5); // express, lodash, accepts, flask, requests
-      expect(sca.summary.directDependencies).toBe(4);
+      expect(sca.summary.dependenciesTotal).toBe(6); // the two lodash declarations have distinct evidence
+      expect(sca.summary.directDependencies).toBe(5);
       expect(sca.summary.transitiveDependencies).toBe(1); // accepts
-      expect(sca.summary.transitiveGraph).toBe('AVAILABLE');
+      expect(sca.summary.transitiveGraph).toBe('UNAVAILABLE');
       const byName = new Map(sca.dependencies.map((dep) => [dep.name, dep]));
       expect(byName.get('express')).toMatchObject({
         declaredVersion: '^4.18.0',
@@ -281,8 +281,9 @@ describe('SCA API: pre-flight and lifecycle', () => {
         declaredVersion: '==1.1.1',
         ecosystem: 'pypi',
       });
-      // The SBOM is present and anchored at the root component.
-      expect(sca.sbom.metadata.component).toMatchObject({ name: 'demo-app', version: '1.4.2' });
+      // Two named package.json files do not establish one SBOM root.
+      expect(sca.sbom.metadata.component).toBeUndefined();
+      expect(sca.sbom.dependencies).toEqual([]);
       // Manifest evidence includes both ecosystems.
       const manifestPaths = sca.manifests.map((manifest) => manifest.path).sort();
       expect(manifestPaths).toEqual([
@@ -416,7 +417,7 @@ describe('SCA API: isolation and honesty', () => {
       // The DETAIL response carries the inventory but never raw file
       // content (paths and dependency names only).
       const detailText = JSON.stringify(detail);
-      expect(detailText).toContain('demo-app'); // the SBOM root name (a public name)
+      expect(detailText).toContain('lodash'); // dependency identities remain available in detail
       expect(detailText).not.toContain('postinstall'); // scripts are NOT part of the inventory
       expect(detailText).not.toContain('touch /tmp');
     } finally {

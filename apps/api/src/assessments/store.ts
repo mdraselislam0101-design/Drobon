@@ -3,14 +3,18 @@ import { dirname, join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   ASSESSMENT_DECLARATIONS_MAX_COUNT,
+  ASSESSMENT_ENGAGEMENTS_MAX_COUNT,
   ASSESSMENT_EVENTS_MAX_COUNT,
   ASSESSMENT_ID_PATTERN,
   ASSESSMENT_LIST_MAX_COUNT,
+  ENGAGEMENT_ID_PATTERN,
   isAssessment,
+  isAssessmentEngagement,
   isAssessmentScope,
   isSafeDastUrl,
   type Assessment,
   type AssessmentAuthorizationDeclaration,
+  type AssessmentEngagement,
   type AssessmentEvent,
   type AssessmentScope,
   type AssessmentStatus,
@@ -45,10 +49,17 @@ export interface AssessmentStore {
   listByProject(ownerId: string, projectId: string): Promise<Assessment[]>;
   findByProjectAndId(ownerId: string, projectId: string, assessmentId: string): Promise<Assessment | undefined>;
   /** Linearizes linked scan creation against assessment completion/cancellation. */
-  withActiveAssessment<T>(ownerId: string, projectId: string, assessmentId: string, action: () => Promise<T>): Promise<{ outcome: 'ready'; value: T } | { outcome: 'not-found' } | { outcome: 'inactive' }>;
+  withActiveAssessment<T>(ownerId: string, projectId: string, assessmentId: string, action: (current: Assessment) => Promise<T>): Promise<{ outcome: 'ready'; value: T } | { outcome: 'not-found' } | { outcome: 'inactive' }>;
   update(input: UpdateAssessmentInput): Promise<{ outcome: 'updated' | 'not-found' | 'not-planned' | 'history-limit'; assessment?: Assessment }>;
   transition(input: { ownerId: string; projectId: string; assessmentId: string; status: AssessmentStatus; now: string }, guard?: (current: Assessment) => Promise<boolean>): Promise<{ outcome: 'updated' | 'unchanged' | 'not-found' | 'invalid-transition' | 'guard-rejected' | 'history-limit'; assessment?: Assessment }>;
   recordAuthorization(input: { ownerId: string; projectId: string; assessmentId: string; targetUrl: string; action: 'DECLARE' | 'WITHDRAW'; now: string }): Promise<{ outcome: 'updated' | 'unchanged' | 'not-found' | 'inactive' | 'not-declared' | 'declarations-limit' | 'history-limit'; assessment?: Assessment }>;
+  /** Pump 17: append-only third-party engagement records (never edited/deleted). */
+  recordEngagement(input: {
+    ownerId: string; projectId: string; assessmentId: string; now: string;
+    action: 'DECLARE' | 'WITHDRAW';
+    engagement?: Omit<AssessmentEngagement, 'id' | 'declaredBy' | 'declaredAt' | 'state' | 'withdrawnAt'>;
+    engagementId?: string;
+  }): Promise<{ outcome: 'updated' | 'not-found' | 'inactive' | 'invalid' | 'not-declared' | 'engagements-limit' | 'history-limit'; assessment?: Assessment }>;
 }
 
 function publicRecord(record: AssessmentRecord): Assessment {
@@ -87,6 +98,12 @@ function parseRecord(value: unknown): AssessmentRecord | undefined {
     const key = `${declaration.targetUrl}:${declaration.declaredAt}:${declaration.state}`;
     if (seenDeclarations.has(key)) return undefined;
     seenDeclarations.add(key);
+  }
+  const engagements = assessment.engagements ?? [];
+  const seenEngagementIds = new Set<string>();
+  for (const engagement of engagements) {
+    if (!isAssessmentEngagement(engagement) || seenEngagementIds.has(engagement.id)) return undefined;
+    seenEngagementIds.add(engagement.id);
   }
   return { ...assessment, ownerId } as AssessmentRecord;
 }
@@ -169,7 +186,7 @@ function createStore(initial: AssessmentRecord[], persistWith: (records: Assessm
       const current = find(ownerId, projectId, id);
       if (current === undefined) return { outcome: 'not-found' as const };
       if (current.status !== 'ACTIVE') return { outcome: 'inactive' as const };
-      return { outcome: 'ready' as const, value: await action() };
+      return { outcome: 'ready' as const, value: await action(safeAssessment(current)) };
     }),
     update: (input) => runExclusive(() => {
       const current = find(input.ownerId, input.projectId, input.assessmentId);
@@ -221,6 +238,50 @@ function createStore(initial: AssessmentRecord[], persistWith: (records: Assessm
         history: [...current.history, makeEvent(state === 'USER_DECLARED' ? 'AUTHORIZATION_DECLARED' : 'AUTHORIZATION_WITHDRAWN', input.now, { targetUrl: input.targetUrl })],
       };
       if (!validRecord(updated)) throw new TypeError('Authorization declaration failed store validation.');
+      commit([...byId.values()].map((record) => record.id === updated.id ? updated : record), updated);
+      return { outcome: 'updated', assessment: safeAssessment(updated) };
+    }),
+    recordEngagement: (input) => runExclusive(() => {
+      const current = find(input.ownerId, input.projectId, input.assessmentId);
+      if (current === undefined) return { outcome: 'not-found' };
+      if (current.status !== 'PLANNED' && current.status !== 'ACTIVE') return { outcome: 'inactive' };
+      const existing = current.engagements ?? [];
+      if (current.history.length >= ASSESSMENT_EVENTS_MAX_COUNT) return { outcome: 'history-limit' };
+
+      if (input.action === 'DECLARE') {
+        const draft = input.engagement;
+        if (draft === undefined) return { outcome: 'invalid' };
+        if (existing.length >= ASSESSMENT_ENGAGEMENTS_MAX_COUNT) return { outcome: 'engagements-limit' };
+        const candidate: AssessmentEngagement = {
+          ...draft,
+          id: `eng_${randomUUID()}`,
+          inScopeHosts: [...draft.inScopeHosts],
+          scopePaths: [...draft.scopePaths],
+          allowedScanTypes: [...draft.allowedScanTypes],
+          declaredBy: input.ownerId,
+          declaredAt: input.now,
+          state: 'DECLARED',
+        };
+        if (!isAssessmentEngagement(candidate) || !isSafeDastUrl(candidate.targetUrl)) return { outcome: 'invalid' };
+        const updated: AssessmentRecord = { ...current, updatedAt: input.now,
+          engagements: [...existing, candidate],
+          history: [...current.history, makeEvent('AUTHORIZATION_DECLARED', input.now, { targetUrl: candidate.targetUrl })],
+        };
+        if (!validRecord(updated)) return { outcome: 'invalid' };
+        commit([...byId.values()].map((record) => record.id === updated.id ? updated : record), updated);
+        return { outcome: 'updated', assessment: safeAssessment(updated) };
+      }
+
+      if (input.engagementId === undefined || !ENGAGEMENT_ID_PATTERN.test(input.engagementId)) return { outcome: 'invalid' };
+      const target = existing.find((item) => item.id === input.engagementId);
+      if (target === undefined || target.state !== 'DECLARED') return { outcome: 'not-declared' };
+      const withdrawn: AssessmentEngagement = { ...target, state: 'WITHDRAWN', withdrawnAt: input.now };
+      if (!isAssessmentEngagement(withdrawn)) return { outcome: 'invalid' };
+      const updated: AssessmentRecord = { ...current, updatedAt: input.now,
+        engagements: existing.map((item) => item.id === target.id ? withdrawn : item),
+        history: [...current.history, makeEvent('AUTHORIZATION_WITHDRAWN', input.now, { targetUrl: target.targetUrl })],
+      };
+      if (!validRecord(updated)) return { outcome: 'invalid' };
       commit([...byId.values()].map((record) => record.id === updated.id ? updated : record), updated);
       return { outcome: 'updated', assessment: safeAssessment(updated) };
     }),

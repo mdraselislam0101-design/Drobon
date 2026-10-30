@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "drobon.integration-evidence/v1",
+  "generatedAt": "2026-10-26T17:12:54.400Z",
+  "app": {
+    "repo": "mdraselislam0101-design/Drobon",
+    "branch": "arena/5bb07bd8-drobon"
+  },
+  "dataset": {
+    "repo": "mdraselislam0101-design/Drobon-Dataset",
+    "path": "../Drobon-Dataset"
+  },
+  "counts": {
+    "vulnIntelFiles": 100,
+    "vulnIntelIdentityItems": 84,
+    "vulnIntelAdvisoryIds": 78,
+    "sast": 1000,
+    "secrets": 1000,
+    "dast": 1007,
+    "sca": 1000,
+    "remediation": 4007,
+    "cwe": 102,
+    "lessons": 6,
+    "assessmentTemplates": 3,
+    "engagementTemplates": 2
+  },
+  "packs": {
+    "sast": {
+      "packId": "drobon-sast-starter",
+      "version": "1.0.0"
+    },
+    "secrets": {
+      "packId": "drobon-secrets-starter",
+      "version": "1.0.0"
+    },
+    "dast": {
+      "packId": "drobon-dast-starter",
+      "version": "1.0.0"
+    },
+    "sca": {
+      "packId": "drobon-sca-dependency-hygiene",
+      "version": "1.0.0"
+    }
+  },
+  "conformance": {
+    "sast": {
+      "filesSeen": 1000,
+      "accepted": 1000,
+      "declaredTests": 4043,
+      "executedTests": 4043,
+      "skippedTests": 0,
+      "failedTests": 0,
+      "rejected": 0
+    },
+    "secrets": {
+      "filesSeen": 1000,
+      "accepted": 1000,
+      "declaredTests": 4660,
+      "executedTests": 4660,
+      "skippedTests": 0,
+      "failedTests": 0,
+      "rejected": 0
+    },
+    "dast": {
+      "filesSeen": 1007,
+      "accepted": 1007,
+      "declaredTests": 3673,
+      "executedTests": 3673,
+      "skippedTests": 0,
+      "failedTests": 0,
+      "rejected": 0
+    },
+    "sca": {
+      "filesSeen": 1000,
+      "accepted": 1000,
+      "declaredTests": 4001,
+      "executedTests": 4001,
+      "skippedTests": 0,
+      "failedTests": 0,
+      "rejected": 0
+    }
+  },
+  "dast": {
+    "declaredTests": 3673,
+    "parityMismatches": 0,
+    "unreachable": 0,
+    "inspectedHeaders": 57
+  },
+  "sast": {
+    "rules": 1000,
+    "unreachable": 0,
+    "viaDatasetRuleFamily": 72,
+    "distinctLanguageIds": 115,
+    "unresolvedLanguageIds": []
+  },
+  "sca": {
+    "providerVectors": 16,
+    "vectorsPassed": 16,
+    "declarationEvaluator": "AVAILABLE",
+    "declaredTests": 4001,
+    "parityMismatches": 0,
+    "uncompilable": 0,
+    "scanParsers": [
+      "json",
+      "toml",
+      "yaml",
+      "requirements",
+      "xml",
+      "gradle",
+      "properties",
+      "ini",
+      "lockfile-text"
+    ],
+    "scanReachableRules": 1000,
+    "loadedRules": 1000,
+    "readerDeclaredTests": 2273,
+    "readerVerdictMismatches": 111,
+    "readerMismatchBudget": 182,
+    "readerParseFailures": 37,
+    "unuploadableArtifacts": [
+      ".Rprofile",
+      ".cargo/config.toml",
+      ".condarc",
+      ".npmrc",
+      ".pypirc",
+      ".yarnrc",
+      ".yarnrc.yml"
+    ],
+    "rulesWithUnuploadableArtifact": 41,
+    "readerVerdictParityPercent": 93.49,
+    "readers": {
+      "json": {
+        "declaredTests": 0,
+        "rendered": 0,
+        "parsed": 0,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "toml": {
+        "declaredTests": 1016,
+        "rendered": 1016,
+        "parsed": 1016,
+        "verdictMismatches": 4,
+        "parseFailures": 0
+      },
+      "yaml": {
+        "declaredTests": 332,
+        "rendered": 332,
+        "parsed": 332,
+        "verdictMismatches": 8,
+        "parseFailures": 0
+      },
+      "requirements": {
+        "declaredTests": 109,
+        "rendered": 109,
+        "parsed": 85,
+        "verdictMismatches": 5,
+        "parseFailures": 24
+      },
+      "xml": {
+        "declaredTests": 256,
+        "rendered": 256,
+        "parsed": 256,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "gradle": {
+        "declaredTests": 100,
+        "rendered": 100,
+        "parsed": 100,
+        "verdictMismatches": 38,
+        "parseFailures": 0
+      },
+      "properties": {
+        "declaredTests": 12,
+        "rendered": 12,
+        "parsed": 12,
+        "verdictMismatches": 0,
+        "parseFailures": 0
+      },
+      "ini": {
+        "declaredTests": 204,
+        "rendered": 204,
+        "parsed": 203,
+        "verdictMismatches": 2,
+        "parseFailures": 1
+      },
+      "lockfile-text": {
+        "declaredTests": 244,
+        "rendered": 232,
+        "parsed": 232,
+        "verdictMismatches": 54,
+        "parseFailures": 12
+      }
+    },
+    "readerFailures": 148
+  },
+  "remediation": {
+    "sampleRuleIds": [
+      "DPK-SAST-001",
+      "DPK-SEC-001",
+      "DPK-DAST-002",
+      "DPK-SCA-0001"
+    ],
+    "surfaced": 4
+  },
+  "checks": "PASS",
+  "failures": [],
+  "statusNote": "Historical snapshot from 2026-10-26, not reverified after the 2026-10-28 application changes. The old 1000 reachability count excluded neither blocked paths nor subset-parser limitations. Parity below was corrected to include parse failures."
+}

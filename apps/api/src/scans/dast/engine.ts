@@ -5,6 +5,7 @@ import {
   type ScanFailureCode,
   type ScanResultSummary,
 } from '@drobon/shared';
+import { INSPECTED_RESPONSE_HEADERS } from './observedHeaders.js';
 import type { EngineOutcome, ScanEngine, ScanEngineContext } from '../engines.js';
 import type { ScanRecord } from '../store.js';
 import { DastHttpError, createNodeDastTransport, type DastProbeResponse, type DastTransport } from './http.js';
@@ -13,6 +14,10 @@ import type { DatasetService } from '../../external/service.js';
 import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy, type ResolvedDastTarget } from './target.js';
 import { findingFingerprint } from '../findingIdentity.js';
 import { createActiveDastEngine } from './activeEngine.js';
+import { isDastRequestAuthorized, type DastRequestAuthorizer } from './authorization.js';
+import type { AdvisoryMatch, AdvisoryService } from '../../external/advisory.js';
+import { advisoryDastFinding } from '../advisoryFindings.js';
+import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } from './ast.js';
 
 export const DAST_MAX_REQUESTS = 3;
 export const DAST_MAX_REDIRECTS = 2;
@@ -30,8 +35,17 @@ export interface DastEngineOptions {
   maxRedirects?: number;
   maxResponseBytes?: number;
   /** Optional dataset DAST pack rules (evaluated alongside built-in rules). */
-  packRules?: readonly { id: string; title: string; description: string; severity: import('@drobon/shared').FindingSeverity; cwe?: string; remediation: string; check: any }[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+  packRules?: readonly { id: string; title: string; description: string; severity: import('@drobon/shared').FindingSeverity; category?: string; cwe?: string; remediation: string; check: any }[];
   dataset?: DatasetService;
+  /** Revalidate assessment-linked authorization before each request. */
+  authorize?: DastRequestAuthorizer;
+  /**
+   * Optional generic advisory service (Pump 15). When configured, version
+   * signals from the passive response are matched against the operator's
+   * advisory pack — for ANY ecosystem/language — with honest UNKNOWN results.
+   */
+  advisory?: AdvisoryService;
 }
 
 function statusCounts(findings: readonly Finding[]): Record<FindingSeverity, number> {
@@ -50,11 +64,7 @@ function responseHeader(response: DastProbeResponse, name: string): string | und
   return typeof value === 'string' ? value : undefined;
 }
 
-const INSPECTED_RESPONSE_HEADERS = new Set([
-  'content-type', 'strict-transport-security', 'x-content-type-options', 'x-frame-options',
-  'content-security-policy', 'access-control-allow-origin', 'access-control-allow-credentials',
-  'server', 'x-powered-by', 'set-cookie', 'location',
-]);
+
 
 function boundedResponseHeaders(headers: DastProbeResponse['headers']): DastProbeResponse['headers'] {
   const bounded: DastProbeResponse['headers'] = {};
@@ -74,7 +84,10 @@ function boundProbeResponse(response: DastProbeResponse, maxBytes: number): Dast
   ) return undefined;
   const bytes = Buffer.from(response.body, 'utf8');
   const clipped = bytes.length > maxBytes;
-  const body = clipped ? bytes.subarray(0, maxBytes).toString('utf8') : response.body;
+  let body = clipped ? bytes.subarray(0, maxBytes).toString('utf8') : response.body;
+  // A cut through a UTF-8 sequence can decode to a three-byte replacement
+  // character. Keep the persisted/AST input within the byte limit anyway.
+  while (body.length > 0 && Buffer.byteLength(body, 'utf8') > Math.max(0, maxBytes)) body = body.slice(0, -1);
   return {
     status: response.status,
     headers: boundedResponseHeaders(response.headers),
@@ -187,6 +200,7 @@ function isRedirect(status: number): boolean {
 export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
   // If active mode requested, delegate to the safe active engine (bounded crawl+injection).
   // Keeps one scanType (DAST) with mode flag — passive is default, active requires consent.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   const activeDelegate = createActiveDastEngine(options as any);
 
   const policy = options.targetPolicy ?? createDastTargetPolicy();
@@ -235,8 +249,23 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         headers: string[];
       }> = [];
       const findings: Finding[] = [];
+      // Pump 15: advisory matches are collected across all observations and
+      // deduplicated by (ruleId, location, version) before findings are built.
+      const advisoryMatches = new Map<string, { match: AdvisoryMatch; endpoint: string; status: number; elapsedMs: number; observedAt: string }>();
       let redirectsFollowed = 0;
       let partialReason: string | undefined;
+      let astObservation: DastAstObservation | undefined;
+      // Resolve the same rule set once per scan, rather than reloading and
+      // recompiling it for every redirect response.
+      let allPackRules = options.packRules ?? [];
+      if (options.dataset?.configured) {
+        try {
+          const { getMergedDastRules } = await import('../../external/packIntegration.js');
+          const loaded = await getMergedDastRules(options.dataset);
+          if (loaded.length > 0) allPackRules = loaded;
+        } catch { /* optional pack unavailable; coverage is marked below */ }
+      }
+      const astRules: readonly DastAstRule[] = allPackRules;
 
       while (observations.length < maxRequests) {
         if (context.signal.aborted || now() >= deadline) {
@@ -247,6 +276,11 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           break;
         }
         visited.add(current.url);
+        if (!(await isDastRequestAuthorized(record, current.url, options.authorize))) {
+          if (observations.length === 0) return failed('DAST_TARGET_BLOCKED', 'The linked assessment does not authorize this DAST request.');
+          partialReason = 'A subsequent request was skipped because the linked assessment scope or authorization no longer permits it.';
+          break;
+        }
         // Re-resolve immediately before each request. All answers must be
         // public and the socket is then pinned to the first vetted address.
         try {
@@ -261,6 +295,13 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         }
         const remainingMs = deadline - now();
         if (remainingMs <= 0) return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan exceeded its execution deadline.');
+        // DNS resolution can take time; check again immediately before opening
+        // the request so a withdrawal during resolution is not ignored.
+        if (!(await isDastRequestAuthorized(record, current.url, options.authorize))) {
+          if (observations.length === 0) return failed('DAST_TARGET_BLOCKED', 'The linked assessment does not authorize this DAST request.');
+          partialReason = 'A subsequent request was skipped because the linked assessment scope or authorization no longer permits it.';
+          break;
+        }
         let response: DastProbeResponse;
         try {
           response = await transport.probe(current, {
@@ -289,6 +330,10 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         const contentType = safeContentType(response);
         const endpoint = current.url;
         const headerSummary = safeHeaderSummaries(response);
+        if (!isRedirect(response.status) && astObservation === undefined) {
+          astObservation = { endpoint, content: response.body, ...(contentType === undefined ? {} : { contentType }),
+            bodyTruncated: response.bodyTruncated, responseStatus: response.status, responseTimeMs: response.elapsedMs, observedAt };
+        }
         observations.push({
           endpoint,
           method: 'GET',
@@ -310,21 +355,34 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         for (const rule of ruleMatches) {
           findings.push(buildFinding(record, configuredUrl, endpoint, response, rule, observedAt));
         }
-        // Dataset DAST packs (honest extension — same finding model, same caps)
-        let allPackRules: typeof options.packRules = options.packRules as any;
-        if (options.dataset?.configured) {
-          try { const { getMergedDastRules } = await import('../../external/packIntegration.js'); const ds = await getMergedDastRules(options.dataset as any); if (ds.length > 0) allPackRules = ds as any; } catch {}
-        }
-        if (allPackRules && allPackRules.length > 0) {
+        // Dataset DAST packs (same finding model and request bounds).
+        if (allPackRules.length > 0) {
           const { evaluatePackDastCheck } = await import('../../external/evaluator.js');
           for (const packRule of allPackRules) {
             let matched = false;
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch {}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch { /* fail closed: optional path */ }
             if (matched) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const packMatch = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
               findings.push(buildFinding(record, configuredUrl, endpoint, response, packMatch, observedAt));
               if (findings.length > MAX_FINDINGS_PER_SCAN) break;
             }
+          }
+        }
+        // Pump 15: generic advisory analysis on the SAME passive response.
+        // No extra request, no payload, no exploit — only version signals.
+        if (options.advisory !== undefined) {
+          const advisoryResult = await options.advisory.evaluate({
+            headers: response.headers,
+            body: response.body,
+          });
+          for (const match of advisoryResult.matches) {
+            const key = `${match.ruleId}\n${match.location}\n${match.observedVersion}`;
+            if (advisoryMatches.has(key)) continue;
+            advisoryMatches.set(key, {
+              match, endpoint, status: response.status, elapsedMs: response.elapsedMs, observedAt,
+            });
           }
         }
         if (response.bodyTruncated) {
@@ -350,10 +408,32 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
         redirectsFollowed += 1;
       }
 
-      const truncated = findings.length > MAX_FINDINGS_PER_SCAN;
+      let advisoryDetailsOmitted = false;
+      for (const entry of advisoryMatches.values()) {
+        if (findings.length >= MAX_FINDINGS_PER_SCAN) { advisoryDetailsOmitted = true; break; }
+        findings.push(advisoryDastFinding(entry.match, {
+          record,
+          targetUrl: configuredUrl,
+          endpoint: entry.endpoint,
+          responseStatus: entry.status,
+          responseTimeMs: entry.elapsedMs,
+          observedAt: entry.observedAt,
+        }));
+      }
+      const ast = await analyzeDastResponseAst({ record, ...(astObservation === undefined ? {} : { observation: astObservation }), rules: astRules, signal: context.signal,
+        remainingMs: deadline - now(), availableFindings: MAX_FINDINGS_PER_SCAN - findings.length });
+      findings.push(...ast.findings);
+      if (context.signal.aborted || now() >= deadline) return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan exceeded its execution deadline.');
+      if (ast.summary.status === 'PARTIAL' && partialReason === undefined) partialReason = 'Response script AST analysis was incomplete; see AST coverage.';
+      if (allPackRules.length === 0) {
+        partialReason = `${partialReason === undefined ? '' : `${partialReason} `}No DAST response rules were available.`.slice(0, 200);
+      }
+      const truncated = advisoryDetailsOmitted || findings.length > MAX_FINDINGS_PER_SCAN;
+      if (truncated) partialReason = `${partialReason === undefined ? '' : `${partialReason} `}Finding details reached the configured cap.`.slice(0, 200);
       const boundedFindings = findings.slice(0, MAX_FINDINGS_PER_SCAN);
       const partial = partialReason !== undefined;
       const result: ScanResultSummary = {
+        astSupplement: ast.summary,
         findingsTotal: boundedFindings.length,
         findingsBySeverity: statusCounts(boundedFindings),
         requestsMade: observations.length,

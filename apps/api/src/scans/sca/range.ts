@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment -- legacy untyped boundary; new modules use unknown.
 // @ts-nocheck
 /**
  * Version-range syntax validation + evaluation for `affected[].range`.

@@ -63,7 +63,7 @@ describe('structured assessment project UI', () => {
     await user.selectOptions(screen.getByTestId('scan-assessment-select'), ASSESSMENT_ID);
     await user.click(screen.getByTestId('request-scan-button'));
     await waitFor(() => expect(createScan).toHaveBeenCalled());
-    expect(createScan.mock.calls[0]).toEqual([PROJECT_ID, 'SAST', expect.any(String), undefined, ASSESSMENT_ID]);
+    expect(createScan.mock.calls[0]).toEqual([PROJECT_ID, 'SAST', expect.any(String), undefined, ASSESSMENT_ID, undefined]);
   });
 
   test('classification-only surface stays hidden for Developer and Student presentation', async () => {

@@ -17,7 +17,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     // Node packages: API, Worker, shared contracts.
-    files: ['apps/api/**/*.ts', 'apps/worker/**/*.ts', 'packages/shared/**/*.ts'],
+    files: ['apps/api/**/*.{ts,mjs}', 'apps/worker/**/*.ts', 'packages/shared/**/*.ts'],
     languageOptions: {
       globals: { ...globals.node },
     },

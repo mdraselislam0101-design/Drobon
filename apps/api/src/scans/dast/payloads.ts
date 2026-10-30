@@ -38,7 +38,7 @@ export const SAFE_ACTIVE_PAYLOADS: readonly ActivePayload[] = [
     id: 'ACT-XSS-01',
     category: 'xss-reflected',
     // Non-executable marker — reflected verbatim check only, never executed (no browser).
-    value: 'drobon-xss-1337\"><svg-drobon>',
+    value: 'drobon-xss-1337"><svg-drobon>',
     detector: /drobon-xss-1337/,
     description: 'Reflected XSS marker echoed in response body',
   },

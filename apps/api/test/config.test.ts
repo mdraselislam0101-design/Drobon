@@ -255,3 +255,22 @@ describe('loadConfig', () => {
     expect(config.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
+
+describe('ADVISORY_PATH (generic advisory engine)', () => {
+  test('defaults to no advisory pack configured', () => {
+    expect(loadConfig({}).advisoryPath).toBeUndefined();
+    expect(loadConfig({ ADVISORY_PATH: '  ' }).advisoryPath).toBeUndefined();
+  });
+
+  test('accepts a printable path and rejects a control-character path', () => {
+    expect(loadConfig({ ADVISORY_PATH: '/opt/drobon/advisory-pack.json' }).advisoryPath)
+      .toBe('/opt/drobon/advisory-pack.json');
+    expect(() => loadConfig({ ADVISORY_PATH: '/opt/bad\npath' })).toThrow(ConfigError);
+  });
+
+  test('is independent of the dataset provider', () => {
+    const config = loadConfig({ ADVISORY_PATH: '/tmp/pack.json' });
+    expect(config.vulnIntelProvider).toBe('none');
+    expect(config.advisoryPath).toBe('/tmp/pack.json');
+  });
+});

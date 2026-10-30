@@ -3,10 +3,9 @@
  *
  * This provider loads the verified Drobon-Dataset corpus from a
  * filesystem path (DATASET_PATH) that is OUTSIDE the main app repo —
- * preserving the absolute dataset lock (no dataset files are ever
- * committed to the app repo). The app repo only ships a Null provider;
- * this file is the future integration seam documented in
- * docs/PROVIDER_MAPPING.md of the dataset repo.
+ * without vendoring the dataset in the app repo. It is an optional,
+ * operator-configured alternative to the default Null provider; it does
+ * not fetch, refresh or establish completeness of external data.
  *
  * Usage (local dev):
  *   git clone https://github.com/mdraselislam0101-design/Drobon-Dataset ../Drobon-Dataset
@@ -22,7 +21,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ScaEcosystem } from '@drobon/shared';
+import { FINDING_SEVERITIES, type ScaEcosystem } from '@drobon/shared';
 import { satisfiesRange } from './range.js';
 import type {
   DependencyCoordinate,
@@ -77,13 +76,16 @@ function isValidRecord(obj: unknown): obj is DatasetRecord {
   if (typeof obj !== 'object' || obj === null) return false;
   const r = obj as Record<string, unknown>;
   return (
-    typeof r['id'] === 'string' &&
-    typeof r['ecosystem'] === 'string' &&
-    typeof r['package'] === 'string' &&
-    typeof r['summary'] === 'string' &&
-    typeof r['severity'] === 'string' &&
-    Array.isArray(r['affected']) &&
-    r['affected'].every((a) => typeof (a as Record<string, unknown>)['range'] === 'string') &&
+    typeof r['id'] === 'string' && r['id'].trim().length > 0 &&
+    (r['ecosystem'] === 'npm' || r['ecosystem'] === 'pypi') &&
+    typeof r['package'] === 'string' && r['package'].trim().length > 0 &&
+    typeof r['summary'] === 'string' && r['summary'].trim().length > 0 &&
+    typeof r['severity'] === 'string' && (FINDING_SEVERITIES as readonly string[]).includes(r['severity']) &&
+    (r['url'] === undefined || typeof r['url'] === 'string') &&
+    Array.isArray(r['affected']) && r['affected'].length > 0 &&
+    r['affected'].every((a: unknown) => typeof a === 'object' && a !== null &&
+      typeof (a as Record<string, unknown>)['range'] === 'string' &&
+      ((a as Record<string, string>)['range'] ?? '').trim().length > 0) &&
     typeof r['fixture'] === 'boolean'
   );
 }
@@ -92,13 +94,13 @@ export function createFilesystemIntelligenceProvider(
   options: FilesystemProviderOptions,
 ): VulnerabilityIntelligenceProvider {
   const { datasetPath, logger } = options;
-  let loaded = false;
-  let records: DatasetRecord[] = [];
+  let loadPromise: Promise<void> | undefined;
+  const records: DatasetRecord[] = [];
+  const recordsByPackage = new Map<string, DatasetRecord[]>();
   let loadError: string | null = null;
+  let skippedRecord = false;
 
-  async function ensureLoaded(): Promise<void> {
-    if (loaded) return;
-    loaded = true;
+  async function loadRecords(): Promise<void> {
     const npmDir = join(datasetPath, 'vuln-intel', 'npm');
     const pypiDir = join(datasetPath, 'vuln-intel', 'pypi');
     const files = [...(await collectJsonFiles(npmDir)), ...(await collectJsonFiles(pypiDir))];
@@ -114,13 +116,20 @@ export function createFilesystemIntelligenceProvider(
         const raw = await readFile(file, 'utf8');
         const parsed = JSON.parse(raw) as unknown;
         if (!isValidRecord(parsed)) {
+          skippedRecord = true;
           logger?.warn?.(`[dataset] Skipping invalid record shape: ${file}`);
           continue;
         }
         if (parsed.fixture === true) continue;
-        // Honesty: only non-fixture, valid records
+        // Honesty: only non-fixture, valid records. Index once per loaded
+        // dataset rather than scanning the entire corpus for each package.
         records.push(parsed);
+        const key = `${parsed.ecosystem}\n${parsed.package}`;
+        const bucket = recordsByPackage.get(key) ?? [];
+        bucket.push(parsed);
+        recordsByPackage.set(key, bucket);
       } catch (err) {
+        skippedRecord = true;
         logger?.warn?.(`[dataset] Failed to load ${file}: ${(err as Error).message}`);
       }
     }
@@ -128,6 +137,13 @@ export function createFilesystemIntelligenceProvider(
     if (records.length === 0) {
       loadError = 'Dataset path exists but contains no valid non-fixture records';
     }
+  }
+
+  // Concurrent scans share one in-flight load. Marking the provider loaded
+  // before asynchronous reads finish would transiently report no data.
+  function ensureLoaded(): Promise<void> {
+    loadPromise ??= loadRecords();
+    return loadPromise;
   }
 
   return {
@@ -146,21 +162,21 @@ export function createFilesystemIntelligenceProvider(
       // We do exact string match per dataset normalization
       const advisories: ProviderAdvisory[] = [];
       const seen = new Set<string>(); // dedup by id per coordinate to avoid shard duplicates
+      let incomplete = skippedRecord;
 
       for (const coord of coordinates) {
         if (coord.version === undefined || coord.version === '') {
-          // Conservative: version-less coordinates never match (per FORMAT.md)
+          // A range or absent version is not a checked installed version.
+          incomplete = true;
           continue;
         }
         // Normalize version trim
         const version = coord.version.trim();
-        if (version.length === 0) continue;
-
-        for (const rec of records) {
-          if (rec.ecosystem !== coord.ecosystem) continue;
-          // Exact package name match (dataset stores normalized names)
-          if (rec.package !== coord.name) continue;
-
+        if (version.length === 0) { incomplete = true; continue; }
+        // Exact package name match (dataset stores normalized names).
+        const packageRecords = recordsByPackage.get(`${coord.ecosystem}\n${coord.name}`) ?? [];
+        if (packageRecords.length === 0) incomplete = true;
+        for (const rec of packageRecords) {
           // Check any affected range matches
           let matched = false;
           for (const affected of rec.affected) {
@@ -170,7 +186,8 @@ export function createFilesystemIntelligenceProvider(
                 break;
               }
             } catch {
-              // Un-evaluable range => treat as unknown, never match (fail-closed)
+              // A non-evaluable version/range is unknown, never a clean result.
+              incomplete = true;
               continue;
             }
           }
@@ -194,6 +211,7 @@ export function createFilesystemIntelligenceProvider(
         datasetStatus: 'DATASET_AVAILABLE',
         providerId: 'filesystem',
         advisories,
+        ...(incomplete ? { incomplete: true } : {}),
       };
     },
   };

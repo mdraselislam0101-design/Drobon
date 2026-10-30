@@ -1,5 +1,7 @@
 # DROBON AEGIS AI — UserType Feature Matrix (Phase 20)
 
+> **Historical Phase 20 snapshot:** the individual statuses and totals below are not maintained as a current feature inventory. Since then, SARIF and bounded PDF exports, a local CI adapter, FALSE_POSITIVE lifecycle state and additional scanner capabilities have been added. See [`PAID_WORKFLOWS_BN.md`](./PAID_WORKFLOWS_BN.md), [`REPORTS.md`](./REPORTS.md), and current source/tests for present scope and limitations.
+
 > Forensic classification of every requested UserType capability. Every label is
 > backed by code, tests, or live verification — a UI-only presence is **never**
 > classified complete (Pump rule 17). UserType is an organization /

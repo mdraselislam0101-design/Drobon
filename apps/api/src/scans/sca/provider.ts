@@ -7,12 +7,10 @@
  * orchestration) is COMPLETELY USABLE without any provider data and
  * stays dataset-independent by construction.
  *
- * THE DATASET LOCK (absolute): Pump 9 ships NO dataset. The only
- * registered provider is the Null provider below, whose assessment is
- * always `NO_DATA_LOADED` with zero advisories — which the engine
- * translates to the honest `NOT_ASSESSED` state. The application
- * NEVER fabricates a CVE/GHSA/KEV/EPSS record, a "vulnerable" flag or
- * a risk score without an actual loaded intelligence source.
+ * The main app ships no intelligence dataset. The default Null provider
+ * reports `NO_DATA_LOADED`; an operator may configure the separate,
+ * read-only filesystem provider. The application never invents an
+ * advisory match when the selected provider has no loaded data.
  *
  * Provider contract rules:
  * - server-side composition only (app.ts); nothing client-facing can
@@ -30,7 +28,7 @@ import type { ScaAdvisory, ScaDatasetStatus, ScaEcosystem } from '@drobon/shared
 export interface DependencyCoordinate {
   ecosystem: ScaEcosystem;
   name: string;
-  /** Exact version when a lockfile provided one; absent for ranges. */
+  /** Lockfile version or evaluable declared pin; absent for ranges. Not proof of installation. */
   version?: string;
   /** The inventory record this coordinate came from (response wiring). */
   dependencyId: string;
@@ -62,6 +60,8 @@ export interface VulnerabilityAssessment {
   providerId: string;
   /** Verified matches — EMPTY unless a real loaded dataset matched. */
   advisories: ProviderAdvisory[];
+  /** Some coordinates or records could not be evaluated; matches may still exist. */
+  incomplete?: boolean;
 }
 
 export interface VulnerabilityIntelligenceProvider {

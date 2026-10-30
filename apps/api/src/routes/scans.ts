@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import {
   ASSESSMENT_ID_PATTERN,
+  engagementAllowsScan,
   FINDING_SEVERITIES,
   IDEMPOTENCY_KEY_PATTERN,
   type ScanComparisonEntry,
@@ -9,6 +10,7 @@ import {
   type ScanDetailResponse,
   type ScanResponse,
   type ScansResponse,
+  type Assessment,
   isScanType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
@@ -186,12 +188,14 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           ]);
         }
         let assessmentId: string | undefined;
+        let linkedAssessment: Assessment | undefined;
         if (parsed.value.assessmentId !== undefined) {
           if (!ASSESSMENT_ID_PATTERN.test(parsed.value.assessmentId)) throw notFound('Assessment not found.');
           const assessment = await assessments.findByProjectAndId(actor.id, project.id, parsed.value.assessmentId);
           if (assessment === undefined) throw notFound('Assessment not found.');
           if (assessment.status !== 'ACTIVE') throw conflict('Only an active project assessment can be linked to a new scan.');
           assessmentId = assessment.id;
+          linkedAssessment = assessment;
         }
         // PUMPS 8–11 PRE-FLIGHT (quota protection): source engines need
         // a snapshot; DAST needs a configured, currently safe project
@@ -252,6 +256,26 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             );
           }
         }
+        // Pump 17 — AUTHORIZATION GATE (before quota consumption).
+        // With no engagement record the legacy UNVERIFIED path is kept:
+        // existing workspace behaviour is unchanged. Once an engagement is
+        // declared it becomes the authority for the linked scan's type,
+        // target host, path and validity window. This is an owner-attested
+        // workspace record, NOT independent legal verification.
+        if (linkedAssessment !== undefined) {
+          const gateInput: { scanType: typeof scanType; nowIso: string; hostname?: string; path?: string } = {
+            scanType, nowIso: at(),
+          };
+          if (targetUrl !== undefined) {
+            const parsedTarget = new URL(targetUrl);
+            gateInput.hostname = parsedTarget.hostname.toLowerCase();
+            gateInput.path = parsedTarget.pathname || '/';
+          }
+          const gate = engagementAllowsScan(linkedAssessment.engagements, gateInput);
+          if (!gate.allowed) {
+            throw conflict(`Authorization gate: ${gate.reason} Declare an active engagement for this target, scope and scan type first.`);
+          }
+        }
         const idempotencyKey = idempotencyKeyFrom(req.headers);
         // Quota decision + creation are ONE atomic operation (the
         // store's serialized section calls the UsageService — the
@@ -283,7 +307,18 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (assessmentId === undefined) {
           outcome = await createScan();
         } else {
-          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, createScan);
+          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, async (current) => {
+            // Re-evaluate while holding the assessment store's serialization
+            // lock so a concurrent withdrawal cannot race scan creation.
+            const target = targetUrl === undefined ? undefined : new URL(targetUrl);
+            const gate = engagementAllowsScan(current.engagements, {
+              scanType,
+              nowIso: at(),
+              ...(target === undefined ? {} : { hostname: target.hostname.toLowerCase(), path: target.pathname || '/' }),
+            });
+            if (!gate.allowed) throw conflict(`Authorization gate: ${gate.reason}`);
+            return createScan();
+          });
           if (gated.outcome === 'not-found') throw notFound('Assessment not found.');
           if (gated.outcome === 'inactive') throw conflict('Only an active project assessment can be linked to a new scan.');
           outcome = gated.value;

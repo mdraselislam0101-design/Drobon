@@ -24,6 +24,7 @@ import {
   type ScaDependency,
   type ScaEcosystem,
 } from '@drobon/shared';
+import { exactDeclaredVersion } from './exactVersion.js';
 import {
   isPurlSafeVersion,
   parsePackageJson,
@@ -61,9 +62,13 @@ export interface InventoryResult {
    * and NO graph, whatever the classification counts say.
    */
   hasLockfileEvidence: boolean;
+  /** True only when every retained coordinate is backed by a lockfile. */
+  allDependenciesResolved: boolean;
   /** Root project identity (single named package.json), when known. */
   rootName?: string;
   rootVersion?: string;
+  /** The sole named package's path, used to avoid inventing SBOM root edges. */
+  rootManifestPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +109,8 @@ function rawSortKey(raw: RawDependency): string {
  * Build the normalized inventory from discovered manifests.
  *
  * Merge rules (deterministic):
- * - Entries dedupe on (ecosystem, name); an entry WITH lockfile
- *   resolution replaces one WITHOUT (identical otherwise).
+ * - Entries dedupe on ecosystem, name, version evidence and manifest path;
+ *   different versions and different manifest paths are retained.
  * - A package.json in a directory pairs with the package-lock.json in
  *   the SAME directory: manifest declarations supply declared ranges
  *   and the direct set; the lockfile supplies resolved versions,
@@ -142,13 +147,15 @@ export function buildInventory(
   const byKey = new Map<string, MergedEntry>();
   let rootName: string | undefined;
   let rootVersion: string | undefined;
+  let rootManifestPath: string | undefined;
+  let namedRoots = 0;
 
   const consider = (raw: RawDependency): void => {
-    // Lockfile v1 fixup: the companion package.json supplies the
-    // direct set (everything declared there is direct; other lockfile
-    // entries are transitive — a lockfile holds the full closure).
-    const key = `${raw.ecosystem}\n${raw.name}`;
+    // Different versions and manifest paths are distinct evidence. Name-only
+    // deduplication silently lost vulnerable nested or monorepo versions.
+    // Duplicate instances with the same coordinate and manifest still merge.
     const fingerprint = dependencyFingerprint(raw);
+    const key = fingerprint;
     const existing = byKey.get(key);
     if (existing === undefined) {
       byKey.set(key, { raw, fingerprint });
@@ -164,6 +171,10 @@ export function buildInventory(
         },
         fingerprint,
       });
+    } else if (existing.raw.dependencyClass !== 'direct' && raw.dependencyClass === 'direct') {
+      // Identical resolved versions can occur both nested and at the root;
+      // retain the evidenced direct copy and its manifest metadata.
+      byKey.set(key, { raw, fingerprint });
     } else if (
       existing.raw.declaredVersion === undefined &&
       raw.declaredVersion !== undefined &&
@@ -177,9 +188,18 @@ export function buildInventory(
   for (const entry of parsedResults) {
     const { result, kind } = entry;
     if (kind === 'package-json') {
-      if (result.rootName !== undefined && rootName === undefined) {
-        rootName = result.rootName;
-        rootVersion = result.rootVersion;
+      if (result.rootName !== undefined) {
+        namedRoots += 1;
+        if (namedRoots === 1) {
+          rootName = result.rootName;
+          rootVersion = result.rootVersion;
+          rootManifestPath = entry.path;
+        } else {
+          // A multi-root monorepo is not one application component.
+          rootName = undefined;
+          rootVersion = undefined;
+          rootManifestPath = undefined;
+        }
       }
       const dir = dirOf(entry.path);
       const lock = lockByDir.get(dir);
@@ -190,9 +210,14 @@ export function buildInventory(
           ...lock.result.directNames,
         ]);
         for (const lockDep of lock.result.dependencies) {
-          const declared = result.dependencies.find(
+          // In v2/v3 the lock parser knows whether the installation is
+          // root-level. Never attach a direct declaration to a nested copy.
+          const isDirect = lock.result.lockfileVersion === 1
+            ? lockDep.dependencyClass !== 'transitive' && directNames.has(lockDep.name)
+            : lockDep.lockfileRoot === true && directNames.has(lockDep.name);
+          const declared = isDirect ? result.dependencies.find(
             (manifestDep) => manifestDep.name === lockDep.name,
-          );
+          ) : undefined;
           const declaredVersion = declared?.declaredVersion;
           consider({
             ...lockDep,
@@ -200,18 +225,15 @@ export function buildInventory(
             lockfilePath: lock.path,
             ...(declaredVersion === undefined ? {} : { declaredVersion }),
             dependencyType: declared?.dependencyType ?? lockDep.dependencyType,
-            dependencyClass: directNames.has(lockDep.name)
-              ? 'direct'
-              : lock.result.lockfileVersion === 1
-                ? 'transitive'
-                : lockDep.dependencyClass,
+            dependencyClass: isDirect ? 'direct' : 'transitive',
           });
         }
         for (const manifestDep of result.dependencies) {
-          if (lock.result.dependencies.some((lockDep) => lockDep.name === manifestDep.name)) {
+          if (lock.result.dependencies.some((lockDep) => lockDep.name === manifestDep.name &&
+              (lock.result.lockfileVersion === 1 ? lockDep.dependencyClass !== 'transitive' : lockDep.lockfileRoot === true))) {
             continue;
           }
-          consider(manifestDep); // Declared but never resolved.
+          consider(manifestDep); // Declared but no direct resolution was evidenced.
         }
       } else {
         for (const manifestDep of result.dependencies) {
@@ -299,8 +321,10 @@ export function buildInventory(
     transitiveCount,
     unclassifiedCount,
     hasLockfileEvidence,
+    allDependenciesResolved: merged.length > 0 && merged.every(({ raw }) => raw.versionSource === 'lockfile'),
     ...(rootName === undefined ? {} : { rootName }),
     ...(rootName === undefined || rootVersion === undefined ? {} : { rootVersion }),
+    ...(rootName === undefined || rootManifestPath === undefined ? {} : { rootManifestPath }),
   };
 }
 
@@ -409,12 +433,7 @@ function deterministicUuid(seed: string): string {
  */
 export function buildSbom(inventory: InventoryResult): SbomDocument {
   const components: SbomComponent[] = inventory.dependencies.map((dependency) => {
-    const version =
-      dependency.resolvedVersion ??
-      (dependency.declaredVersion !== undefined &&
-      /^[0-9][A-Za-z0-9._+-]*$/.test(dependency.declaredVersion)
-        ? dependency.declaredVersion
-        : undefined);
+    const version = dependency.resolvedVersion ?? exactDeclaredVersion(dependency.ecosystem, dependency.declaredVersion);
     const hashes = hashesFor(dependency.integrity);
     return {
       type: 'library' as const,
@@ -432,7 +451,8 @@ export function buildSbom(inventory: InventoryResult): SbomDocument {
   if (inventory.rootName !== undefined) {
     rootBomRef = `drobon:root:${deterministicUuid(`${inventory.rootName}@${inventory.rootVersion ?? ''}`)}`;
     const directRefs = inventory.dependencies
-      .filter((dependency) => dependency.dependencyClass === 'direct')
+      .filter((dependency) => dependency.dependencyClass === 'direct' &&
+        dependency.manifestPath === inventory.rootManifestPath)
       .map((dependency) => dependency.fingerprint);
     if (directRefs.length > 0) {
       dependencies.push({ ref: rootBomRef, dependsOn: directRefs });
