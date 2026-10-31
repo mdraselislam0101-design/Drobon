@@ -9,7 +9,8 @@ import { loadConfig, type ApiConfig } from '../src/config.js';
 import { acquireJsonStoreLeases } from '../src/lib/jsonStoreLease.js';
 import { createLogger } from '../src/logger.js';
 import { startServer } from '../src/server.js';
-import { createMemoryScanStore } from '../src/scans/store.js';
+import { createJsonFileScanStore, createMemoryScanStore } from '../src/scans/store.js';
+import { createJsonFileAssessmentStore } from '../src/assessments/store.js';
 import type { ScanEngine } from '../src/scans/engines.js';
 
 const linux = process.platform === 'linux';
@@ -38,6 +39,25 @@ describe.skipIf(!linux)('Linux same-network-namespace default JSON store guard',
     await a.stop(); // idempotent stop
     const restarted = await startServer({ config: config(path), logger, scanProcessorAutoStart: false });
     await restarted.stop();
+  }));
+
+  test.each(['scan', 'assessment'] as const)('known injected %s file stores are leased by their actual path', (kind) => withDir(async (dir) => {
+    const path = join(dir, `${kind}.json`);
+    const cfg = config(':memory:'); // deliberately differs from the injected file path
+    const firstDeps = kind === 'scan' ? { scanStore: createJsonFileScanStore(path) }
+      : { assessmentStore: createJsonFileAssessmentStore(path) };
+    const secondDeps = kind === 'scan' ? { scanStore: createJsonFileScanStore(path) }
+      : { assessmentStore: createJsonFileAssessmentStore(path) };
+    const first = await startServer({ config: cfg, logger, ...firstDeps, scanProcessorAutoStart: false });
+    let second: Awaited<ReturnType<typeof startServer>> | undefined;
+    let failure: unknown;
+    try {
+      try { second = await startServer({ config: cfg, logger, ...secondDeps, scanProcessorAutoStart: false }); }
+      catch (error) { failure = error; }
+      expect(second).toBeUndefined();
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/already owned/i);
+    } finally { if (second !== undefined) await second.stop(); await first.stop(); }
   }));
 
   test('directory symlink aliases and duplicate default store paths fail closed', () => withDir(async (dir) => {

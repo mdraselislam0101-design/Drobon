@@ -32,6 +32,43 @@ export class DastHttpError extends Error {
 }
 
 /**
+ * Bound the managed wait even for an injected transport that ignores both
+ * timeout and abort. A late resolution/rejection is observed and discarded;
+ * this cannot terminate an uncooperative callback or recall sent bytes.
+ * Call synchronously at the authorized probe-start boundary.
+ */
+export function runBoundedDastProbe(transport: DastTransport, target: ResolvedDastTarget, options: DastProbeOptions): Promise<DastProbeResponse> {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      options.signal.removeEventListener('abort', onAbort);
+    };
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      controller.abort();
+      reject(error);
+    };
+    const succeed = (response: DastProbeResponse): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(response);
+    };
+    const onAbort = (): void => { fail(new DastHttpError('aborted')); };
+    const timer = setTimeout(() => fail(new DastHttpError('timeout')), Math.max(1, options.timeoutMs));
+    if (options.signal.aborted) { onAbort(); return; }
+    options.signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      void Promise.resolve(transport.probe(target, { ...options, signal: controller.signal })).then(succeed, fail);
+    } catch (error) { fail(error); }
+  });
+}
+
+/**
  * One bounded GET. The caller must resolve and vet every address first;
  * the custom lookup pins this connection to a vetted IP so the socket
  * cannot perform a second, rebinding DNS lookup. Redirects are never

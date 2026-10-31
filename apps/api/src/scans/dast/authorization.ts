@@ -27,7 +27,12 @@ export function createAssessmentDastAuthorizer(
     try { target = new URL(url); } catch { return false; }
     const hostname = target.hostname.toLowerCase();
     if (!assessment.scope.inScopeHosts.includes(hostname) || assessment.scope.outOfScopeHosts.includes(hostname)) return false;
-    const gate = engagementAllowsScan(assessment.engagements, {
+    // Agent jobs remain bound to the declaration used at queue time. A
+    // different still-active engagement must not reauthorize a withdrawn job.
+    const selected = record.agent === undefined ? assessment.engagements
+      : assessment.engagements?.filter((item) => item.id === record.agent?.engagementId);
+    if (record.agent !== undefined && (selected?.length ?? 0) !== 1) return false;
+    const gate = engagementAllowsScan(selected, {
       scanType: 'DAST', hostname, path: target.pathname || '/', nowIso: new Date(now()).toISOString(),
     });
     return gate.allowed;

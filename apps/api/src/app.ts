@@ -91,6 +91,9 @@ import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type Assess
 import { createAssessmentRoutes } from './routes/assessments.js';
 import { createSocRoutes } from './routes/soc.js';
 import { createAssessmentDastAuthorizer } from './scans/dast/authorization.js';
+import { createAgentExecutor, finalizeAuthorizedAgentScan } from './agent/execution.js';
+import { createAgentRoutes } from './routes/agent.js';
+import { createScanRequestService } from './scans/request.js';
 
 export interface AppDeps {
   config: ApiConfig;
@@ -375,8 +378,20 @@ export function createApp(deps: AppDeps): App {
   // surface the same dataset-backed guidance for a rule (or the same honest
   // UNAVAILABLE fallback when no dataset is configured).
   const guidance = createGuidanceLookup(datasetService);
-  const scanEngines: ScanEngineRegistry = createEngineRegistry(
-    deps.scanEngines ?? [
+  const agentExecutor = createAgentExecutor({
+    executionEnabled: config.agentExperimentalEnabled === true && config.env !== 'production',
+    datasetPath: config.datasetPath,
+    providerId: config.vulnIntelProvider,
+    advisoryPath: config.advisoryPath,
+    projects: projectStore,
+    assessments: assessmentStore,
+    scans: scanStore,
+    sources: sourceStore,
+    targetPolicy: dastTargetPolicy,
+    now: clock,
+    ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
+  });
+  const baseEngines = deps.scanEngines ?? [
       createSastEngine({ sources: sourceStore, dataset: datasetService }),
       createScaEngine({ sources: sourceStore, provider: intelligenceProvider, dataset: datasetService, advisory: advisoryService }),
       createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
@@ -387,12 +402,20 @@ export function createApp(deps: AppDeps): App {
         advisory: advisoryService,
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
       }),
-    ],
-  );
+    ];
+  // Existing jobs retain their original registry. Agent jobs reuse the
+  // same scanner implementations behind a stricter per-job safety gate.
+  const scanEngines: ScanEngineRegistry = createEngineRegistry(baseEngines.map((engine) => ({
+    scanType: engine.scanType,
+    execute: (record, context) => record.agent === undefined
+      ? engine.execute(record, context)
+      : agentExecutor.execute(record, context),
+  })));
   const scanProcessor: ScanProcessor = createScanProcessor({
     store: scanStore,
     engines: scanEngines,
     logger,
+    finalizeAgent: (scan, complete) => finalizeAuthorizedAgentScan(assessmentStore, clock, scan, complete),
     ...(deps.scanProcessorIntervalMs === undefined
       ? {}
       : { intervalMs: deps.scanProcessorIntervalMs }),
@@ -402,6 +425,9 @@ export function createApp(deps: AppDeps): App {
     activePro: (accountId) => entitlements.hasActivePro(accountId),
     ...(deps.usageNow === undefined ? {} : { now: deps.usageNow }),
   });
+
+  const requestService = createScanRequestService({ config, users, assessments: assessmentStore, scans: scanStore,
+    sources: sourceStore, usage, dastTargetPolicy, now: clock });
 
   const routes: Route[] = [
     ...createHealthRoutes({ config }),
@@ -420,7 +446,9 @@ export function createApp(deps: AppDeps): App {
     ...createAdvisoryRoutes({ config, advisory: advisoryService }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createSocRoutes({ projects: projectStore, scans: scanStore, dataset: datasetService, advisory: advisoryService, now: clock }),
-    ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, now: clock }),
+    ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, processor: scanProcessor, now: clock }),
+    ...createAgentRoutes({ config, users, projects: projectStore, assessments: assessmentStore, scans: scanStore,
+      sources: sourceStore, usage, processor: scanProcessor, requestService, now: clock }),
     ...createScanRoutes({
       config,
       users,
@@ -431,6 +459,7 @@ export function createApp(deps: AppDeps): App {
       usage,
       processor: scanProcessor,
       dastTargetPolicy,
+      requestService,
     }),
     ...createSourceRoutes({ config, projects: projectStore, sources: sourceStore }),
     ...createReportsRoutes({ config, projects: projectStore, scans: scanStore, now: clock, guidance }),

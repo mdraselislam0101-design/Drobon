@@ -1,5 +1,4 @@
-import { writePrivateJson } from '../lib/writePrivateJson.js';
-import { readFileSync } from 'node:fs';
+import { createJsonFileWriteFence, readJsonFileSnapshot, registerJsonFileStore, type JsonFileSnapshot } from '../lib/jsonFileWriteFence.js';
 import { randomUUID } from 'node:crypto';
 import {
   ASSESSMENT_DECLARATIONS_MAX_COUNT,
@@ -108,14 +107,15 @@ function parseRecord(value: unknown): AssessmentRecord | undefined {
   return { ...assessment, ownerId } as AssessmentRecord;
 }
 
-function readDocument(path: string): StoreDocument {
-  let raw: string;
-  try { raw = readFileSync(path, 'utf8'); }
+function readDocument(path: string): { document: StoreDocument; snapshot: JsonFileSnapshot | undefined } {
+  let snapshot: JsonFileSnapshot | undefined;
+  try { snapshot = readJsonFileSnapshot(path); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, assessments: [] };
     throw new Error(`Cannot read assessment store at ${path}: ${String((error as NodeJS.ErrnoException).code ?? error)}`);
   }
-  if (Buffer.byteLength(raw, 'utf8') > ASSESSMENT_DOCUMENT_MAX_BYTES) throw new Error(`Assessment store at ${path} exceeds its size limit — refusing to start.`);
+  if (snapshot === undefined) return { document: { version: 1, assessments: [] }, snapshot };
+  if (snapshot.bytes.length > ASSESSMENT_DOCUMENT_MAX_BYTES) throw new Error(`Assessment store at ${path} exceeds its size limit — refusing to start.`);
+  const raw = snapshot.bytes.toString('utf8');
   let parsed: unknown;
   try { parsed = JSON.parse(raw) as unknown; }
   catch { throw new Error(`Assessment store at ${path} is not valid JSON — refusing to start.`); }
@@ -137,10 +137,15 @@ function readDocument(path: string): StoreDocument {
     projectCounts.set(key, count);
     records.push(record);
   });
-  return { version: 1, assessments: records };
+  return { document: { version: 1, assessments: records }, snapshot };
 }
 
-function createStore(initial: AssessmentRecord[], persistWith: (records: AssessmentRecord[]) => void): AssessmentStore {
+interface AssessmentFileGuard {
+  assertCurrent(): void;
+  withCurrentAsync<T>(action: () => Promise<T>): Promise<T>;
+}
+
+function createStore(initial: AssessmentRecord[], persistWith: (records: AssessmentRecord[]) => void, guard: AssessmentFileGuard): AssessmentStore {
   let queue: Promise<unknown> = Promise.resolve();
   const runExclusive = <T>(task: () => T | Promise<T>): Promise<Awaited<T>> => {
     const run = queue.then(task, task);
@@ -173,21 +178,29 @@ function createStore(initial: AssessmentRecord[], persistWith: (records: Assessm
       byId.set(id, record);
       return safeAssessment(record);
     }),
-    listByProject: (ownerId, projectId) => Promise.resolve([...byId.values()]
-      .filter((record) => record.ownerId === ownerId && record.projectId === projectId)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
-      .map(safeAssessment)),
+    listByProject: (ownerId, projectId) => {
+      // This historical listing is a cached view, not an authorization
+      // decision. Probe/start/finalization use guarded assessment operations.
+      return Promise.resolve([...byId.values()]
+        .filter((record) => record.ownerId === ownerId && record.projectId === projectId)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+        .map(safeAssessment));
+    },
     findByProjectAndId: (ownerId, projectId, id) => {
+      guard.assertCurrent();
       if (!ASSESSMENT_ID_PATTERN.test(id)) return Promise.resolve(undefined);
       const record = find(ownerId, projectId, id);
       return Promise.resolve(record === undefined ? undefined : safeAssessment(record));
     },
-    withActiveAssessment: (ownerId, projectId, id, action) => runExclusive(async () => {
+    withActiveAssessment: (ownerId, projectId, id, action) => runExclusive(() => guard.withCurrentAsync(async () => {
+      // Cooperating file writers cannot commit withdrawal while this
+      // authorization transaction starts a scan/probe or finalizes a result.
+      // The Agent passes a nested network promise and releases before I/O.
       const current = find(ownerId, projectId, id);
       if (current === undefined) return { outcome: 'not-found' as const };
       if (current.status !== 'ACTIVE') return { outcome: 'inactive' as const };
       return { outcome: 'ready' as const, value: await action(safeAssessment(current)) };
-    }),
+    })),
     update: (input) => runExclusive(() => {
       const current = find(input.ownerId, input.projectId, input.assessmentId);
       if (current === undefined) return { outcome: 'not-found' };
@@ -289,16 +302,17 @@ function createStore(initial: AssessmentRecord[], persistWith: (records: Assessm
 }
 
 export function createJsonFileAssessmentStore(path: string): AssessmentStore {
-  const document = readDocument(path);
+  const { document, snapshot } = readDocument(path);
+  const fence = createJsonFileWriteFence(path, snapshot, 'Assessment');
   const persistWith = (assessments: AssessmentRecord[]): void => {
     const payload: StoreDocument = { version: 1, assessments };
     const serialized = `${JSON.stringify(payload, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > ASSESSMENT_DOCUMENT_MAX_BYTES) throw new RangeError('Assessment store capacity has been reached.');
-    writePrivateJson(path, serialized);
+    fence.persist(serialized);
   };
-  return createStore(document.assessments, persistWith);
+  return registerJsonFileStore(createStore(document.assessments, persistWith, fence), path);
 }
 
 export function createMemoryAssessmentStore(): AssessmentStore {
-  return createStore([], () => undefined);
+  return createStore([], () => undefined, { assertCurrent: () => undefined, withCurrentAsync: (action) => action() });
 }

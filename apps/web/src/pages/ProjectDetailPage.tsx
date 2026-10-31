@@ -41,6 +41,8 @@ import { ErrorState } from '../components/ErrorState.js';
 import { LoadingState } from '../components/LoadingState.js';
 import { AstWorkflowGuide } from '../components/AstWorkflowGuide.js';
 import { FindingTaskDraft } from '../components/FindingTaskDraft.js';
+import { AssessmentAgent } from '../components/AssessmentAgent.js';
+import { EngagementControls } from '../components/EngagementControls.js';
 
 /**
  * One project: view, edit, archive/unarchive (Pump 6).
@@ -164,6 +166,7 @@ export function ProjectDetailPage(): React.JSX.Element {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [latestScans, setLatestScans] = useState<readonly Scan[] | null>(null);
+  const [agentScanRefresh, setAgentScanRefresh] = useState(0);
 
   const load = useCallback(async (): Promise<void> => {
     if (projectId === undefined) {
@@ -335,7 +338,7 @@ export function ProjectDetailPage(): React.JSX.Element {
             onChanged={(updated) => setProject({ status: 'ready', project: updated })}
           />
 
-          {showAssessmentTools && <AssessmentsSection projectId={project.project.id} projectStatus={project.project.status} dastTargetUrl={project.project.dastTargetUrl} />}
+          {showAssessmentTools && <AssessmentsSection projectId={project.project.id} projectStatus={project.project.status} dastTargetUrl={project.project.dastTargetUrl} onAgentQueued={() => setAgentScanRefresh((value) => value + 1)} />}
           <SourcesSection projectId={project.project.id} projectStatus={project.project.status} />
 
           <ScansSection
@@ -343,6 +346,7 @@ export function ProjectDetailPage(): React.JSX.Element {
             projectStatus={project.project.status}
             dastTargetUrl={project.project.dastTargetUrl}
             showAssessmentTools={showAssessmentTools}
+            externalReloadToken={agentScanRefresh}
             onScansLoaded={setLatestScans}
           />
           <AssistantSection projectId={project.project.id} externalScans={latestScans} />
@@ -614,10 +618,12 @@ function AssessmentsSection({
   projectId,
   projectStatus,
   dastTargetUrl,
+  onAgentQueued,
 }: {
   projectId: string;
   projectStatus: string;
   dastTargetUrl: string | undefined;
+  onAgentQueued: () => void;
 }): React.JSX.Element {
   const client = useApiClient();
   const [assessments, setAssessments] = useState<Assessment[]>([]);
@@ -782,7 +788,9 @@ function AssessmentsSection({
                   </ul>
                 )}
                 <p className="muted">An engagement is the operator's own written attestation (client, exact hosts, allowed scan types, validity window and path scope). Drobon stores it as an append-only audit record and gates linked scans on it — it does not independently verify legal permission, signatures or client authority.</p>
+                <EngagementControls key={detail.assessment.id} projectId={projectId} projectStatus={projectStatus} assessment={detail.assessment} targetUrl={dastTargetUrl} onChanged={() => { refresh(); onAgentQueued(); }} />
               </div>
+              <AssessmentAgent key={detail.assessment.id} projectId={projectId} assessmentId={detail.assessment.id} onQueued={onAgentQueued} />
               <h4>Linked scan and report history</h4>
               {detail.progress.recentScans.length === 0 ? <p className="muted">No scans are linked yet. Start this assessment and select it when requesting a scan.</p> : <ul className="assessment-scan-list">{detail.progress.recentScans.map((scan) => <li key={scan.id}><strong>{scan.scanType} · {scan.status}</strong> · {scan.findingsTotal ?? 0} findings{scan.reportAvailable ? ' · report saved' : ''} · <a href={`#scan-${scan.id}`} data-testid={`assessment-linked-scan-${scan.id}`}>Open linked scan and its finding/remediation/report workflow</a></li>)}</ul>}
               <p className="field-hint">Finding remediation state, notes, rescan verification and persisted reports remain in the existing scan/finding/report workflows. These assessment links do not duplicate scanner data.</p>
@@ -802,12 +810,14 @@ function ScansSection({
   projectStatus,
   dastTargetUrl,
   showAssessmentTools,
+  externalReloadToken,
   onScansLoaded,
 }: {
   projectId: string;
   projectStatus: string;
   dastTargetUrl: string | undefined;
   showAssessmentTools: boolean;
+  externalReloadToken: number;
   onScansLoaded?: (scans: readonly Scan[]) => void;
 }): React.JSX.Element {
   const client = useApiClient();
@@ -865,7 +875,7 @@ function ScansSection({
 
   useEffect(() => {
     void load();
-  }, [load, reloadToken]);
+  }, [load, reloadToken, externalReloadToken]);
 
   const hasActiveScan =
     scans?.some((scan) => scan.status === 'QUEUED' || scan.status === 'RUNNING') ?? false;

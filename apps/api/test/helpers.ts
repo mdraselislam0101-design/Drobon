@@ -100,6 +100,8 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   usageStore?: UsageStore;
   /** Injected clock for usage period math (deterministic month boundaries). */
   usageNow?: () => number;
+  /** Inject app/assessment/agent clock for local lifecycle tests. */
+  appNow?: () => number;
   /** Use a real JSON project store at a temp path instead of memory (Pump 6). */
   projectStoreDir?: string;
   /** Inject a project store directly (defaults: memory or projectStoreDir). */
@@ -185,6 +187,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     usageStoreDir,
     usageStore,
     usageNow,
+    appNow,
     projectStoreDir,
     projectStore,
     scanStoreDir,
@@ -361,6 +364,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(partnerNow === undefined ? {} : { partnerNow }),
     ...(usageStore === undefined ? {} : { usageStore }),
     ...(usageNow === undefined ? {} : { usageNow }),
+    ...(appNow === undefined ? {} : { now: appNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
     scanStore: resolvedScanStore,
     ...(datasetService === undefined ? {} : { datasetService }),

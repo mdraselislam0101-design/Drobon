@@ -82,6 +82,8 @@ export interface ApiConfig {
   assessmentStorePath: string;
   /** Opt in to requiring an active, scoped owner-attested engagement for DAST. */
   dastRequireEngagement?: boolean;
+  /** Experimental agent execution: explicit opt-in, forbidden in production. */
+  agentExperimentalEnabled?: boolean;
   studentStorePath: string;
   /**
    * Durable source-snapshot store path (Pump 8 — the SAST scan
@@ -492,6 +494,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   const dastRequireEngagement = rawDastEngagement === 'true';
 
+  // Agent-created records are not safe to hand to older binaries. Until an
+  // approved migration/rollback is implemented, permit only explicit local
+  // experimentation and reject production enablement rather than silently
+  // weakening the rollback boundary.
+  const rawAgentEnabled = env['AGENT_EXPERIMENTAL_ENABLED'] ?? 'false';
+  if (rawAgentEnabled !== 'true' && rawAgentEnabled !== 'false') {
+    issues.push('AGENT_EXPERIMENTAL_ENABLED must be true or false');
+  }
+  const agentExperimentalEnabled = rawAgentEnabled === 'true';
+  if (agentExperimentalEnabled && environment === 'production') {
+    issues.push('AGENT_EXPERIMENTAL_ENABLED is not allowed in production until an approved migration and rollback are implemented');
+  }
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -519,6 +534,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     scanStorePath,
     assessmentStorePath,
     dastRequireEngagement,
+    agentExperimentalEnabled,
     studentStorePath,
     sourceStorePath,
     vulnIntelProvider,

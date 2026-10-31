@@ -1200,3 +1200,26 @@ code {
 }
 .footer-links a { color: var(--muted); text-decoration: none; }
 .footer-links a:hover { color: var(--text); }
+
+/* Assessment-scoped security agent and engagement controls. */
+.assessment-agent {
+  margin-block: 1.5rem;
+  padding: 1.25rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.assessment-agent h4 { margin-top: 0; }
+.assessment-agent li { margin-block: 0.45rem; }
+.engagement-controls { margin-block: 1rem; }
+.engagement-controls form {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.engagement-controls fieldset { border: 1px solid var(--border); border-radius: 8px; }
+.engagement-controls fieldset label { margin-right: 1rem; }
