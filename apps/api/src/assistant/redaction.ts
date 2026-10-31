@@ -7,7 +7,7 @@ export interface RedactedAssistantText {
 const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi;
 const AUTH_HEADER = /\b(authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+[^\s,;]+/gi;
 const COOKIE_HEADER = /\b(set-cookie|cookie)\s*:\s*[^\r\n]*/gi;
-const SECRET_ASSIGNMENT = /\b(password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|credential|private[_-]?key)\b\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)?/gi;
+const SECRET_ASSIGNMENT = /\b([a-z0-9_.-]{0,32}?(?:password|passwd|pwd|pass|secret|api[_-]?key|token|credential|private[_-]?key))["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)?/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const KNOWN_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\b/g;
 const LONG_OPAQUE = /\b[A-Za-z0-9+/_=-]{40,}\b/g;

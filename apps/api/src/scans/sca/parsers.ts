@@ -626,23 +626,23 @@ export function parseRequirementsTxt(
   const dependencies: RawDependency[] = [];
   const seen = new Set<string>();
   let skippedOptions = 0;
+  let unparsedLines = 0;
   let truncated = false;
 
   for (const line of logical) {
     const trimmed = line.trim();
-    if (
-      trimmed.length === 0 ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('-') ||
-      /^https?:\/\//.test(trimmed)
-    ) {
-      if (trimmed.startsWith('-')) {
-        skippedOptions += 1;
-      }
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('-')) {
+      // Includes, constraints, editable installs and even unsupported options
+      // may affect the inventory. Never describe a skipped directive as full
+      // analysis and never follow it or read another file automatically.
+      skippedOptions += 1;
       continue;
     }
+    if (/^https?:\/\//.test(trimmed)) { unparsedLines += 1; continue; }
     const parsedLine = parseRequirementLine(line);
     if (parsedLine === undefined) {
+      unparsedLines += 1;
       continue;
     }
     // Distinct constraints for the same name can represent different
@@ -674,13 +674,11 @@ export function parseRequirementsTxt(
   }
 
   const noteParts: string[] = [];
-  if (truncated) {
-    noteParts.push(`Requirements exceeded the parser limit (${SCA_PARSER_MAX_ENTRIES}).`);
-  } else if (skippedOptions > 0) {
-    noteParts.push(`${skippedOptions} option/directive line(s) skipped.`);
-  }
+  if (truncated) noteParts.push(`Requirements exceeded the parser limit (${SCA_PARSER_MAX_ENTRIES}).`);
+  if (skippedOptions > 0) noteParts.push(`${skippedOptions} option/directive line(s) skipped.`);
+  if (unparsedLines > 0) noteParts.push(`${unparsedLines} requirement line(s) could not be parsed.`);
   return {
-    status: truncated ? 'PARTIAL' : 'ANALYZED',
+    status: truncated || skippedOptions > 0 || unparsedLines > 0 ? 'PARTIAL' : 'ANALYZED',
     dependencies,
     directNames: dependencies.map((dependency) => dependency.name),
     ...(noteParts.length === 0 ? {} : { note: noteParts.join(' ').slice(0, 200) }),

@@ -31,9 +31,9 @@
  * no filesystem writes, no raw secret values in evidence.
  */
 
-import { readFile } from 'node:fs/promises';
 import type { FindingSeverity } from '@drobon/shared';
 import { resolveScaPath } from './scaDeclaration.js';
+import { BoundedJsonError, createJsonByteBudget, readBoundedJsonFile } from './boundedJson.js';
 
 export const ADVISORY_SCHEMA_VERSION = 'drobon.advisory-pack/v1';
 export const ADVISORY_MAX_BYTES = 1_048_576; // 1 MiB
@@ -351,7 +351,8 @@ const FP_SOURCES: readonly AdvisoryFingerprintSource[] = ['response-header', 're
 
 function closed(value: Record<string, unknown>, allowed: readonly string[], required: readonly string[]): string | null {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
-  if (unknown.length > 0) return `unknown field(s): ${unknown.slice(0, 4).join(', ')}`;
+  // Unknown property names are untrusted input and can themselves be secret.
+  if (unknown.length > 0) return `unknown field(s) present: ${unknown.length}`;
   const missing = required.filter((key) => !(key in value));
   return missing.length > 0 ? `missing field(s): ${missing.join(', ')}` : null;
 }
@@ -680,15 +681,19 @@ export function createAdvisoryService(options: AdvisoryServiceOptions): Advisory
       promise = (async (): Promise<void> => {
         if (path === undefined) { failure = 'no advisory pack configured'; return; }
         try {
-          const content = await readFile(path, 'utf8');
-          if (Buffer.byteLength(content, 'utf8') > ADVISORY_MAX_BYTES) { failure = 'advisory pack exceeds the size limit'; return; }
-          const compiled = compileAdvisoryPack(JSON.parse(content) as unknown);
+          const content = await readBoundedJsonFile(path, { maxFileBytes: ADVISORY_MAX_BYTES,
+            budget: createJsonByteBudget(ADVISORY_MAX_BYTES), allowFinalSymlink: true });
+          const compiled = compileAdvisoryPack(content);
           if (compiled === undefined) { failure = 'advisory pack failed schema validation'; return; }
           cache = compiled;
           loadedAt = new Date(now()).toISOString();
-          options.logger?.info?.(`[advisory] loaded ${compiled.compiled.length}/${compiled.pack.advisories.length} records from ${path} (${compiled.refused.length} refused)`);
+          // The path is operator configuration, not safe log content.
+          options.logger?.info?.(`[advisory] loaded ${compiled.compiled.length}/${compiled.pack.advisories.length} records (${compiled.refused.length} refused)`);
         } catch (error) {
-          failure = `advisory pack could not be read: ${(error as Error).message.slice(0, 120)}`;
+          // Filesystem and JSON errors can echo paths or raw pack contents;
+          // this reason also reaches status and analysis API responses.
+          failure = error instanceof BoundedJsonError && error.code === 'FILE_LIMIT'
+            ? 'advisory pack exceeds the size limit' : 'advisory pack could not be read or parsed';
           options.logger?.warn?.(`[advisory] ${failure}`);
         }
       })();

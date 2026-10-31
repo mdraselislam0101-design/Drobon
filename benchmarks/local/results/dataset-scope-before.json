@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "drobon.dataset-scope-probe/v1",
+  "archiveSha256": "d1aac0cb5f6165b583d01b776d51018435441f771bd3e41b94f7fdb776b1f71d",
+  "fixtureScope": {
+    "sastConstantLexicalRuleIds": [],
+    "sastJavascriptReporters": {
+      "command": "DPK-SAST-044",
+      "sql": "DPK-SAST-008",
+      "html": "DPK-SAST-002",
+      "code": "DPK-SAST-001"
+    },
+    "secretSingleLiteralRuleIds": [
+      "DPK-SEC-001"
+    ],
+    "secretSplitLiteralRuleIds": [],
+    "scaDevWildcardRuleIds": [
+      {
+        "id": "DPK-SCA-0643",
+        "type": "sca-field-absent",
+        "path": "license"
+      },
+      {
+        "id": "DPK-SCA-0645",
+        "type": "sca-field-absent",
+        "path": "engines"
+      },
+      {
+        "id": "DPK-SCA-0653",
+        "type": "sca-field-absent",
+        "path": "overrides"
+      },
+      {
+        "id": "DPK-SCA-0718",
+        "type": "sca-field-matches",
+        "path": "devDependencies.*"
+      },
+      {
+        "id": "DPK-SCA-1012",
+        "type": "sca-field-absent",
+        "path": "engines.npm"
+      }
+    ],
+    "dastNosniffChecks": [
+      {
+        "id": "DPK-DAST-005",
+        "type": "missing-response-header",
+        "missing": true,
+        "invalid": false,
+        "safe": false
+      },
+      {
+        "id": "DPK-DAST-073",
+        "type": "response-header-matches",
+        "missing": false,
+        "invalid": true,
+        "safe": false
+      }
+    ]
+  },
+  "runtime": [
+    {
+      "id": "SAST-02",
+      "kind": "completed",
+      "partial": false,
+      "truncated": false,
+      "findings": []
+    },
+    {
+      "id": "SAST-04",
+      "kind": "completed",
+      "partial": false,
+      "truncated": false,
+      "findings": [
+        {
+          "id": "DPK-SAST-044",
+          "severity": "HIGH",
+          "astMode": "PROJECT",
+          "astCategory": "command"
+        }
+      ]
+    },
+    {
+      "id": "SECRET-01",
+      "kind": "completed",
+      "partial": false,
+      "truncated": false,
+      "findings": [
+        {
+          "id": "DPK-SEC-001",
+          "severity": "MEDIUM"
+        }
+      ]
+    },
+    {
+      "id": "SECRET-02",
+      "kind": "completed",
+      "partial": false,
+      "truncated": false,
+      "findings": []
+    },
+    {
+      "id": "SCA-03",
+      "kind": "completed",
+      "partial": true,
+      "truncated": false,
+      "findings": [
+        {
+          "id": "DPK-SCA-0643",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-SCA-0645",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-SCA-0653",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-SCA-0718",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-SCA-1012",
+          "severity": "LOW"
+        }
+      ]
+    },
+    {
+      "id": "SCA-04",
+      "kind": "completed",
+      "partial": true,
+      "truncated": false,
+      "findings": []
+    },
+    {
+      "id": "DAST-02",
+      "kind": "completed",
+      "partial": false,
+      "truncated": false,
+      "findings": [
+        {
+          "id": "DPK-DAST-002",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-003",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-007",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-009",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-010",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-012",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-013",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-014",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-016",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-017",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-023",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-039",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-040",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-041",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-042",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-043",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-044",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-049",
+          "severity": "MEDIUM"
+        },
+        {
+          "id": "DPK-DAST-057",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-059",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-060",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-073",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-074",
+          "severity": "LOW"
+        },
+        {
+          "id": "DPK-DAST-087",
+          "severity": "MEDIUM"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "RAM-only archive verification; no mounted Dataset filesystem test",
+    "Reader fixtures are synthetic, not real-world accuracy",
+    "Blocked-reader diagnostics do not bypass the real source path policy",
+    "Blocked and unrenderable cases are not scan passes",
+    "Synthetic runtime uses in-memory packs and mock DAST transport"
+  ]
+}

@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { safeFindingEvidence, safeFindingWorkflow, sourceFindingIdentity } from './findingIdentity.js';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import {
   ASSESSMENT_ID_PATTERN,
   IDEMPOTENCY_KEY_PATTERN,
@@ -56,7 +57,7 @@ import {
   type ScanType,
   type ScaResult,
 } from '@drobon/shared';
-import { canonicalJson, verifySecurityReportIntegrity } from '../reports/build.js';
+import { canonicalJson, safeReportProjection, verifySecurityReportIntegrity } from '../reports/build.js';
 import {
   appendUserNote,
   appendUserStateEvent,
@@ -82,22 +83,19 @@ import {
  * - scans survive process restarts (loaded at startup, fail fast on a
  *   corrupt document or an invalid record — security state is never
  *   silently repaired);
- * - writes are atomic (temp file + rename in the same directory, mode
- *   0600), so a crash mid-write cannot tear the store;
+ * - writes use a private same-directory temp file and rename; this is not
+ *   an fsync-backed power-loss guarantee or a multi-file transaction;
  * - every mutation runs inside the serialized in-process queue and
  *   persists BEFORE it is observable;
  * - ids are `scan_` + `crypto.randomUUID()` — cryptographically strong,
  *   never counters, never client-supplied.
  *
- * THE ATOMIC CREATION OPERATION ({@link ScanStore.createScanWithQuota}):
- * quota consumption and job creation are ONE linearized operation —
- * idempotency lookup, quota consumption (via the Pump 5 UsageService,
- * the single quota authority) and the durable append all run inside the
- * same serialized section, then persist once. Concurrent or replayed
- * requests therefore cannot create a scan without consuming quota, and
- * cannot consume twice for one logical request. The only possible
- * failure direction is fail-closed: a crash between consumption and
- * persistence can lose a paid slot, NEVER grant a free scan.
+ * CREATION ({@link ScanStore.createScanWithQuota}) serializes idempotency,
+ * quota consumption and scan append within this process. The quota and
+ * scan documents are separate writes, not a cross-file transaction. The
+ * production reservation path records durable intent in the usage document
+ * and reconciles it at startup. Compensation/finalization can fail, and
+ * legacy non-reservation callers do not gain those recovery guarantees.
  *
  * Honest limits: single-process/single-writer, foundation-scale data.
  * That is the documented pre-database posture of this repository.
@@ -174,6 +172,10 @@ export interface QuotaDenied {
 
 export interface QuotaGranted {
   ok: true;
+  /** Optional for test/injected authorities; production usage supplies it. */
+  rollback?: () => Promise<void>;
+  /** Durable usage reservation finalization after the scan write. */
+  commit?: () => Promise<void>;
 }
 
 export type QuotaOutcome = QuotaGranted | QuotaDenied;
@@ -200,11 +202,11 @@ export interface CreateScanInput {
    * INSIDE the serialized creation section so check-then-create cannot
    * interleave. Must be awaited to completion before any append.
    */
-  consume: () => Promise<QuotaOutcome>;
+  consume: (scanId: string) => Promise<QuotaOutcome>;
 }
 
 export type CreateScanOutcome =
-  | { outcome: 'created'; scan: ScanRecord }
+  | { outcome: 'created'; scan: ScanRecord; quotaCommitPending?: true }
   | { outcome: 'replayed'; scan: ScanRecord }
   | { outcome: 'conflict' }
   | { outcome: 'invalid-target' }
@@ -242,8 +244,8 @@ export interface ScanAdminSummary {
 
 export interface ScanStore {
   /**
-   * THE atomic creation operation (see the module doc). Linearizes
-   * idempotency, quota consumption and the durable append.
+   * Serializes creation within one process. Quota and scan documents are
+   * separate writes; reservation recovery is not a cross-file transaction.
    */
   createScanWithQuota(input: CreateScanInput): Promise<CreateScanOutcome>;
   /**
@@ -313,6 +315,7 @@ export interface ScanStore {
     | { outcome: 'existing'; report: SecurityReport }
     | { outcome: 'updated'; report: SecurityReport }
     | { outcome: 'invalid-report' }
+    | { outcome: 'legacy-report-protected' }
     | { outcome: 'scan-unavailable' }
     | { outcome: 'capacity-exceeded' }
     | { outcome: 'workflow-changed' }
@@ -726,7 +729,7 @@ function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
     report.scan.completedAt !== scan.completedAt || report.scan.targetUrl !== scan.dastTargetUrl ||
     (report.scan.dastMode !== undefined && report.scan.dastMode !== scan.dastMode) ||
     canonicalJson(report.scan.resultSummary) !== canonicalJson(scan.resultSummary) ||
-    canonicalJson(report.findings) !== canonicalJson(scan.findings ?? []) ||
+    canonicalJson(report.findings.map(safeFindingEvidence)) !== canonicalJson((scan.findings ?? []).map(safeFindingEvidence)) ||
     report.findingSummary.total !== scan.resultSummary.findingsTotal ||
     canonicalJson(report.dast ?? null) !== canonicalJson(scan.dast ?? null)
   ) return false;
@@ -894,10 +897,13 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   const copyWorkflow = (workflow: FindingWorkflowRecord): FindingWorkflow => {
     const { history: _history, ...publicWorkflow } = workflow;
     void _history;
-    return JSON.parse(JSON.stringify(publicWorkflow)) as FindingWorkflow;
+    return safeFindingWorkflow(JSON.parse(JSON.stringify(publicWorkflow)) as FindingWorkflow);
   };
 
-  const toPublic = (record: ScanRecord): ScanRecord => ({ ...record });
+  const toPublic = (record: ScanRecord): ScanRecord => ({
+    ...record,
+    ...(record.findings === undefined ? {} : { findings: record.findings.map(safeFindingEvidence) }),
+  });
 
   const applyClaimPersist = (
     record: ScanRecord,
@@ -940,6 +946,13 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             }
             const scan = scansById.get(existing.scanId);
             if (scan !== undefined) {
+              // The original scan is authoritative for DAST mode and
+              // consent, including older idempotency entries that did not
+              // store these fields. An absent mode means legacy PASSIVE.
+              if (scan.scanType === 'DAST' && (
+                (scan.dastMode ?? 'PASSIVE') !== (input.dastMode ?? 'PASSIVE') ||
+                (scan.dastActiveConsent === true) !== (input.dastActiveConsent === true)
+              )) return { outcome: 'conflict' };
               return { outcome: 'replayed', scan: toPublic(scan) };
             }
             // Unreachable in consistent state (entries always point at
@@ -947,18 +960,16 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             // a fresh request rather than trusting the dangling entry.
           }
         }
-        // 2. Quota — the single authority (UsageService). Denied means
-        //    NOTHING was appended and nothing was incremented.
-        const quota = await input.consume();
+        // 2. Generate the authoritative id first. The quota service durably
+        // reserves by this id before the separate scan document is written.
+        let id = `scan_${randomUUID()}`;
+        if (scansById.has(id)) id = `scan_${randomUUID()}`;
+        const quota = await input.consume(id);
         if (!quota.ok) {
           return { outcome: 'quota-denied', retryAfterSec: quota.retryAfterSec };
         }
         // 3. Durable append + idempotency entry, persisted together.
         const now = new Date().toISOString();
-        let id = `scan_${randomUUID()}`;
-        if (scansById.has(id)) {
-          id = `scan_${randomUUID()}`; // Astronomically unlikely collision.
-        }
         const record: ScanRecord = {
           id,
           ownerId: input.ownerId,
@@ -1010,7 +1021,20 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             );
           }
         }
-        internals.persistWith(nextScans, nextIdempotency, [...reportsByScan.values()], workflowValues());
+        try {
+          internals.persistWith(nextScans, nextIdempotency, [...reportsByScan.values()], workflowValues());
+        } catch (writeError) {
+          // No scan was published. A failed compensation leaves the durable
+          // reservation pending for startup reconciliation.
+          if (quota.rollback !== undefined) {
+            try {
+              await quota.rollback();
+            } catch (rollbackError) {
+              throw new AggregateError([writeError, rollbackError], 'Scan persistence and usage compensation both failed.');
+            }
+          }
+          throw writeError;
+        }
         scansById.set(record.id, record);
         const nextKeys = new Set(
           nextIdempotency.map((item) => `${item.accountId}:${item.key}`),
@@ -1023,7 +1047,14 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         for (const entry of nextIdempotency) {
           idempotencyByKey.set(`${entry.accountId}:${entry.key}`, entry);
         }
-        return { outcome: 'created', scan: toPublic(record) };
+        // The scan already exists durably. If finalizing the reservation
+        // fails, return the created scan (avoid unsafe client duplication),
+        // report the pending audit state to the route and recover at startup.
+        let quotaCommitPending = false;
+        if (quota.commit !== undefined) {
+          try { await quota.commit(); } catch { quotaCommitPending = true; }
+        }
+        return { outcome: 'created', scan: toPublic(record), ...(quotaCommitPending ? { quotaCommitPending: true as const } : {}) };
       }),
 
     listByProject: (projectId) =>
@@ -1123,7 +1154,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             (projectId !== undefined && scan.projectId !== projectId)) continue;
         reportsSummary.availableCount += 1;
         reportsSummary.recent.push({
-          reportId: report.reportId,
+          // Match the safe report exposed by the report route; a legacy
+          // snapshot may have a different digest once unsafe evidence is withheld.
+          reportId: safeReportProjection(report).reportId,
           projectId: report.project.id,
           scanId: report.scan.id,
           generatedAt: report.generatedAt,
@@ -1291,11 +1324,32 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (sca !== undefined && !(isScaResult(sca) && current.scanType === 'SCA')) return undefined;
         if (dast !== undefined && !(isDastResult(dast) && current.scanType === 'DAST' && dast.targetUrl === current.dastTargetUrl)) return undefined;
         if ((current.scanType === 'DAST') !== (dast !== undefined)) return undefined;
-        const contextualFindings = findings?.map((finding) =>
-          finding.scanner === 'DAST' || finding.ruleId.startsWith('DG-DAST-')
-            ? finding
-            : { ...finding, projectId: current.projectId },
-        );
+        // Reuse an unambiguous legacy source fingerprint on the first v2
+        // observation. This preserves workflow IDs, notes and report links
+        // without rewriting any historical finding or report. Ambiguous
+        // legacy rows are not guessed together.
+        const previousByIdentity = new Map<string, Map<string, Finding>>();
+        for (const oldScan of scansById.values()) {
+          if (oldScan.projectId !== current.projectId || oldScan.scanType !== current.scanType || oldScan.status !== 'COMPLETED') continue;
+          for (const oldFinding of oldScan.findings ?? []) {
+            const identity = sourceFindingIdentity(oldFinding, current.projectId);
+            if (identity === undefined) continue;
+            const previous = previousByIdentity.get(identity) ?? new Map<string, Finding>();
+            previous.set(`${oldFinding.fingerprint}:${oldFinding.id}`, oldFinding);
+            previousByIdentity.set(identity, previous);
+          }
+        }
+        const contextualFindings = findings?.map((raw) => {
+          const finding = safeFindingEvidence(raw.scanner === 'DAST' || raw.ruleId.startsWith('DG-DAST-')
+            ? raw : { ...raw, projectId: current.projectId });
+          const identity = sourceFindingIdentity(finding, current.projectId);
+          const previous = identity === undefined ? undefined : previousByIdentity.get(identity);
+          if (identity !== undefined && finding.fingerprint === identity && previous?.size === 1) {
+            const prior = previous.values().next().value as Finding | undefined;
+            if (prior !== undefined) return { ...finding, fingerprint: prior.fingerprint, id: prior.id };
+          }
+          return finding;
+        });
         const safeFindings = contextualFindings === undefined || contextualFindings.length === 0
           ? undefined
           : contextualFindings.slice(0, MAX_FINDINGS_PER_SCAN);
@@ -1325,9 +1379,16 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         const nextWorkflows = new Map(findingWorkflowsByKey);
         if (findingsAreAuthoritative) {
           const observed = new Set(actualFindings.map((finding) => finding.fingerprint));
+          const observedSourceIdentities = new Set(actualFindings.map((finding) => sourceFindingIdentity(finding, current.projectId)).filter((value): value is string => value !== undefined));
           if (canVerifyAbsence(resultSummary, dast)) {
             for (const [key, workflow] of nextWorkflows) {
               if (workflow.projectId === current.projectId && workflow.scanner === current.scanType && !observed.has(workflow.fingerprint)) {
+                // A coincident, ambiguous old identity is not reliable proof
+                // of absence. Keep its previous verification instead.
+                const priorScan = scansById.get(workflow.lastObservedScanId);
+                const priorFinding = priorScan?.findings?.find((item) => item.fingerprint === workflow.fingerprint);
+                const identity = priorFinding === undefined ? undefined : sourceFindingIdentity(priorFinding, current.projectId);
+                if (identity !== undefined && observedSourceIdentities.has(identity)) continue;
                 nextWorkflows.set(key, markFindingNotObserved(workflow, scanContext));
               }
             }
@@ -1392,12 +1453,13 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
       const report = reportsByScan.get(scanId);
       return report === undefined || report.project.id !== projectId
         ? undefined
-        : JSON.parse(JSON.stringify(report)) as SecurityReport;
+        : safeReportProjection(JSON.parse(JSON.stringify(report)) as SecurityReport);
     },
 
     createReport: (report) =>
       runExclusive(() => {
         if (!verifySecurityReportIntegrity(report) ||
+            canonicalJson(safeReportProjection(report)) !== canonicalJson(report) ||
             Buffer.byteLength(canonicalJson(report), 'utf8') > REPORT_MAX_BYTES) {
           return { outcome: 'invalid-report' as const };
         }
@@ -1416,6 +1478,15 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         }
         const existing = reportsByScan.get(scan.id);
         if (existing !== undefined) {
+          const visible = safeReportProjection(existing);
+          if (canonicalJson(visible) !== canonicalJson(existing)) {
+            // Reuse a matching derived view without destroying the historical
+            // snapshot. Replacing an unsafe legacy snapshot with a different
+            // report requires a separate, explicitly approved migration policy.
+            return visible.contentDigest === report.contentDigest
+              ? { outcome: 'existing' as const, report: visible }
+              : { outcome: 'legacy-report-protected' as const };
+          }
           if (existing.contentDigest === report.contentDigest) {
             return { outcome: 'existing' as const, report: JSON.parse(JSON.stringify(existing)) as SecurityReport };
           }
@@ -1532,11 +1603,8 @@ export function createJsonFileScanStore(path: string): ScanStore {
   const persistWith = (
     scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[], findingWorkflows: FindingWorkflowRecord[],
   ): void => {
-    mkdirSync(dirname(path), { recursive: true });
     const payload: StoreDocument = { version: 1, scans, idempotency, reports, findingWorkflows };
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(payload, null, 2)}\n`);
   };
   return createScanStoreFrom({
     scans: document.scans,
@@ -1559,7 +1627,7 @@ export function createMemoryScanStore(): ScanStore {
  * stay lean and carry only the summary counts.
  */
 export function toScanDetailResponse(record: ScanRecord): ScanDetail {
-  const findings = [...(record.findings ?? [])].sort(compareFindings);
+  const findings = (record.findings ?? []).map(safeFindingEvidence).sort(compareFindings);
   return {
     ...toScanResponse(record),
     findings,

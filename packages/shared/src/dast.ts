@@ -1,5 +1,14 @@
 import { isRecord } from './guards.js';
 
+/** Ambiguous path syntax must not be used as proof of engagement scope.
+ * Some target servers remove matrix parameters before normalizing dot
+ * segments, so `..;x` (including an encoded semicolon) may escape a prefix.
+ * This checks only paths; it deliberately does not reinterpret query data. */
+export function hasAmbiguousDastPath(path: string): boolean {
+  return /%(?:2e|2f|5c|25)/i.test(path) || path.includes('\\') ||
+    /(?:^|\/)\.{1,2}(?:;|%3b)/i.test(path);
+}
+
 /** One real, bounded HTTP response observed by the passive DAST probe. */
 export interface DastObservation {
   endpoint: string;
@@ -23,6 +32,7 @@ export function isDastMode(v: unknown): v is DastMode { return typeof v === 'str
 /** Completed one-target DAST foundation result; no crawl or browser data. */
 export interface DastResult {
   targetUrl: string;
+  /** Actual transport attempts, including failures; observations contain only usable responses. */
   requestCount: number;
   redirectsFollowed: number;
   partial: boolean;
@@ -114,7 +124,8 @@ export function isDastResult(value: unknown): value is DastResult {
     value['redirectsFollowed'] > 2 ||
     typeof value['partial'] !== 'boolean' ||
     !Array.isArray(value['observations']) ||
-    value['observations'].length !== value['requestCount'] ||
+    value['observations'].length < 1 ||
+    value['observations'].length > value['requestCount'] ||
     value['observations'].length > maxObs ||
     !value['observations'].every((observation) => isDastObservation(observation))
   ) {
@@ -127,6 +138,8 @@ export function isDastResult(value: unknown): value is DastResult {
     if (value['partial'] !== true || !isBoundedText(value['partialReason'], 200)) return false;
   }
   if (value['partial'] === true && value['partialReason'] === undefined) return false;
+  // Missing responses imply a failed/unusable attempt and must be disclosed.
+  if (value['observations'].length < value['requestCount'] && value['partial'] !== true) return false;
   if (value['observations'].some((observation) => observation.bodyTruncated) && value['partial'] !== true) return false;
   const target = new URL(value['targetUrl']);
   if (!value['observations'].every((observation) => {

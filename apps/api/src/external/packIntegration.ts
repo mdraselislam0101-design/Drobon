@@ -1,52 +1,46 @@
 /**
- * Pack integration helpers — merge embedded DG-* rules with dataset DPK-* packs.
- * Fail-closed: dataset packs are optional; invalid entries are already filtered by packProvider.
+ * Connect conformance-validated dataset packs to the scanner rule types.
+ * Conversion errors must reach the scanner, so it can report partial coverage
+ * instead of silently presenting an empty or incomplete rule set as success.
  */
 
-import { SAST_RULES } from '../scans/sast/rules.js';
-import { SECRETS_RULES } from '../scans/secrets/rules.js';
-import { convertSastPackToRule, convertSecretsPackToRule, convertDastPackToRule } from './packProvider.js';
-import type { SastRule } from '../scans/sast/rules.js';
-import type { SecretsRule } from '../scans/secrets/rules.js';
+import { SAST_RULES, type SastRule } from '../scans/sast/rules.js';
+import { SECRETS_RULES, type SecretsRule } from '../scans/secrets/rules.js';
 import type { DastRule } from '../scans/dast/packTypes.js';
+import { convertSastPackToRule, convertSecretsPackToRule, convertDastPackToRule } from './packProvider.js';
 import type { DatasetService } from './service.js';
 
-export async function getMergedSastRules(dataset: DatasetService): Promise<readonly SastRule[]> {
-  const base = [...SAST_RULES];
-  try {
-    const raw = await dataset.sastPacks();
-    for (const r of raw) {
-      const rule = convertSastPackToRule(r);
-      if (rule && !base.some(b => b.id === rule.id)) base.push(rule);
+function appendMapped<T extends { id: string }>(base: readonly T[], raw: readonly unknown[], convert: (entry: unknown) => T | undefined): T[] {
+  const result = [...base];
+  const ids = new Set(result.map((rule) => rule.id));
+  for (const entry of raw) {
+    const rule = convert(entry);
+    if (rule === undefined || ids.has(rule.id)) {
+      throw new Error('The configured dataset pack contains an unmappable or duplicate rule.');
     }
-  } catch { /* fail closed: optional path */ }
-  return base;
+    ids.add(rule.id);
+    result.push(rule);
+  }
+  return result;
+}
+
+export async function getMergedSastRules(dataset: DatasetService): Promise<readonly SastRule[]> {
+  return appendMapped(SAST_RULES, await dataset.sastPacks(), convertSastPackToRule);
 }
 
 export async function getMergedSecretsRules(dataset: DatasetService): Promise<readonly SecretsRule[]> {
-  const base = [...SECRETS_RULES];
-  try {
-    const raw = await dataset.secretsPacks();
-    for (const r of raw) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-      const rule = convertSecretsPackToRule(r as any);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-      if (rule && !base.some(b => b.id === rule.id)) base.push(rule as any);
-    }
-  } catch { /* fail closed: optional path */ }
-  return base as readonly SecretsRule[];
+  return appendMapped(SECRETS_RULES, await dataset.secretsPacks(), convertSecretsPackToRule);
 }
 
 export async function getMergedDastRules(dataset: DatasetService): Promise<readonly DastRule[]> {
-  try {
-    const raw = await dataset.dastPacks();
-    const out: DastRule[] = [];
-    for (const r of raw) {
-      const rule = convertDastPackToRule(r);
-      if (rule) out.push(rule);
-    }
-    return out;
-  } catch {
-    return [];
-  }
+  return appendMapped([], await dataset.dastPacks(), convertDastPackToRule);
+}
+
+/** Rejected files make a configured scan partial even when other rules loaded. */
+export async function hasRejectedPackRules(dataset: DatasetService, family: 'sast' | 'secrets' | 'dast' | 'sca'): Promise<boolean> {
+  // Some callers inject a minimal dataset double; production services always
+  // expose conformance(). A missing double method must not fabricate a report.
+  if (typeof dataset.conformance !== 'function') return false;
+  const report = (await dataset.conformance())[family];
+  return report.accepted < report.filesSeen || report.enumerationFailures > 0 || report.manifestIssue !== undefined;
 }

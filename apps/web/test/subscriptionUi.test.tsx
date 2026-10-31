@@ -61,6 +61,8 @@ describe('Account page — plan & subscription section', () => {
     expect(await screen.findByTestId('plan-badge')).toHaveTextContent('Plan: PRO');
     expect(screen.getByTestId('subscription-status-badge')).toHaveTextContent('Status: ACTIVE');
     expect(screen.getByTestId('pro-entitlement')).toHaveTextContent('Enabled');
+    expect(screen.getByTestId('pro-source-badge')).toHaveTextContent('PRO source not verified');
+    expect(screen.getByTestId('pro-source-badge')).not.toHaveTextContent('paid subscription');
   });
 
   test('a lapsed PRO subscription shows the honest state: PRO label, no entitlement', async () => {

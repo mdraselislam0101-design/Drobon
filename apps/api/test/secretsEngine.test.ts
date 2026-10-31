@@ -1,3 +1,4 @@
+import { WITHHELD_SOURCE_EVIDENCE } from '../src/scans/findingIdentity.js';
 import { describe, expect, test } from 'vitest';
 import { isFinding, isScanResultSummary, type Finding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
@@ -168,13 +169,14 @@ describe('secrets engine: a real multi-file scan', () => {
       expect(finding.remediation).not.toContain('revoked');
     }
 
-    // Evidence shows context with the value blanked.
+    // Detection metadata stays available; all untrusted source text is withheld.
     const pem = findings.find((f) => f.ruleId === 'DG-SEC-001');
-    expect(pem?.evidence).toBe(PEM_HEADER);
+    expect(pem?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(pem?.evidence).not.toContain(PEM_HEADER);
     const aws = findings.find((f) => f.ruleId === 'DG-SEC-002' && f.file === 'src/zservice.ts');
-    expect(aws?.evidence).toBe(`export const aws = "<redacted>";`);
+    expect(aws?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
     const apiKey = findings.find((f) => f.ruleId === 'DG-SEC-005');
-    expect(apiKey?.evidence).toBe(`api_key: <redacted>`);
+    expect(apiKey?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
 
     // Honest summary: 4 files scanned, 7 findings, no partial.
     expect(isScanResultSummary(outcome.resultSummary)).toBe(true);
@@ -233,8 +235,8 @@ describe('secrets engine: a real multi-file scan', () => {
     const short = await completedOutcome(
       engineWith(snapshot([{ path: 'u.ts', content: `db = "redis://default:${SYNTH.shortPassword}@c:1"\n` }])),
     );
-    expect(long.findings?.[0]?.evidence).toBe('[DG-SEC-004] <redacted>');
-    expect(short.findings?.[0]?.evidence).toBe('[DG-SEC-004] <redacted>');
+    expect(long.findings?.[0]?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(short.findings?.[0]?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
     expect(long.findings?.[0]?.fingerprint).toBe(short.findings?.[0]?.fingerprint);
     expect(JSON.stringify(short)).not.toContain(SYNTH.shortPassword);
     // Evidence sensitivity is still real: a different visible marker
@@ -253,7 +255,7 @@ describe('secrets engine: a real multi-file scan', () => {
       engineWith(snapshot([{ path: 'dup.ts', content: `a = "${SYNTH.awsKey}"; b = "${SYNTH.awsKey}";\n` }])),
     );
     expect(same.findings?.length).toBe(1);
-    expect(same.findings?.[0]?.evidence).toBe('[DG-SEC-002] <redacted>');
+    expect(same.findings?.[0]?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
     assertNoRawSecrets(same);
 
     // TWO different AWS keys on one line: only the first is blanked by
@@ -263,7 +265,7 @@ describe('secrets engine: a real multi-file scan', () => {
       engineWith(snapshot([{ path: 'dup.ts', content: `a = "${SYNTH.awsKey}"; b = "${SYNTH.awsKey2}";\n` }])),
     );
     expect(pair.findings?.length).toBe(1);
-    expect(pair.findings?.[0]?.evidence).toBe('[DG-SEC-002] <redacted>');
+    expect(pair.findings?.[0]?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
     expect(JSON.stringify(pair)).not.toContain(SYNTH.awsKey2);
 
     // SEC-005 + SEC-006 on the SAME line → two findings, both values
@@ -368,8 +370,8 @@ describe('secrets engine: adversarial redaction (the long-line edge)', () => {
     const finding: Finding | undefined = outcome.findings?.[0];
     expect(finding?.ruleId).toBe('DG-SEC-002');
     expect(finding?.evidence.length).toBeLessThanOrEqual(200);
-    expect(finding?.evidence.startsWith('…')).toBe(true);
-    expect(finding?.evidence.endsWith('…')).toBe(true);
+    expect(finding?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(finding?.evidence).not.toContain('#'.repeat(40));
     expect(finding?.evidence).toContain('<redacted>');
     // No fragment of the value — not even half of it.
     expect(finding?.evidence).not.toContain(SYNTH.awsKey.slice(0, 10));
@@ -396,7 +398,8 @@ describe('secrets engine: adversarial redaction (the long-line edge)', () => {
     );
     const finding = outcome.findings?.[0];
     expect(finding?.ruleId).toBe('DG-SEC-002');
-    expect(finding?.evidence).toBe('    aws_key = "<redacted>"');
+    expect(finding?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(finding?.column).toBeGreaterThan(1);
     expect(finding?.evidence).not.toContain('\t');
     assertNoRawSecrets(outcome);
   });

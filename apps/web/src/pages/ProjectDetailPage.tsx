@@ -823,6 +823,7 @@ function ScansSection({
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [portfolioBusy, setPortfolioBusy] = useState(false);
+  const [portfolioGuidance, setPortfolioGuidance] = useState(false);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -830,7 +831,7 @@ function ScansSection({
     setPortfolioBusy(true);
     setPortfolioError(null);
     try {
-      const file = await client.downloadProjectReport(projectId);
+      const file = portfolioGuidance ? await client.downloadProjectReport(projectId, undefined, true) : await client.downloadProjectReport(projectId);
       const href = URL.createObjectURL(file.blob);
       const anchor = document.createElement('a');
       anchor.href = href;
@@ -1017,6 +1018,7 @@ function ScansSection({
         <section className="security-overview" data-testid="project-security-overview">
           <h3>Project security overview</h3>
           <p className="muted">The project PDF includes the latest attempted scan for each type, including failed or incomplete scans. Scan scopes may differ; it is not a security certification.</p>
+          <label className="field-hint"><input type="checkbox" checked={portfolioGuidance} onChange={(event) => setPortfolioGuidance(event.target.checked)} disabled={portfolioBusy} data-testid="project-report-guidance" /> Include current Dataset guidance (not covered by a saved report digest; review and test suggestions).</label>
           <button type="button" className="button button-ghost" onClick={() => void downloadPortfolio()} disabled={portfolioBusy} data-testid="download-project-pdf">
             {portfolioBusy ? 'Preparing PDF…' : 'Download project summary PDF'}
           </button>
@@ -1859,12 +1861,13 @@ function FindingsView({
                   {selected.guidance.standardId !== undefined && <p className="muted">Scanner rule identifier: {selected.guidance.standardId}</p>}
                   {selected.guidance.example !== undefined && (
                     <div className="guidance-example">
-                      <p><strong>Illustrative pattern only — review in application context.</strong></p>
+                      <p><strong>Illustrative example, not your project code or a verified fix — review and test before use.</strong></p>
                       <p>Before: <code>{selected.guidance.example.before}</code></p>
                       <p>After: <code>{selected.guidance.example.after}</code></p>
                       {selected.guidance.example.caveat !== undefined && <p className="muted">{selected.guidance.example.caveat}</p>}
                     </div>
                   )}
+                  {selected.guidance.example === undefined && <p className="muted">No reviewed code example is available for this finding. Guidance is not a verified fix.</p>}
                 </section>
               )}
               {selected.guidance === undefined && (
@@ -1937,6 +1940,7 @@ function FindingsView({
 function ReportView({ projectId, scanId }: { projectId: string; scanId: string }): React.JSX.Element {
   const client = useApiClient();
   const [report, setReport] = useState<SecurityReportResponse['report'] | null>(null);
+  const [includeGuidance, setIncludeGuidance] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1958,7 +1962,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
     setBusy(true);
     setError(null);
     try {
-      const file = await client.downloadReport(projectId, scanId, format);
+      const file = includeGuidance ? await client.downloadReport(projectId, scanId, format, undefined, true) : await client.downloadReport(projectId, scanId, format);
       const href = URL.createObjectURL(file.blob);
       const anchor = document.createElement('a');
       anchor.href = href;
@@ -2047,6 +2051,7 @@ function ReportView({ projectId, scanId }: { projectId: string; scanId: string }
             {report.scannerCoverage.map((entry) => <li key={entry.scanner}>{entry.scanner}: {entry.status}{entry.reason === undefined ? '' : ` — ${entry.reason}`}</li>)}
           </ul>
           {report.dast !== undefined && <p className="muted">DAST observations ({report.scan.dastMode ?? report.dast.mode ?? 'PASSIVE'}): {report.dast.observations.length}; bounded response metadata only.</p>}
+          <label className="field-hint"><input type="checkbox" checked={includeGuidance} onChange={(event) => setIncludeGuidance(event.target.checked)} disabled={busy} data-testid="report-guidance" /> Include current Dataset guidance in report downloads. It is not covered by the saved digest; review and test suggestions. JSON becomes a separate guidance bundle. SBOM is unchanged.</label>
           <div className="hero-actions">
             <button type="button" className="button button-ghost" onClick={() => void download('json')} disabled={busy} data-testid="download-report-json">Download JSON</button>
             <button type="button" className="button button-ghost" onClick={() => void download('markdown')} disabled={busy} data-testid="download-report-markdown">Download Markdown</button>

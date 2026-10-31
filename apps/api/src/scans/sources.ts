@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
 import {
   PROJECT_ID_PATTERN,
   SOURCE_MAX_FILES,
@@ -24,15 +23,14 @@ import {
  * - snapshots survive restarts; a corrupt document, an invalid file
  *   path/content, an over-limit snapshot or a duplicate project entry
  *   REFUSES TO START (security state is never silently repaired);
- * - writes are atomic (temp file + rename, mode 0600) and run inside
- *   the serialized in-process queue, persist-before-observable;
+ * - same-directory private temp+rename writes run in the serialized
+ *   in-process queue; no fsync or cross-file transaction is provided;
  * - snapshots are VIRTUAL CONTENT TREES (path + text content stored in
  *   the document) — nothing is ever extracted to the filesystem, so
  *   symlink attacks are structurally impossible; paths re-validate
  *   against the shared single path policy on every load;
- * - stored content carries NO account material beyond the owner id
- *   (which never leaves the server), and credential-file types are
- *   rejected outright (see shared `SOURCE_BLOCKED_EXTENSIONS`).
+ * - credential-file extensions are blocked, but allowed source text may
+ *   still contain secrets and is stored raw; access and retention matter.
  *
  * Replace semantics: a PUT replaces the project's whole snapshot (the
  * deterministic input the engine scans); an empty file list clears it.
@@ -271,15 +269,12 @@ function createSourceStoreFrom(internals: StoreInternals): SourceSnapshotStore {
   };
 }
 
-/** Durable source-snapshot store: one JSON document, atomic writes. */
+/** Durable source snapshots: one JSON document and single-writer rename; no fsync or multi-file transaction. */
 export function createJsonFileSourceStore(path: string): SourceSnapshotStore {
   const document = loadDocument(path);
   const persistWith = (snapshots: SourceSnapshotRecord[]): void => {
-    mkdirSync(dirname(path), { recursive: true });
     const payload: StoreDocument = { version: 1, snapshots };
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(payload, null, 2)}\n`);
   };
   return createSourceStoreFrom({ snapshots: document.snapshots, persistWith });
 }

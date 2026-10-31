@@ -1,0 +1,133 @@
+{
+  "fixtureManifestSha256": "26c75d9c3376c560ab1ec7c349dc99a083b8f8a5f00cfaa7ffe91eb485923220",
+  "independentHumanReview": false,
+  "description": "Mechanical behavior cross-check authored alongside the fixtures; not independent vulnerability adjudication.",
+  "observations": [
+    {
+      "id": "SAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-05",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-06",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-07",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-08",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SECRET-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SECRET-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SECRET-03",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SECRET-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SCA-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SCA-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SCA-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SCA-04",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "DAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-03",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "DAST-04",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-05",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    }
+  ]
+}

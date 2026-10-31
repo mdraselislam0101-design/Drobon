@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
 import { parseStoredUser, type UserRepository, type UserRecord } from './repositories.js';
 import { buildAdminAccountCounts, buildAdminAccountPage } from './adminProjection.js';
 
@@ -18,10 +17,10 @@ import { buildAdminAccountCounts, buildAdminAccountPage } from './adminProjectio
  * Guarantees and honest limits:
  * - accounts survive process restarts (read at startup, fail fast on a
  *   corrupt document);
- * - writes are atomic (temp file + rename in the same directory), so a
- *   crash mid-write cannot tear the store;
- * - create is serialized in-process and persists BEFORE it is observable:
- *   duplicate emails cannot race and memory never diverges from disk;
+ * - writes use a private temp file and same-directory rename. This is not a
+ *   multi-file transaction or a proven power-loss guarantee (no fsync);
+ * - create is serialized in-process and persists before it is observable;
+ *   this does not coordinate external writers or other processes;
  * - it is explicitly single-process/single-writer and intended for
  *   foundation-scale data (thousands of accounts, not millions). Scaling
  *   beyond that is the database phase, not this file.
@@ -92,11 +91,8 @@ export function createJsonFileUserRepository(path: string): UserRepository {
   let queue: Promise<unknown> = Promise.resolve();
 
   const persist = (users: UserRecord[]): void => {
-    mkdirSync(dirname(path), { recursive: true });
     const payload: StoreDocument = { version: 1, users };
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(payload, null, 2)}\n`);
   };
 
   return {
@@ -131,6 +127,25 @@ export function createJsonFileUserRepository(path: string): UserRepository {
         byId.set(id, updated);
         byEmail.set(updated.email, updated);
         return 'ACTIVATED' as const;
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    },
+    restorePartnerSubscription: (id, activationAt, prior) => {
+      const run = queue.then(() => {
+        const current = byId.get(id);
+        if (current === undefined) return 'NOT_FOUND' as const;
+        const subscription = current.subscription;
+        if (subscription?.plan !== 'PRO' || subscription.status !== 'ACTIVE' ||
+            subscription.createdAt !== activationAt || subscription.updatedAt !== activationAt) return 'CHANGED' as const;
+        const updated: UserRecord = { ...current };
+        if (prior === null) delete updated.subscription;
+        else updated.subscription = { ...prior };
+        const nextUsers = [...byEmail.values()].map((record) => record.id === id ? updated : record);
+        persist(nextUsers);
+        byId.set(id, updated);
+        byEmail.set(updated.email, updated);
+        return 'RESTORED' as const;
       });
       queue = run.catch(() => undefined);
       return run;

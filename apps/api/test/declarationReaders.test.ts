@@ -139,6 +139,46 @@ describe('real raw manifest → normalized document', () => {
       .toMatchObject({ source: 'https://rubygems.org', gems: [{ name: 'rails', requirement: '7.1' }] });
   });
 
+  test('realistic requirements preserve environment markers and refuse unresolved includes', () => {
+    expect(readRequirements('requests[security]>=2.0; python_version < "3.12" --hash=sha256:abc\n'))
+      .toMatchObject({ requirements: [{ name: 'requests', extras: ['security'], specifier: '>=2.0; python_version < "3.12"', hashes: ['sha256:abc'] }] });
+    expect(readRequirements('requests==2.0\n-r other-requirements.txt\n')).toBeUndefined();
+    expect(readRequirements('--trusted-host\n')).toBeUndefined();
+    expect(readRequirements('--trusted-host=\n')).toMatchObject({ 'trusted-host': '', options: { trusted_host: [''] } });
+  });
+
+  test('Gradle literals, comments, nesting and dynamic versions stay distinct', () => {
+    const source = [
+      '// repositories { mavenLocal() }',
+      'plugins { id("java") version("2.0") }',
+      'repositories { maven { url "https://repo.example/path"; content { includeGroup("a") } } }',
+      'repositories { flatDir { dirs "libs" } }',
+      'dependencies {',
+      '  implementation("org.fixture:lib:1.2.3") { changing = true }',
+      '}',
+    ].join('\n');
+    expect(readGradle(source, 'build.gradle')).toMatchObject({
+      plugins: [{ id: 'java', version: '2.0' }],
+      repositories: [{ url: 'https://repo.example/path', content: {} }, { name: 'flatDir', flatDir: true, dirs: ['libs'] }],
+      dependencies: [{ group: 'org.fixture', name: 'lib', version: '1.2.3', changing: true }],
+    });
+    expect(readGradle('plugins { id "java" version catalogVersion }', 'build.gradle'))
+      .toMatchObject({ plugins: [{ id: 'java', version: null }] });
+    expect(readGradle('apply from: provider()', 'build.gradle')).toBeUndefined();
+    expect(readGradle('plugins { id "java"', 'build.gradle')).toBeUndefined();
+  });
+
+  test('other bounded readers cover common Go, CocoaPods, Swift and NuGet forms', () => {
+    expect(parseDeclarationDocument('lockfile-text', 'go.work', 'go 1.22\nuse (\n  ./service\n  ./lib\n)\n'))
+      .toMatchObject({ go: '1.22', use: ['./service', './lib'] });
+    expect(parseDeclarationDocument('lockfile-text', 'Podfile.lock', 'PODS:\n  - FixtureKit (1.2.0)\n\nSPEC CHECKSUMS:\n  FixtureKit: abc123\n'))
+      .toMatchObject({ pods: [{ name: 'FixtureKit', version: '1.2.0', checksum: 'abc123' }] });
+    expect(parseDeclarationDocument('lockfile-text', 'Package.swift', '// swift-tools-version: 5.9\n.package(url: "https://example.org/lib.git", from: "1.2.0")\n'))
+      .toMatchObject({ toolsVersion: '5.9', dependencies: [{ url: 'https://example.org/lib.git', requirement: { version: '1.2.0' } }] });
+    expect(parseDeclarationDocument('xml', 'nuget.config', '<configuration><packageSources><clear/><add key="fixture" value="https://example.org/v3"/></packageSources></configuration>'))
+      .toMatchObject({ packageSources: { clear: true, add: [{ key: 'fixture', value: 'https://example.org/v3' }] } });
+  });
+
   test('json parser is unchanged', () => {
     expect(parseDeclarationDocument('json', 'package.json', '{"dependencies":{"x":"*"}}'))
       .toEqual({ dependencies: { x: '*' } });
@@ -207,6 +247,37 @@ describe('untrusted declaration input safety and coverage', () => {
     expect(yaml).toBeDefined();
     expect(Object.hasOwn(Object.prototype, probe)).toBe(false);
     expect(({} as Record<string, unknown>)[probe]).toBeUndefined();
+  });
+
+  test('decodes standard XML references once before SCA checks, without exposing values', () => {
+    const xml = '<?xml version="1.0"?><configuration><!-- fixture -->' +
+      '<packageSources><add key="fixture" value="http&#58;//registry.invalid/v3?a=1&amp;b=2"/></packageSources></configuration>';
+    const parsed = parseDeclarationDocument('xml', 'nuget.config', xml);
+    expect(parsed).toMatchObject({ sources: [{ key: 'fixture', value: 'http://registry.invalid/v3?a=1&b=2' }] });
+    expect(readXml('<project><name>&lt;fixture&gt; &amp; &#x41; &apos; &quot;</name></project>'))
+      .toMatchObject({ project: { name: '<fixture> & A \' "' } });
+    expect(readXml('<project><name>&amp;#58;</name></project>')).toMatchObject({ project: { name: '&#58;' } });
+    const rule = rawRule('xml', 'nuget.config', { check: { type: 'sca-field-matches', path: 'sources[].value', valuePattern: '^http:' } });
+    const result = evaluateScaDeclarations({ rawRules: [rule], files: [{ path: 'nuget.config', content: xml }], record: record() });
+    expect(result.rulesEvaluated).toBe(1);
+    expect(result.findings).toHaveLength(1);
+    expect(result.partial).toBe(true); // XML remains a bounded subset.
+    expect(JSON.stringify(result.findings)).not.toContain('registry.invalid');
+  });
+
+  test('rejects incomplete or unsafe XML syntax rather than parsing a prefix', () => {
+    for (const content of [
+      '<project><name>fixture</name></project><broken',
+      '<project><name>&unknown;</name></project>',
+      '<project><name>&#0;</name></project>',
+      '<project><name>&#xD800;</name></project>',
+      '<project><x id="one" id="two"/></project>',
+      '<project><x value="a&b"/></project>',
+    ]) {
+      expect(parseDeclarationDocument('xml', 'pom.xml', content)).toBeUndefined();
+    }
+    expect(readXml('<project><!-- <ignored/> --><name>ok</name></project><!-- trailing -->'))
+      .toMatchObject({ project: { name: 'ok' } });
   });
 
   test('rejects malformed XML, XML entities and over-limit inputs rather than interpreting a prefix', () => {

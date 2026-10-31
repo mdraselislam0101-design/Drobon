@@ -1,3 +1,4 @@
+import type { DatasetService } from '../src/external/service.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,7 @@ import type { AdvisoryService } from '../src/external/advisory.js';
 import type { DastTargetPolicy } from '../src/scans/dast/target.js';
 import { createJsonFilePaymentStore, createMemoryPaymentStore, type PaymentStore } from '../src/payments/store.js';
 import type { EntitlementStore } from '../src/entitlements/store.js';
+import type { PartnerStore } from '../src/partners/store.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from '../src/assessments/store.js';
 
 export interface TestServer {
@@ -109,6 +111,7 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   /** Use a real JSON assessment store at a temp path for restart proofs. */
   assessmentStoreDir?: string;
   studentStoreDir?: string;
+  datasetService?: DatasetService;
   /** Inject an assessment store directly (defaults: memory or assessmentStoreDir). */
   assessmentStore?: AssessmentStore;
   /** Use a real JSON source store at a temp path instead of memory (Pump 8). */
@@ -121,6 +124,8 @@ export type TestServerOverrides = Partial<ApiConfig> & {
   paymentStore?: PaymentStore;
   /** Inject the admin PRO entitlement store directly (restart proofs). */
   entitlementStore?: EntitlementStore;
+  /** Injectable partner persistence boundary for failure/recovery tests. */
+  partnerStore?: PartnerStore;
   /** Deterministic payment timestamps. */
   paymentNow?: () => number;
   partnerNow?: () => number;
@@ -187,11 +192,13 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     assessmentStoreDir,
     assessmentStore,
     studentStoreDir,
+    datasetService,
     sourceStoreDir,
     sourceStore,
     paymentStoreDir,
     paymentStore,
     entitlementStore,
+    partnerStore,
     paymentNow,
     partnerNow,
     scanEngines,
@@ -342,7 +349,7 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     createScaEngine({ sources: resolvedSourceStore, provider: createNullIntelligenceProvider() }),
     createSecretsEngine({ sources: resolvedSourceStore, rules: TEST_SECRETS_RULES }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, authorize: createAssessmentDastAuthorizer(resolvedAssessmentStore), packRules: TEST_DAST_RULES as any }),
+    createDastEngine({ targetPolicy: effectiveDastTargetPolicy, transport: effectiveDastTransport, authorize: createAssessmentDastAuthorizer(resolvedAssessmentStore, Date.now, { requireEngagement: configWithStore.dastRequireEngagement === true }), packRules: TEST_DAST_RULES as any }),
   ]);
   const started: StartedServer = await startServer({
     config: configWithStore,
@@ -356,10 +363,12 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     ...(usageNow === undefined ? {} : { usageNow }),
     ...(resolvedProjectStore === undefined ? {} : { projectStore: resolvedProjectStore }),
     scanStore: resolvedScanStore,
+    ...(datasetService === undefined ? {} : { datasetService }),
     assessmentStore: resolvedAssessmentStore,
     sourceStore: resolvedSourceStore,
     ...(effectiveScanEngines === undefined ? {} : { scanEngines: effectiveScanEngines }),
     ...(entitlementStore === undefined ? {} : { entitlementStore }),
+    ...(partnerStore === undefined ? {} : { partnerStore }),
     dastTargetPolicy: effectiveDastTargetPolicy,
     dastTransport: effectiveDastTransport,
     ...(scanProcessorIntervalMs === undefined ? {} : { scanProcessorIntervalMs }),

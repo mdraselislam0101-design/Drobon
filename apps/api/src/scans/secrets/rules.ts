@@ -23,7 +23,8 @@ export interface SecretsRule {
   readonly remediation: string;
   readonly limitation: string;
   readonly patterns: readonly RegExp[];
-  readonly validate?: (matched: string) => boolean;
+  /** The full line is supplied so dataset denylists use loader-equivalent semantics. */
+  readonly validate?: (matched: string, line?: string) => boolean;
   readonly valueSpan?: (match: SecretsRuleMatch) => { start: number; end: number } | undefined;
   readonly matchOnlyEvidence?: boolean;
 }
@@ -39,7 +40,7 @@ export function matchSecretsRuleLine(rule: SecretsRule, line: string): SecretsRu
         column: (match.index ?? 0) + 1,
         text: match[0],
       };
-      if (rule.validate !== undefined && !rule.validate(candidate.text)) {
+      if (rule.validate !== undefined && !rule.validate(candidate.text, line)) {
         continue;
       }
       return candidate;

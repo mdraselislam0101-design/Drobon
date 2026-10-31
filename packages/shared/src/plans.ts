@@ -88,11 +88,11 @@ export interface Subscription {
  * deliberately no mutation endpoint in Pump 4.
  *
  * When the account's EFFECTIVE plan is PRO, `proEntitlementSource` states
- * where that PRO comes from: `'PAID'` (the persisted subscription itself
- * is PRO+ACTIVE) or `'ADMIN_GRANT'` (an active admin complimentary grant
- * sits on top of the subscription). It is omitted entirely when the
- * effective plan is FREE. This is honest presentation only — it never
- * grants anything by itself and a client cannot influence it.
+ * where that PRO comes from only when supported: `'PAID'` (an auditable
+ * paid activation) or `'ADMIN_GRANT'` (an active admin complimentary grant).
+ * It is omitted for FREE and for PRO whose provenance is not established,
+ * including legacy or partner-issued subscriptions. The source is
+ * presentation only — it never grants anything by itself.
  */
 export interface SubscriptionResponse {
   subscription: Subscription;

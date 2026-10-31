@@ -1,8 +1,9 @@
 /**
- * Active DAST — safe, non-destructive payload catalog.
- * Every payload is synthetic, bounded, and read-only: it never
- * modifies, deletes, or exfiltrates data. Detection is
- * reflection/error-pattern observation, never exploitation.
+ * Active DAST — bounded synthetic marker catalog.
+ * The engine uses GET and does not intentionally modify, delete or
+ * exfiltrate data. A target can nevertheless attach side effects to GET;
+ * no blanket non-destructive guarantee is possible. Detection is
+ * reflection/error-pattern observation, not proof of exploitation.
  *
  * This module is ENGINE LOGIC only (no dataset) — payload shapes
  * are fixed here; dataset packs may add response checks (packRules)
@@ -61,7 +62,7 @@ export const SAFE_ACTIVE_PAYLOADS: readonly ActivePayload[] = [
   {
     id: 'ACT-TRAV-01',
     category: 'path-traversal',
-    // Read-only traversal marker — detection via file marker reflection, never file read.
+    // Synthetic traversal marker; the engine itself performs no local file read.
     value: '..%2F..%2F..%2Fetc%2Fdrobon-probe',
     detector: /drobon-probe|root:.*:0:0:/,
     description: 'Path traversal marker reflected in response',

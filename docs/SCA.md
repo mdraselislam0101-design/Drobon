@@ -33,7 +33,9 @@ The default provider is `none`:
 - Filesystem intelligence and separately configured declaration/advisory
   rules are optional. Missing, sparse, malformed or unevaluable data is
   disclosed as `NOT_ASSESSED` or `PARTIAL`; a real match can coexist with
-  partial coverage. No loaded match establishes that all packages are safe.
+  partial coverage. The filesystem provider skips symlinks and enforces
+  entry, file-count, directory-depth, per-file and total-byte limits; skipped
+  data is disclosed as incomplete. No loaded match establishes safety.
 
 Provider advisories are SCA advisory records; declaration rules and the
 separate generic advisory service can also produce ordinary findings.
@@ -63,7 +65,7 @@ consumption). There is no parallel system.
 | `package.json` | npm | ANALYZED | dependencies/devDependencies/optionalDependencies/peerDependencies; runtime wins on duplicate names; name+version give the root identity |
 | `package-lock.json` v3/v2 | npm | ANALYZED | `packages` map: root `""` entry supplies the direct set; nested `node_modules/...` keys resolve to the innermost package; `link: true` and version-less entries are skipped |
 | `package-lock.json` v1 | npm | ANALYZED/PARTIAL | bounded iterative nested `dependencies` walk; a companion `package.json` classifies root entries, nested copies are transitive; depth/entry caps are disclosed |
-| `requirements.txt` | pypi | ANALYZED | pins, ranges, extras (stripped from the name), environment markers (after `;`), continuation lines, `--hash` evidence; options/flags and bare URLs are skipped and counted |
+| `requirements.txt` | pypi | ANALYZED/PARTIAL | pins, ranges, extras (stripped from the name), environment markers (after `;`), continuation lines, `--hash` evidence; skipped options/directives, bare URLs or malformed requirement lines make the inventory PARTIAL. Referenced files are never followed. |
 | `pyproject.toml` | pypi | ANALYZED | PEP 621 `[project]` `dependencies` + `optional-dependencies` groups; Poetry `[tool.poetry]` dependency tables (`python` key excluded) |
 | other formats (e.g. `Pipfile`, `Gemfile`, `go.mod`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.toml`, `pom.xml`) | — | no full dependency inventory | Some can separately be inspected by bounded dataset declaration readers; that is not equivalent to installed-package inventory or full lockfile resolution. See `SCA_READERS.md`. |
 
@@ -94,6 +96,14 @@ evidence.
   sent as advisory candidates; wildcards and ranges remain unknown.
   Environment markers are not evaluated and a declaration is not proof
   of installation or deployment.
+- Advisory range evaluation uses bounded npm/PEP 440 subsets. Ambiguous
+  prereleases, unsupported wildcard forms, malformed versions and numbers
+  outside safe precision are reported as incomplete rather than confidently
+  matched or treated as clean. A prerelease is matched only when the range
+  explicitly covers it under the supported rules. For PyPI advisory ranges,
+  an explicit prerelease bound opts in to prerelease comparisons even with
+  `<` or `>`: this is a security-coverage policy and can differ from an
+  installer's default prerelease candidate filtering.
 - **Declared and resolved versions are both preserved, never
   merged**: `declaredVersion` (e.g. `^4.18.0`) comes from the
   manifest; `resolvedVersion` (e.g. `4.17.1`) exists only when a

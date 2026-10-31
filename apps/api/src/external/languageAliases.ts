@@ -38,7 +38,8 @@ export const PACK_LANGUAGE_ALIASES: Readonly<Record<string, string>> = Object.fr
   cmd: CONFIG_FAMILY,
   asp: CONFIG_FAMILY,
   coldfusion: CONFIG_FAMILY,
-  blade: CONFIG_FAMILY,
+  // Blade templates end in .blade.php; keep PHP-family rules reachable too.
+  blade: 'php',
   ejs: CONFIG_FAMILY,
   handlebars: CONFIG_FAMILY,
   jinja: CONFIG_FAMILY,

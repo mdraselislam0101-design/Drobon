@@ -116,11 +116,32 @@ describe('partner activation (admin-only, one identity per user)', () => {
     const partnerCookie = sessionCookieFrom((await login(server, 'usr_partner_alpha@example.test', PW)).res);
     const subRes = await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: partnerCookie } });
     expect(subRes.status).toBe(200);
-    const sub = await jsonData<{ subscription: { plan: string; status: string } }>(subRes);
+    const sub = await jsonData<{ subscription: { plan: string; status: string }; proEntitlementSource?: string }>(subRes);
     expect(sub.subscription).toMatchObject({ plan: 'PRO', status: 'ACTIVE' });
+    expect(sub.proEntitlementSource).toBeUndefined(); // never call a complimentary grant paid
+    const accountsRes = await fetch(`${server.baseUrl}/api/v1/admin/accounts?search=usr_partner_alpha`, { headers: { cookie: adminCookie } });
+    const accounts = await jsonData<{ accounts: Array<{ accountId: string; proEntitlementSource: string | null }> }>(accountsRes);
+    expect(accounts.accounts.find((entry) => entry.accountId === 'usr_partner_alpha')?.proEntitlementSource).toBeNull();
     const history = await fetch(`${server.baseUrl}/api/v1/payments`, { headers: { cookie: partnerCookie } });
     const payments = await jsonData<{ payments: unknown[]; total: number }>(history);
     expect(payments.total).toBe(0); // complimentary PRO never fabricates payment history
+  });
+
+  test('a payment approved after partner PRO was already active is not misattributed as its paid source', async () => {
+    const { server, adminCookie, reviewerCookie } = await setup();
+    await seedPartner(server, 'usr_partner_pending');
+    const partnerCookie = sessionCookieFrom((await login(server, 'usr_partner_pending@example.test', PW)).res);
+    const created = await createPayment(server, partnerCookie, paymentBody('TXN-PENDING-PARTNER'), 'idem-pending-partner');
+    expect(created.status).toBe(201);
+    const { payment } = await jsonData<{ payment: PaymentSummaryShape }>(created);
+    expect((await activatePartner(server, adminCookie, { userId: 'usr_partner_pending', couponCode: 'AEGIS-PENDING' })).status).toBe(201);
+    expect((await approvePayment(server, reviewerCookie, payment.paymentId)).status).toBe(200);
+    const sub = await jsonData<{ subscription: { plan: string }; proEntitlementSource?: string }>(
+      await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: partnerCookie } }),
+    );
+    expect(sub.subscription.plan).toBe('PRO');
+    expect(sub.proEntitlementSource).toBeUndefined();
+    expect(server.payments.hasConfirmedProActivation('usr_partner_pending', (await server.users.findById('usr_partner_pending'))?.subscription?.createdAt ?? null)).toBe(false);
   });
 
   test('normal MEMBER cannot activate, list, detail, mutate or settle partner resources', async () => {

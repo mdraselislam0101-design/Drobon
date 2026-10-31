@@ -1,5 +1,6 @@
+import { safeFindingEvidence, safeFindingWorkflow } from '../scans/findingIdentity.js';
 import { createHash } from 'node:crypto';
-import { AST_FLOW_KINDS, SCAN_TYPES, type AstAnalysisCoverage, type AstFlowTrace, type DastAstContext, type SecretAstContext, type Finding, type FindingWorkflow, type ReportScanContext } from '@drobon/shared';
+import { AST_FLOW_KINDS, SCAN_TYPES, isFindingRemediationGuidance, type AstAnalysisCoverage, type AstFlowTrace, type DastAstContext, type SecretAstContext, type Finding, type FindingRemediationGuidance, type FindingWorkflow, type ReportScanContext } from '@drobon/shared';
 import {
   REPORT_MAX_BYTES,
   REPORT_SCHEMA_VERSION,
@@ -13,6 +14,29 @@ import {
 import type { ProjectRecord } from '../projects/store.js';
 import type { ScanRecord } from '../scans/store.js';
 import { createSacAssessment } from '../sac/engine.js';
+
+/** Optional current Dataset guidance, kept outside the immutable v1 report. */
+export interface ReportGuidanceEntry {
+  findingId: string;
+  guidance: FindingRemediationGuidance;
+}
+
+export const REPORT_GUIDANCE_NOTICE = 'Guidance is resolved at export time from the currently loaded, process-cached Dataset and is not covered by the saved report digest. Review and test suggestions; Drobon does not apply or verify fixes.';
+
+/** Validate the association, bounds and shared guidance contract before any export. */
+export function indexReportGuidance(report: SecurityReport, entries?: readonly ReportGuidanceEntry[]): Map<string, FindingRemediationGuidance> {
+  const result = new Map<string, FindingRemediationGuidance>();
+  if (entries === undefined) return result;
+  if (entries.length !== report.findings.length) throw new TypeError('Report guidance is incomplete.');
+  const findings = new Map(report.findings.map((finding) => [finding.id, finding]));
+  for (const entry of entries) {
+    const finding = findings.get(entry.findingId);
+    if (finding === undefined || result.has(entry.findingId) || !isFindingRemediationGuidance(entry.guidance) ||
+        entry.guidance.ruleId !== finding.ruleId) throw new TypeError('Report guidance does not match its finding.');
+    result.set(entry.findingId, entry.guidance);
+  }
+  return result;
+}
 
 /** JSON subset used by the canonical report serializer. */
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -70,6 +94,24 @@ export function verifySecurityReportIntegrity(value: unknown): value is Security
   return sha256(canonicalJson(unsigned)) === integrityDigest;
 }
 
+/** Redacted view of an older immutable report. Re-hash the derived view so
+ * neither the original digest nor the stored record is falsely represented. */
+export function safeReportProjection(report: SecurityReport): SecurityReport {
+  if (!verifySecurityReportIntegrity(report)) throw new TypeError('Report integrity check failed.');
+  const { reportId: _reportId, generatedAt, contentDigest: _contentDigest, integrityDigest: _integrityDigest, ...remaining } = report;
+  void _reportId; void _contentDigest; void _integrityDigest;
+  const payload = {
+    ...remaining,
+    findings: remaining.findings.map(safeFindingEvidence),
+    ...(remaining.findingWorkflows === undefined ? {} : { findingWorkflows: remaining.findingWorkflows.map(safeFindingWorkflow) }),
+  };
+  const contentDigest = sha256(canonicalJson(contentMaterial(payload)));
+  const unsigned = { reportId: `rpt_${contentDigest.slice(0, 24)}`, generatedAt, ...payload, contentDigest };
+  const projected: SecurityReport = { ...unsigned, integrityDigest: sha256(canonicalJson(unsigned)) };
+  if (!verifySecurityReportIntegrity(projected)) throw new TypeError('Safe report projection failed integrity checks.');
+  return projected;
+}
+
 function scanSnapshot(record: ScanRecord): ReportScanContext {
   if (record.status !== 'COMPLETED' || record.startedAt === undefined || record.completedAt === undefined || record.resultSummary === undefined) {
     throw new TypeError('Only completed scans can be reported.');
@@ -97,7 +139,7 @@ export function buildSecurityReport(
   findingWorkflows?: readonly FindingWorkflow[],
 ): SecurityReport {
   const scanContext = scanSnapshot(scan);
-  const findings: Finding[] = [...(scan.findings ?? [])];
+  const findings: Finding[] = (scan.findings ?? []).map(safeFindingEvidence);
   if (scan.resultSummary?.findingsTotal !== findings.length) {
     throw new TypeError('Persisted finding details do not agree with the completed scan summary.');
   }
@@ -131,7 +173,7 @@ export function buildSecurityReport(
     scannerCoverage,
     findingSummary,
     findings,
-    ...(findingWorkflows === undefined ? {} : { findingWorkflows: [...findingWorkflows] }),
+    ...(findingWorkflows === undefined ? {} : { findingWorkflows: findingWorkflows.map(safeFindingWorkflow) }),
     sac,
     ...(scan.dast === undefined ? {} : { dast: scan.dast }),
     dependencyIntelligence,
@@ -189,7 +231,11 @@ function astCoverageLines(coverage: AstAnalysisCoverage): string[] {
 }
 
 /** Human-readable, inert Markdown; all untrusted text is escaped as text. */
-export function renderSecurityReportMarkdown(report: SecurityReport): string {
+export function renderSecurityReportMarkdown(input: SecurityReport, guidance?: readonly ReportGuidanceEntry[]): string {
+  // Exporters are also called outside HTTP routes. Never rely solely on the
+  // caller having projected a historical snapshot first.
+  const report = safeReportProjection(input);
+  const guidanceByFinding = indexReportGuidance(report, guidance);
   const lines = [
     `# DROBON Security Assessment`,
     '',
@@ -199,6 +245,7 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
     `Content SHA-256: \`${report.contentDigest}\`  `,
     `Integrity SHA-256: \`${report.integrityDigest}\` (digest only; not a signature)`,
     '',
+    ...(guidance === undefined ? [] : [escapeMarkdown(REPORT_GUIDANCE_NOTICE), '']),
     '## Project and scan',
     '',
     `- Project: ${escapeMarkdown(report.project.name)} (\`${report.project.id}\`, ${report.project.status})`,
@@ -311,6 +358,22 @@ export function renderSecurityReportMarkdown(report: SecurityReport): string {
       quoteBlock('Evidence', finding.evidence),
       quoteBlock('Remediation', finding.remediation),
     );
+    const advice = guidanceByFinding.get(finding.id);
+    if (advice !== undefined) {
+      lines.push(
+        `#### Dataset guidance (${advice.status})`,
+        '',
+        quoteBlock('Why it matters', advice.whyItMatters),
+        ...advice.actions.map((action, index) => quoteBlock(`Action ${index + 1}`, action)),
+        quoteBlock('Verification', advice.verification),
+        ...(advice.standardId === undefined ? [] : [`- Standard: ${escapeMarkdown(advice.standardId)}`, '']),
+        ...(advice.example === undefined ? [] : [
+          quoteBlock('Illustrative before', advice.example.before),
+          quoteBlock('Illustrative after', advice.example.after),
+          ...(advice.example.caveat === undefined ? [] : [quoteBlock('Example caveat', advice.example.caveat)]),
+        ]),
+      );
+    }
     const workflow = workflowByFindingId.get(finding.id);
     if (workflow !== undefined) {
       lines.push(
@@ -396,7 +459,7 @@ interface SarifResult {
   message: { text: string };
   locations: SarifLocation[];
   fingerprints: Record<string, string>;
-  properties?: { 'drobon/astFlow'?: AstFlowTrace; 'drobon/astContext'?: DastAstContext | SecretAstContext };
+  properties?: { 'drobon/astFlow'?: AstFlowTrace; 'drobon/astContext'?: DastAstContext | SecretAstContext; 'drobon/remediationGuidance'?: FindingRemediationGuidance };
 }
 
 type SarifLocation =
@@ -411,7 +474,9 @@ type SarifLocation =
  * findings (no source location) use logical locations. Fingerprints carry
  * the DROBON stable fingerprint so CI importers can correlate across runs.
  */
-export function renderSecurityReportSarif(report: SecurityReport): string {
+export function renderSecurityReportSarif(input: SecurityReport, guidance?: readonly ReportGuidanceEntry[]): string {
+  const report = safeReportProjection(input);
+  const guidanceByFinding = indexReportGuidance(report, guidance);
   const rules: SarifRule[] = [];
   const ruleIndexById = new Map<string, number>();
   const results: SarifResult[] = [];
@@ -439,6 +504,7 @@ export function renderSecurityReportSarif(report: SecurityReport): string {
             region: { startLine: Math.max(1, finding.line), ...(finding.column >= 1 ? { startColumn: finding.column } : {}) },
           },
         };
+    const advice = guidanceByFinding.get(finding.id);
     results.push({
       ruleId: finding.ruleId,
       ruleIndex,
@@ -446,9 +512,10 @@ export function renderSecurityReportSarif(report: SecurityReport): string {
       message: { text: `${finding.title} — ${finding.description}` },
       locations: [location],
       fingerprints: { 'drobon/v1': finding.fingerprint },
-      ...(finding.astFlow === undefined && finding.astContext === undefined ? {} : { properties: {
+      ...(finding.astFlow === undefined && finding.astContext === undefined && advice === undefined ? {} : { properties: {
         ...(finding.astFlow === undefined ? {} : { 'drobon/astFlow': finding.astFlow }),
         ...(finding.astContext === undefined ? {} : { 'drobon/astContext': finding.astContext }),
+        ...(advice === undefined ? {} : { 'drobon/remediationGuidance': advice }),
       } }),
     });
   }
@@ -476,6 +543,7 @@ export function renderSecurityReportSarif(report: SecurityReport): string {
           'drobon/scanType': report.scan.scanType,
           'drobon/dependencyIntelligence': report.dependencyIntelligence.status,
           'drobon/honesty': 'A bounded scan cannot establish safety; dependency intelligence is not a verdict when NOT_ASSESSED.',
+          ...(guidance === undefined ? {} : { 'drobon/guidanceNotice': REPORT_GUIDANCE_NOTICE }),
           ...(report.scan.resultSummary?.astParser === undefined ? {} : {
             'drobon/astParser': report.scan.resultSummary.astParser,
             'drobon/astParserScope': report.scan.resultSummary.astCoverage === undefined

@@ -167,26 +167,38 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
     truncated: false,
   };
   const compiled = compileScaDeclarationRules(options.rawRules);
-  if (compiled.length === 0) return outcome;
+  // Even an unexpected invalid rule supplied by an injected provider counts as
+  // not evaluated; never make it disappear from coverage.
+  outcome.rulesNotEvaluated = options.rawRules.length - compiled.length;
+  if (compiled.length === 0) {
+    outcome.partial = outcome.rulesNotEvaluated > 0;
+    return outcome;
+  }
 
   const maxFindings = Math.min(options.maxFindings ?? MAX_FINDINGS_PER_SCAN, MAX_FINDINGS_PER_SCAN);
   const readable = DECLARATION_READER_PARSERS as readonly string[];
 
-  // Rules whose parser the scan layer cannot read are honestly not evaluated.
   const unreadable = compiled.filter((entry) => !readable.includes(entry.rule.parser));
-  outcome.rulesNotEvaluated = unreadable.length;
+  outcome.rulesNotEvaluated += unreadable.length;
+  outcome.partial = outcome.rulesNotEvaluated > 0;
 
-  const byArtifact = new Map<string, CompiledScaDeclarationRule[]>();
+  // Index by basename for speed, then check the full relative artifact suffix.
+  // A path-qualified rule must never match an unrelated same-named file.
+  const byBasename = new Map<string, CompiledScaDeclarationRule[]>();
   for (const entry of compiled) {
     if (!readable.includes(entry.rule.parser)) continue;
-    const list = byArtifact.get(entry.rule.artifact) ?? [];
+    const basename = entry.rule.artifact.split('/').pop() ?? '';
+    const list = byBasename.get(basename) ?? [];
     list.push(entry);
-    byArtifact.set(entry.rule.artifact, list);
+    byBasename.set(basename, list);
   }
+  const matchesArtifact = (path: string, artifact: string): boolean =>
+    path === artifact || path.endsWith(`/${artifact}`);
 
   const eligibleFiles = options.files
     .filter((file) => isValidSourcePath(file.path) && !isIgnoredPath(file.path))
-    .filter((file) => byArtifact.has(file.path.split('/').pop() ?? ''))
+    .filter((file) => (byBasename.get(file.path.split('/').pop() ?? '') ?? [])
+      .some((entry) => matchesArtifact(file.path, entry.rule.artifact)))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const candidates = eligibleFiles.slice(0, SCA_MAX_MANIFESTS_PER_SCAN);
   const candidateTruncated = eligibleFiles.length > candidates.length;
@@ -198,7 +210,7 @@ export function evaluateScaDeclarations(options: DeclarationScanOptions): Declar
 
   outer: for (const file of candidates) {
     const basename = file.path.split('/').pop() ?? '';
-    const rules = byArtifact.get(basename) ?? [];
+    const rules = (byBasename.get(basename) ?? []).filter((entry) => matchesArtifact(file.path, entry.rule.artifact));
     // A basename may be represented by rules for different parser kinds.
     // Cache per (file, parser), never reuse a JSON-shaped document for a
     // different declared reader merely because the basename is the same.

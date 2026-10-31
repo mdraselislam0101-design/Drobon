@@ -4,6 +4,7 @@ import type {
   AdminProGrantAuditAction,
   EntitlementAuditEvent,
   ProEntitlementSource,
+  Subscription,
 } from '@drobon/shared';
 import {
   ADMIN_PRO_GRANT_MAX_EXPIRY_DAYS,
@@ -62,12 +63,10 @@ export interface EntitlementService {
   hasActivePro(accountId: string): boolean;
   /** The account's currently-active grant record, if any. */
   getActiveGrant(accountId: string): AdminProGrant | undefined;
-  /**
-   * Effective PRO source for an account record: `'ADMIN_GRANT'` when an
-   * active grant exists, `'PAID'` when the persisted subscription itself
-   * is PRO+ACTIVE, otherwise `undefined` (effective FREE).
-   */
+  /** Known source only: active admin grant or auditable paid activation. */
   proEntitlementSourceFor(record: UserRecord): ProEntitlementSource | undefined;
+  /** Unknown/legacy/partner subscription provenance is deliberately omitted. */
+  proEntitlementSourceForSubscription(accountId: string, subscription: Subscription): ProEntitlementSource | undefined;
 }
 
 /** Normalize the optional reason: sanitized, bounded, or `null`. */
@@ -126,11 +125,19 @@ function auditEvent(input: {
 export function createEntitlementService(options: {
   store: EntitlementStore;
   users: import('../auth/repositories.js').UserRepository;
+  /** Internal payment audit evidence, never a client claim. */
+  hasPaidActivation?: (accountId: string, subscriptionCreatedAt: string | null) => boolean;
   now?: () => number;
 }): EntitlementService {
   const { store, users } = options;
   const now = options.now ?? Date.now;
   const timestamp = (): string => new Date(now()).toISOString();
+  const sourceFor = (accountId: string, subscription: Subscription): ProEntitlementSource | undefined => {
+    if (store.getActiveForAccount(accountId, now()) !== undefined) return 'ADMIN_GRANT';
+    if (subscription.plan === 'PRO' && subscription.status === 'ACTIVE' &&
+        options.hasPaidActivation?.(accountId, subscription.createdAt) === true) return 'PAID';
+    return undefined;
+  };
 
   return {
     grantPro: async (adminId, input) => {
@@ -203,11 +210,7 @@ export function createEntitlementService(options: {
 
     getActiveGrant: (accountId) => store.getActiveForAccount(accountId, now()),
 
-    proEntitlementSourceFor: (record) => {
-      if (store.getActiveForAccount(record.id, now()) !== undefined) return 'ADMIN_GRANT';
-      const subscription = resolveSubscription(record);
-      if (subscription.plan === 'PRO' && subscription.status === 'ACTIVE') return 'PAID';
-      return undefined;
-    },
+    proEntitlementSourceFor: (record) => sourceFor(record.id, resolveSubscription(record)),
+    proEntitlementSourceForSubscription: sourceFor,
   };
 }

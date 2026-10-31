@@ -103,8 +103,8 @@ export async function runCiCheck(options: CiOptions): Promise<CiResult> {
   }
   const projectKey = options.projectKey?.trim() ?? await realpath(options.root);
   const sources = await collectSources(options.root);
-  // The current dataset loader follows symlinks and silently skips malformed
-  // JSON, so reject unsafe filesystem entries and compare raw rule counts.
+  // Keep CI's strict preflight even though the service also reports unreadable
+  // files and refuses to traverse symlinks. Compare discovered counts as well.
   const rawRuleCounts = await inspectDataset(options.datasetPath);
   const dataset = createDatasetService({ providerId: 'filesystem', datasetPath: options.datasetPath });
   const status = await dataset.status();
@@ -120,8 +120,12 @@ export async function runCiCheck(options: CiOptions): Promise<CiResult> {
     const conform = scanner === 'SAST' ? status.conformance.sast : scanner === 'SECRETS' ? status.conformance.secrets : status.conformance.sca;
     if (pack.status !== 'AVAILABLE' || pack.count === 0) addReason(`${scanner} rules are unavailable.`, true);
     const family = scanner === 'SAST' ? 'sast' : scanner === 'SECRETS' ? 'secrets' : 'sca';
-    if (rawRuleCounts[family] !== conform.filesSeen) addReason(`${scanner} pack contains unreadable or malformed rule files.`, true);
-    if (conform.rejected.length > 0 || conform.failedTests > 0 || conform.skippedTests > 0) addReason(`${scanner} pack contains rejected rules or incomplete declared tests.`, true);
+    if (rawRuleCounts[family] !== conform.filesSeen || conform.rejected.some((issue) => issue.reason.includes('malformed JSON'))) {
+      addReason(`${scanner} pack contains unreadable or malformed rule files.`, true);
+    }
+    if (conform.enumerationFailures > 0) addReason(`${scanner} pack could not be fully enumerated.`, true);
+    if (conform.manifestIssue !== undefined) addReason(`${scanner} pack manifest could not be safely read.`, true);
+    if (conform.accepted < conform.filesSeen || conform.failedTests > 0 || conform.skippedTests > 0) addReason(`${scanner} pack contains rejected rules or incomplete declared tests.`, true);
   }
   if (selected.includes('SCA') && status.vulnIntel.status !== 'AVAILABLE') addReason('SCA vulnerability intelligence is unavailable.', true);
   if (sources.batches.length === 0) addReason('No eligible text source files were collected.', true);

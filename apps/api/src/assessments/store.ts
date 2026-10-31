@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import {
   ASSESSMENT_DECLARATIONS_MAX_COUNT,
   ASSESSMENT_ENGAGEMENTS_MAX_COUNT,
@@ -294,10 +294,7 @@ export function createJsonFileAssessmentStore(path: string): AssessmentStore {
     const payload: StoreDocument = { version: 1, assessments };
     const serialized = `${JSON.stringify(payload, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > ASSESSMENT_DOCUMENT_MAX_BYTES) throw new RangeError('Assessment store capacity has been reached.');
-    mkdirSync(dirname(path), { recursive: true });
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, serialized, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, serialized);
   };
   return createStore(document.assessments, persistWith);
 }

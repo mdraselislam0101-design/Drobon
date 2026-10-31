@@ -49,6 +49,28 @@ describe('dataset loader conformance', () => {
     expect(result.report.rejected).toEqual([]);
   });
 
+  test('duplicate IDs and unresolved language mappings are reported, never silently dropped', () => {
+    const result = validatePackRules([sastRule, sastRule, { ...sastRule, id: 'DPK-SAST-901', languages: ['not-a-language'] }], 'sast');
+    expect(result.report).toMatchObject({ filesSeen: 3, accepted: 1, enumerationFailures: 0 });
+    expect(result.report.rejected.map((issue) => issue.reason)).toEqual([
+      expect.stringContaining('duplicate rule id'),
+      expect.stringContaining('unresolved language'),
+    ]);
+  });
+
+  test('DAST checks cannot silently inspect unavailable headers or unsafe patterns', () => {
+    const uninspected = { ...dastRule, check: { type: 'missing-response-header', header: 'x-uninspected-fixture' } };
+    const unknownFlag = { ...dastRule, id: 'DPK-DAST-901', check: { type: 'cookie-missing-flag', flag: 'invented' } };
+    const slow = { ...dastRule, id: 'DPK-DAST-902', check: { type: 'response-body-matches', valuePattern: '(a+)+' } };
+    const result = validatePackRules([uninspected, unknownFlag, slow], 'dast');
+    expect(result.report).toMatchObject({ filesSeen: 3, accepted: 0 });
+    expect(result.report.rejected.map((issue) => issue.reason)).toEqual([
+      expect.stringContaining('inspected response-header'),
+      expect.stringContaining('supported cookie flag'),
+      expect.stringContaining('ReDoS'),
+    ]);
+  });
+
   test('unknown fields and unknown schemas are refused (fail closed)', () => {
     const unknownField = validatePackRules([{ ...sastRule, unexpected: true }], 'sast');
     expect(unknownField.rules).toHaveLength(0);

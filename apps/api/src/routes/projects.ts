@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { isIP } from 'node:net';
 import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_ID_PATTERN,
@@ -14,7 +15,7 @@ import { readJsonBody } from '../lib/body.js';
 import * as v from '../lib/validate.js';
 import type { ProjectRecord, ProjectStore } from '../projects/store.js';
 import { toProjectResponse } from '../projects/store.js';
-import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '../scans/dast/target.js';
+import { createDastTargetPolicy, DastTargetError, isPublicDastAddress, normalizeDastTarget, type DastTargetPolicy } from '../scans/dast/target.js';
 import { sendSuccess } from '../respond.js';
 
 /**
@@ -199,7 +200,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
           name: name.value,
           description,
         });
-        ctx.logger.info('Project created', { requestId: ctx.id, userId: actor.id, projectId: record.id });
+        ctx.logger.info('Project created', { requestId: ctx.logId, userId: actor.id, projectId: record.id });
         sendProject(res, ctx, record, 201);
       },
     },
@@ -289,7 +290,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (updated === undefined) {
           throw internal('Project disappeared during update.');
         }
-        ctx.logger.info('Project updated', { requestId: ctx.id, userId: actor.id, projectId: updated.id });
+        ctx.logger.info('Project updated', { requestId: ctx.logId, userId: actor.id, projectId: updated.id });
         sendProject(res, ctx, updated);
       },
     },
@@ -310,10 +311,20 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (!parsed.ok) throw validationError(parsed.issues);
         let targetUrl: string;
         try {
-          // Syntax, public DNS answers, and all address families are
-          // validated before project state changes; scan execution
-          // repeats resolution and pins the vetted address.
-          targetUrl = (await dastTargetPolicy.prepare(parsed.value.targetUrl)).url;
+          if (config.dastRequireEngagement === true) {
+            // Strict deployments may configure a target before an engagement
+            // exists, so do not contact DNS here. Reject unsafe literal IPs
+            // locally; scan creation still checks the engagement first, then
+            // resolves every address before quota, and execution rechecks it.
+            const normalized = normalizeDastTarget(parsed.value.targetUrl);
+            if (isIP(normalized.hostname) !== 0 && !isPublicDastAddress(normalized.hostname)) {
+              throw new DastTargetError('DAST_TARGET_BLOCKED');
+            }
+            targetUrl = normalized.url;
+          } else {
+            // Preserve the legacy validation contract in compatibility mode.
+            targetUrl = (await dastTargetPolicy.prepare(parsed.value.targetUrl)).url;
+          }
         } catch (error) {
           const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
             ? 'The target could not be resolved safely.'
@@ -322,7 +333,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         }
         const updated = await projects.setDastTargetUrl(project.id, targetUrl);
         if (updated === undefined) throw internal('Project disappeared during DAST target update.');
-        ctx.logger.info('Project DAST target updated', { requestId: ctx.id, userId: actor.id, projectId: project.id });
+        ctx.logger.info('Project DAST target updated', { requestId: ctx.logId, userId: actor.id, projectId: project.id });
         sendProject(res, ctx, updated);
       },
     },
@@ -340,7 +351,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         }
         const updated = await projects.setDastTargetUrl(project.id, undefined);
         if (updated === undefined) throw internal('Project disappeared during DAST target removal.');
-        ctx.logger.info('Project DAST target removed', { requestId: ctx.id, userId: actor.id, projectId: project.id });
+        ctx.logger.info('Project DAST target removed', { requestId: ctx.logId, userId: actor.id, projectId: project.id });
         sendProject(res, ctx, updated);
       },
     },
@@ -361,7 +372,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (updated === undefined) {
           throw internal('Project disappeared during archive.');
         }
-        ctx.logger.info('Project archived', { requestId: ctx.id, userId: actor.id, projectId: updated.id });
+        ctx.logger.info('Project archived', { requestId: ctx.logId, userId: actor.id, projectId: updated.id });
         sendProject(res, ctx, updated);
       },
     },
@@ -380,7 +391,7 @@ export function createProjectRoutes(deps: ProjectRouteDeps): Route[] {
         if (updated === undefined) {
           throw internal('Project disappeared during unarchive.');
         }
-        ctx.logger.info('Project unarchived', { requestId: ctx.id, userId: actor.id, projectId: updated.id });
+        ctx.logger.info('Project unarchived', { requestId: ctx.logId, userId: actor.id, projectId: updated.id });
         sendProject(res, ctx, updated);
       },
     },

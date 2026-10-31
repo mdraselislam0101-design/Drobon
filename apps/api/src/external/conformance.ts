@@ -16,6 +16,11 @@
  * tests are executed here — a rule that disagrees is refused, never skipped.
  */
 
+import { isFindingConfidence } from '@drobon/shared';
+import { SAST_LANGUAGE_CATALOG } from '../scans/sast/languages.js';
+import { INSPECTED_RESPONSE_HEADERS } from '../scans/dast/observedHeaders.js';
+import { unresolvedPackLanguageIds } from './languageAliases.js';
+import { convertDastPackToRule, convertSastPackToRule, convertSecretsPackToRule } from './packProvider.js';
 import { DAST_CHECK_TYPES, evaluatePackDastCheck, type PackDastCheckShape } from './evaluator.js';
 import {
   compileScaDeclarationRule,
@@ -32,6 +37,12 @@ export interface PackIssue {
 
 export interface PackReport {
   filesSeen: number;
+  /** Directory/entry enumeration failures; their hidden file count is unknown. */
+  enumerationFailures: number;
+  /** Optional manifest was present but could not be safely read/validated. */
+  manifestIssue?: string;
+  /** Number of known resource-limit rejections; hidden file count may be unknown. */
+  resourceLimitFailures?: number;
   accepted: number;
   declaredTests: number;
   executedTests: number;
@@ -55,28 +66,38 @@ interface Spec {
 const BASE = ['schemaVersion', 'id', 'title', 'description', 'severity', 'category', 'remediation', 'limitation'];
 const SPECS: Record<PackFamily, Spec> = {
   sast: {
-    schema: 'drobon.pack.sast/v1', id: /^DPK-SAST-[0-9]{3,}$/,
+    schema: 'drobon.pack.sast/v1', id: /^DPK-SAST-[0-9]{3,6}$/,
     allowed: [...BASE, 'cwe', 'languages', 'patterns', 'tests', 'patternRefs'],
     required: [...BASE, 'patterns', 'tests', 'patternRefs'],
   },
   secrets: {
-    schema: 'drobon.pack.secrets/v1', id: /^DPK-SEC-[0-9]{3,}$/,
+    schema: 'drobon.pack.secrets/v1', id: /^DPK-SEC-[0-9]{3,6}$/,
     allowed: [...BASE, 'cwe', 'confidence', 'patterns', 'tests', 'denylist', 'matchOnlyEvidence', 'redact', 'patternRefs'],
     required: [...BASE, 'confidence', 'patterns', 'tests', 'redact', 'patternRefs'],
   },
   dast: {
-    schema: 'drobon.pack.dast/v1', id: /^DPK-DAST-[0-9]{3,}$/,
+    schema: 'drobon.pack.dast/v1', id: /^DPK-DAST-[0-9]{3,6}$/,
     allowed: [...BASE, 'cwe', 'check', 'tests', 'patternRefs'],
     required: [...BASE, 'check', 'tests', 'patternRefs'],
   },
   sca: {
-    schema: 'drobon.pack.sca/v1', id: /^DPK-SCA-[0-9]{4,}$/,
+    schema: 'drobon.pack.sca/v1', id: /^DPK-SCA-[0-9]{4,6}$/,
     allowed: [...BASE, 'cwe', 'ecosystems', 'artifact', 'parser', 'check', 'tests', 'patternRefs'],
     required: [...BASE, 'ecosystems', 'artifact', 'parser', 'check', 'tests', 'patternRefs'],
   },
 };
 
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'INFO'];
+/** Bound synchronous declared-test work before executing untrusted pack input. */
+export const MAX_DECLARED_TESTS_PER_RULE = 256;
+export const MAX_DECLARED_TEST_CHARS = 16_384;
+
+function boundedDeclaredTest(value: unknown): boolean {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === 'string' && text.length <= MAX_DECLARED_TEST_CHARS;
+  } catch { return false; }
+}
 
 /** Conservative static ReDoS lint (port of the dataset validator's lint). */
 export function lintRedos(source: string): string | null {
@@ -96,7 +117,8 @@ function checkClosed(record: Record<string, unknown>, allowed: string[], require
     if (!(field in record)) return `missing required field '${field}'`;
   }
   const unknown = Object.keys(record).filter((key) => !allowed.includes(key));
-  if (unknown.length > 0) return `unknown field(s): ${unknown.slice(0, 5).join(', ')}`;
+  // Unknown keys are untrusted input; expose their count, never their text.
+  if (unknown.length > 0) return `unknown field(s) present: ${unknown.length}`;
   return null;
 }
 
@@ -118,13 +140,29 @@ function compilePatterns(raw: unknown): { patterns: RegExp[]; reason: string | n
 function validateCheck(family: PackFamily, check: unknown): string | null {
   if (!isRecord(check) || typeof check['type'] !== 'string') return 'check.type must be a string';
   if (family === 'dast') {
-    if (!(DAST_CHECK_TYPES as readonly string[]).includes(check['type'] as string)) return `unknown DAST check type '${check['type']}'`;
+    if (!(DAST_CHECK_TYPES as readonly string[]).includes(check['type'] as string)) return 'unknown DAST check type';
     const type = check['type'];
     const needsHeader = type !== 'http-url' && type !== 'cookie-missing-flag' && type !== 'response-body-matches';
-    if (needsHeader && typeof check['header'] !== 'string') return 'check.header must be a string';
-    if (type === 'response-header-missing-directive' && typeof check['directive'] !== 'string') return 'check.directive must be a string';
-    if (type === 'cookie-missing-flag' && typeof check['flag'] !== 'string') return 'check.flag must be a string';
-    if ((type === 'response-header-matches' || type === 'response-body-matches') && typeof check['valuePattern'] !== 'string') return 'check.valuePattern must be a string';
+    const needsPattern = type === 'response-header-matches' || type === 'response-body-matches';
+    const required = ['type', ...(needsHeader ? ['header'] : []), ...(needsPattern ? ['valuePattern'] : []),
+      ...(type === 'response-header-missing-directive' ? ['directive'] : []), ...(type === 'cookie-missing-flag' ? ['flag'] : [])];
+    const shape = checkClosed(check, [...required, ...(needsPattern ? ['requireScheme'] : [])], required);
+    if (shape !== null) return `check: ${shape}`;
+    if (needsHeader) {
+      if (typeof check['header'] !== 'string' || !INSPECTED_RESPONSE_HEADERS.has(check['header'].toLowerCase())) {
+        return 'check.header is not in the inspected response-header surface';
+      }
+    }
+    if (type === 'response-header-missing-directive' && (typeof check['directive'] !== 'string' || check['directive'].trim().length === 0)) return 'check.directive must be a non-empty string';
+    if (type === 'cookie-missing-flag' && (typeof check['flag'] !== 'string' || !['secure', 'httponly', 'samesite'].includes(check['flag'].toLowerCase()))) return 'check.flag is not a supported cookie flag';
+    if (needsPattern) {
+      const pattern = check['valuePattern'];
+      if (typeof pattern !== 'string' || pattern.length === 0 || pattern.length > 500) return 'check.valuePattern must be a bounded string';
+      const lint = lintRedos(pattern);
+      if (lint !== null) return `ReDoS lint: ${lint}`;
+      try { new RegExp(pattern, 'i'); } catch { return 'invalid DAST regex'; }
+      if (check['requireScheme'] !== undefined && check['requireScheme'] !== 'http' && check['requireScheme'] !== 'https') return 'invalid check.requireScheme';
+    }
     return null;
   }
   return null;
@@ -210,12 +248,16 @@ function scaTests(rule: Record<string, unknown>, compiled: CompiledScaDeclaratio
 export function validatePackRules(rawRules: readonly unknown[], family: PackFamily): PackValidationOutcome {
   const spec = SPECS[family];
   const report: PackReport = {
-    filesSeen: rawRules.length, accepted: 0, declaredTests: 0, executedTests: 0,
+    filesSeen: rawRules.length, enumerationFailures: 0, accepted: 0, declaredTests: 0, executedTests: 0,
     skippedTests: 0, failedTests: 0, rejected: [],
   };
   const rules: unknown[] = [];
+  const acceptedIds = new Set<string>();
+  const catalogIds = new Set(SAST_LANGUAGE_CATALOG.map((entry) => entry.id));
   for (const raw of rawRules) {
-    const id = isRecord(raw) && typeof raw['id'] === 'string' ? raw['id'] : '(no id)';
+    // Only a schema-valid rule ID is safe to disclose; invalid IDs can be
+    // arbitrary content. Counts still include every rejected entry.
+    const id = isRecord(raw) && typeof raw['id'] === 'string' && spec.id.test(raw['id']) ? raw['id'] : '(invalid or missing id)';
     const reject = (reason: string) => {
       if (report.rejected.length < 25) report.rejected.push({ id, reason: reason.slice(0, 240) });
     };
@@ -224,15 +266,41 @@ export function validatePackRules(rawRules: readonly unknown[], family: PackFami
     if (closed !== null) { reject(closed); continue; }
     if (raw['schemaVersion'] !== spec.schema) { reject('unknown schemaVersion'); continue; }
     if (typeof raw['id'] !== 'string' || !spec.id.test(raw['id'])) { reject('invalid id'); continue; }
+    if (acceptedIds.has(raw['id'])) { reject('duplicate rule id'); continue; }
     if (typeof raw['title'] !== 'string' || !SEVERITIES.includes(raw['severity'] as string)) { reject('invalid title/severity'); continue; }
     if (!Array.isArray(raw['tests']) || raw['tests'].length === 0) { reject('missing declared tests'); continue; }
+    if (raw['tests'].length > MAX_DECLARED_TESTS_PER_RULE || !raw['tests'].every(boundedDeclaredTest)) {
+      // Do not report unexecuted fixtures as passing.
+      report.declaredTests += raw['tests'].length;
+      report.skippedTests += raw['tests'].length;
+      report.resourceLimitFailures = (report.resourceLimitFailures ?? 0) + 1;
+      reject('declared test limit exceeded');
+      continue;
+    }
+    if (family === 'sast' && raw['languages'] !== undefined) {
+      const languages = raw['languages'];
+      if (!Array.isArray(languages) || languages.length === 0 ||
+          !languages.every((language): language is string => typeof language === 'string' && language.length > 0)) {
+        reject('languages must be a non-empty array of language ids'); continue;
+      }
+      const unresolved = unresolvedPackLanguageIds(languages, catalogIds);
+      if (unresolved.length > 0) { reject(`unresolved language id(s): ${unresolved.length}`); continue; }
+    }
+    if (family === 'secrets' && !isFindingConfidence(raw['confidence'])) { reject('invalid confidence'); continue; }
 
     if (family === 'sast' || family === 'secrets') {
       const compiled = compilePatterns(raw['patterns']);
       if (compiled.reason !== null) { reject(compiled.reason); continue; }
       if (family === 'secrets') {
         if (raw['redact'] !== true) { reject('redact must be true'); continue; }
-        const denylist = Array.isArray(raw['denylist']) ? raw['denylist'].filter((x): x is string => typeof x === 'string') : [];
+        if (raw['denylist'] !== undefined && (!Array.isArray(raw['denylist']) ||
+            !raw['denylist'].every((entry) => typeof entry === 'string' && entry.length > 0))) {
+          reject('denylist must contain non-empty strings'); continue;
+        }
+        if (raw['matchOnlyEvidence'] !== undefined && typeof raw['matchOnlyEvidence'] !== 'boolean') {
+          reject('matchOnlyEvidence must be a boolean'); continue;
+        }
+        const denylist = Array.isArray(raw['denylist']) ? raw['denylist'] as string[] : [];
         if (raw['denylist'] === undefined && raw['matchOnlyEvidence'] !== true) { reject('denylist required'); continue; }
         const result = lineTests(raw, compiled.patterns, denylist);
         report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
@@ -263,19 +331,29 @@ export function validatePackRules(rawRules: readonly unknown[], family: PackFami
       report.declaredTests += result.tests; report.executedTests += result.tests; report.failedTests += result.failures.length;
       if (result.failures.length > 0) { reject(`declared tests failed: ${result.failures.slice(0, 2).join('; ')}`); continue; }
     }
+    // Validation and scan-time conversion must agree. Otherwise a rule could
+    // be reported as accepted here but silently disappear during a scan.
+    const mapped = family === 'sast' ? convertSastPackToRule(raw)
+      : family === 'secrets' ? convertSecretsPackToRule(raw)
+        : family === 'dast' ? convertDastPackToRule(raw)
+          : true; // SCA was compiled above.
+    if (!mapped) { reject('rule cannot be mapped to the scanner'); continue; }
+    acceptedIds.add(raw['id']);
     rules.push(raw);
     report.accepted += 1;
   }
   return { rules, report };
 }
 
-/** Read a pack.json manifest; never throws, returns undefined for bad input. */
-export function parsePackManifest(raw: unknown): { packId: string; version: string } | undefined {
+/** Parse a pack identity. With a family, also require its exact v1 schema.
+ * The optional family preserves the legacy identity-only helper contract. */
+export function parsePackManifest(raw: unknown, family?: PackFamily): { packId: string; version: string } | undefined {
   if (!isRecord(raw) || typeof raw['packId'] !== 'string' || typeof raw['version'] !== 'string') return undefined;
   if (!/^[a-z0-9-]{1,64}$/.test(raw['packId']) || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(raw['version'])) return undefined;
+  if (family !== undefined && (SPECS[family] === undefined || raw['schemaVersion'] !== SPECS[family].schema)) return undefined;
   return { packId: raw['packId'], version: raw['version'] };
 }
 
 export function emptyPackReport(): PackReport {
-  return { filesSeen: 0, accepted: 0, declaredTests: 0, executedTests: 0, skippedTests: 0, failedTests: 0, rejected: [] };
+  return { filesSeen: 0, enumerationFailures: 0, accepted: 0, declaredTests: 0, executedTests: 0, skippedTests: 0, failedTests: 0, rejected: [] };
 }

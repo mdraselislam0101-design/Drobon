@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import * as fontkit from 'fontkit';
 import PDFDocument from 'pdfkit';
 import { FINDING_SEVERITIES, SCAN_TYPES, type Finding, type FindingSeverity, type ScanStatus, type ScanType, type SecurityReport } from '@drobon/shared';
-import { verifySecurityReportIntegrity } from './build.js';
+import { indexReportGuidance, REPORT_GUIDANCE_NOTICE, safeReportProjection, verifySecurityReportIntegrity, type ReportGuidanceEntry } from './build.js';
 
 /**
  * Download-only PDF rendering. It consumes the same validated report snapshots
@@ -32,12 +32,16 @@ export interface PortfolioPdfEntry {
   status: ScanStatus | 'NOT_RUN' | 'ORDER_UNCERTAIN';
   requestedAt?: string;
   report?: SecurityReport;
+  /** Optional live guidance; not part of the persisted report digest. */
+  guidance?: readonly ReportGuidanceEntry[];
 }
 
 export interface PortfolioPdfInput {
   project: { id: string; name: string };
   generatedAt: string;
   entries: PortfolioPdfEntry[];
+  /** Request the clearly labelled current-guidance supplement. */
+  includeGuidance?: boolean;
 }
 
 // Font supports Bengali and Latin, not every Unicode script. Never silently
@@ -79,9 +83,11 @@ function byPriority<T extends { severity: FindingSeverity }>(items: readonly T[]
     .map(({ item }) => item);
 }
 
-function printScan(doc: PDFKit.PDFDocument, report: SecurityReport, limit: number): void {
+function printScan(doc: PDFKit.PDFDocument, report: SecurityReport, limit: number, guidance?: readonly ReportGuidanceEntry[]): void {
   if (!verifySecurityReportIntegrity(report)) throw new TypeError('Report integrity check failed.');
+  const guidanceByFinding = indexReportGuidance(report, guidance);
   const summary = report.scan.resultSummary;
+  if (guidance !== undefined) text(doc, REPORT_GUIDANCE_NOTICE, 9);
   heading(doc, `${report.scan.scanType} | ${report.scan.id}`);
   text(doc, `Completed: ${report.scan.completedAt} | Report: ${report.reportId}`);
   text(doc, `Findings: ${report.findingSummary.total} | Critical: ${report.findingSummary.bySeverity.CRITICAL} | High: ${report.findingSummary.bySeverity.HIGH} | Medium: ${report.findingSummary.bySeverity.MEDIUM} | Low: ${report.findingSummary.bySeverity.LOW} | Info: ${report.findingSummary.bySeverity.INFO}`);
@@ -132,6 +138,19 @@ function printScan(doc: PDFKit.PDFDocument, report: SecurityReport, limit: numbe
       for (const step of flow.via ?? []) text(doc, `Possible flow step: ${step.file}:${step.line}:${step.column}`, 9);
     }
     text(doc, `Remediation: ${finding.remediation}`, 9);
+    const advice = guidanceByFinding.get(finding.id);
+    if (advice !== undefined) {
+      text(doc, `Dataset guidance: ${advice.status}`, 9);
+      text(doc, `Why it matters: ${advice.whyItMatters}`, 9);
+      for (const [actionIndex, action] of advice.actions.entries()) text(doc, `Action ${actionIndex + 1}: ${action}`, 9);
+      text(doc, `Verification: ${advice.verification}`, 9);
+      if (advice.standardId !== undefined) text(doc, `Standard: ${advice.standardId}`, 9);
+      if (advice.example !== undefined) {
+        text(doc, `Illustrative before: ${advice.example.before}`, 9);
+        text(doc, `Illustrative after: ${advice.example.after}`, 9);
+        if (advice.example.caveat !== undefined) text(doc, `Example caveat: ${advice.example.caveat}`, 9);
+      }
+    }
     const workflow = report.findingWorkflows?.find((item) => item.findingId === finding.id);
     if (workflow !== undefined) {
       text(doc, `Workflow: ${workflow.state}; verification: ${workflow.verificationState}; last verification scan: ${workflow.lastVerificationScanId} (${workflow.lastVerificationAt}).`, 9);
@@ -200,12 +219,16 @@ function render(draw: (doc: PDFKit.PDFDocument) => void): Promise<Buffer> {
   });
 }
 
-export function renderSecurityReportPdf(report: SecurityReport): Promise<Buffer> {
+export function renderSecurityReportPdf(input: SecurityReport, guidance?: readonly ReportGuidanceEntry[]): Promise<Buffer> {
+  let report: SecurityReport;
+  try { report = safeReportProjection(input); } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new TypeError('Invalid report.'));
+  }
   return render((doc) => {
     text(doc, 'DROBON | SECURITY SCAN REPORT', 19);
     text(doc, `Project: ${report.project.name} (${report.project.id})`);
     text(doc, `Generated: ${report.generatedAt} | Scope: one completed ${report.scan.scanType} scan`);
-    printScan(doc, report, SINGLE_FINDING_LIMIT);
+    printScan(doc, report, SINGLE_FINDING_LIMIT, guidance);
     printLimitations(doc);
   });
 }
@@ -215,13 +238,16 @@ export function renderSecurityReportPdf(report: SecurityReport): Promise<Buffer>
 export function renderPortfolioPdf(input: PortfolioPdfInput): Promise<Buffer> {
   if (input.entries.length !== SCAN_TYPES.length || input.entries.some((entry, index) => entry.scanner !== SCAN_TYPES[index] ||
       (entry.status === 'COMPLETED') !== (entry.report !== undefined) ||
-      (entry.report !== undefined && (entry.report.project.id !== input.project.id || entry.report.scan.scanType !== entry.scanner)))) {
+      (entry.report === undefined && entry.guidance !== undefined) ||
+      (entry.report !== undefined && ((input.includeGuidance === true) !== (entry.guidance !== undefined) ||
+        entry.report.project.id !== input.project.id || entry.report.scan.scanType !== entry.scanner)))) {
     return Promise.reject(new TypeError('Invalid portfolio report scope.'));
   }
   return render((doc) => {
     text(doc, 'DROBON | PROJECT SECURITY SUMMARY', 19);
     text(doc, `Project: ${input.project.name} (${input.project.id})`);
     text(doc, `Generated: ${input.generatedAt} | Latest requested scan per scanner`);
+    if (input.includeGuidance === true) text(doc, REPORT_GUIDANCE_NOTICE, 9);
     text(doc, 'Each scanner may have used a different source snapshot or target time. Findings are not deduplicated across scanners. ORDER_UNCERTAIN means multiple requests have the same latest timestamp; no scan is selected for that scanner.');
     heading(doc, 'Coverage overview');
     for (const entry of input.entries) {
@@ -230,7 +256,7 @@ export function renderPortfolioPdf(input: PortfolioPdfInput): Promise<Buffer> {
       text(doc, `${entry.scanner}: ${entry.status}${when}${detail}`);
     }
     for (const entry of input.entries) {
-      if (entry.report !== undefined) printScan(doc, entry.report, PORTFOLIO_FINDING_LIMIT_PER_SCAN);
+      if (entry.report !== undefined) printScan(doc, safeReportProjection(entry.report), PORTFOLIO_FINDING_LIMIT_PER_SCAN, entry.guidance);
     }
     printLimitations(doc);
   });

@@ -1,5 +1,7 @@
 # Secrets Detection (Pump 10 — the third real engine)
 
+> **Current boundary (2026-10-31):** the production embedded rule registry is empty; rules come from a configured, accepted Dataset pack. The `DG-SEC-*` table below describes historical/test-only fixtures, not an always-available production rule set. With no rules the scan is partial. New source-finding evidence is withheld as a whole, not selectively excerpted. Raw uploaded source and some historical evidence may remain in JSON files at rest; no universal secret-free or encryption guarantee is established.
+
 `SECRETS` scans detect **hardcoded secrets** in a project's uploaded
 source snapshot: private-key PEM headers, known-prefix service
 credentials, bearer tokens, credential URLs, API-key-shaped
@@ -18,15 +20,17 @@ upload path.
   description, remediation or UI text may claim the credential is
   *valid*, *active*, *compromised* or *revoked*.
 - **No verification, no network.** The engine never contacts any
-  service, never validates a credential, never parses or uses key
-  material. It reads text and matches patterns. That is all.
-- **No match = no finding.** A finding exists only when a real rule
-  matched real snapshot content at a real line/column. "Unknown" is
-  reported as unknown, never as safe.
+  service, validates a credential or uses key material. It matches source
+  lines and a narrowly bounded, non-executing literal-concatenation view.
+- **No match = no finding.** A configured rule must match an original line
+  or a statically reconstructed literal expression at a source location.
+  A reconstruction is a candidate, not proof that a credential is live.
 - **Severity and confidence are rule-defined constants** — never
   runtime-guessed, never client- or UI-influenced.
 
-## The rule set (`apps/api/src/scans/secrets/rules.ts`)
+## Historical test-only rule examples
+
+These examples live in `apps/api/test/fixtures/testData.ts`. Actual Dataset pack rules and severity/confidence values can differ. `apps/api/src/scans/secrets/rules.ts` contains an empty production registry and the rule interface/matcher, not these rule records.
 
 | Rule | Category | Severity | Confidence | Fires on |
 | --- | --- | --- | --- | --- |
@@ -37,9 +41,9 @@ upload path.
 | `DG-SEC-005` | api-key | HIGH | MEDIUM | `apiKey`/`api_key`/`x-api-key`-named settings assigned a 20+ character mixed-class literal |
 | `DG-SEC-006` | generic-secret | MEDIUM | LOW | `password`/`passwd`/`pwd`/`client_secret`/`secret` assignments with a 12+ character, ≥2-class, ≥3.5-entropy literal |
 
-All rules map to **CWE-798** (Use of Hard-coded Credentials).
+These six historical fixtures map to **CWE-798** (Use of Hard-coded Credentials).
 
-Severity policy (documented, deterministic): **no CRITICAL** in v1 —
+Historical fixture severity policy (documented, deterministic): **no CRITICAL** in v1 —
 even a private-key match does not prove the key is real, current or
 authorized for anything. HIGH = credential-shaped material is present
 in source; MEDIUM = heuristic rules where shape alone is weaker
@@ -50,37 +54,27 @@ detection certainty — HIGH for structural/known formats, MEDIUM for
 shape heuristics, LOW for the generic password rule. It is never a
 liveness or exploitability claim.
 
-## Redaction (the hard invariant)
+## Evidence withholding and its limits
 
-**The raw secret value never appears in any externally visible
-representation** — API responses, UI, logs, errors, audit records,
-exports or stores. The enforcement is layered and adversarially
-tested:
+- New SAST and Secrets findings use a fixed withheld-source marker instead of
+  copying any source line, including adjacent unknown credentials. Rule, file
+  and line metadata remain available for an authorized reviewer.
+- Legacy source-finding evidence is withheld in current read/export projections;
+  this does **not** rewrite or erase historical stored records. Recognized
+  sensitive legacy SCA/DAST evidence is also withheld; an arbitrary secret is
+  not guaranteed to be recognized.
+- A source-finding v2 fingerprint is based on scanner, project, rule, file and
+  line, not raw evidence. Moving a line can change identity.
+- Source snapshots are stored as raw content and historical data may contain
+  sensitive evidence. File modes are not encryption. Filenames, notes, rule
+  metadata and other arbitrary fields cannot be proven universally secret-free;
+  operators must protect, review and plan historical-data handling separately.
+- Tests verify selected synthetic leak scenarios, not every possible value or
+  every future field. Do not treat a passing test as a privacy guarantee.
 
-1. **Positional span blanking.** Each rule declares the span of the
-   secret *inside* its match (`valueSpan`). The engine blanks that
-   span positionally — by position, never by string search — so a
-   value cut by the evidence window can never leak partially.
-2. **Neighbour redaction.** A line can carry several secrets; the
-   engine blanks every value span *any* rule resolved on the line,
-   so one finding's evidence cannot leak another secret beside it.
-3. **Defensive re-scan.** The finished evidence must itself match no
-   rule; if it does (e.g. a second, different AWS key on the same
-   line), the whole evidence fails closed to `[DG-SEC-###] <redacted>`.
-4. **Header-only matches.** `DG-SEC-001`'s evidence is exactly the
-   matched PEM header — the key body never enters the finding, is
-   never parsed and never leaves the store.
-5. **Deterministic fingerprints that exclude the secret.** A finding's
-   id/fingerprint derive from `ruleId`, file, line and the
-   **redacted** evidence — the same location and redacted evidence
-   always produce the same identity, and the value itself is never
-   fingerprint input.
+## Historical fixture false-positive defenses (tested, not universal)
 
-Evidence is bounded (≤200 characters), control-character-free and
-keeps enough context (variable name, scheme, quotes) to understand the
-finding without the value.
-
-## False-positive defenses (tested)
+These examples depend on the selected rule and do not guarantee that every Dataset rule implements the same filters.
 
 - **Placeholder/template denylist** (substring, case-insensitive):
   `changeme`, `example`, `dummy`, `sample`, `your`, `placeholder`,
@@ -125,6 +119,27 @@ evidence; a value containing placeholder markers does not fire even in
   duplicates on the same line collapse into one finding per
   (rule, file, line). Different rules on the same line stay distinct.
 
+## Bounded static literal reconstruction
+
+The existing isolated syntax worker can identify same-line JS/TS/JSX/TSX
+`+` expressions made entirely of 2–16 unescaped, simple ASCII string
+literals (at most 1,024 joined characters). Parentheses and empty pieces are
+allowed. The main engine transiently joins the pieces and reuses the same
+configured rule, validation and denylist; a new match must cross a joining
+seam. Source is never executed. The worker returns coordinates only; findings
+withhold the source and explicitly say the candidate was reconstructed, not
+verified. Deduplication, ordering, finding caps and fingerprints are retained.
+
+This is **not** general constant propagation: other languages, escaped
+literals, dynamic expressions, interpolated templates and multiline joins are
+not reconstructed. There are at most 32 eligible files, 64 concatenation
+records per file, 4,096 characters per candidate line and 32,000 rule checks
+per scan. `astSupplement.status` records incomplete/skipped optional syntax
+work; the base lexical scan's `partial` field retains its existing meaning.
+A `RAN` supplement does not mean unsupported expression types were checked.
+Check both fields before interpreting a negative. Source snapshots may still
+contain raw values at rest.
+
 ## Limits and failure semantics
 
 Defaults (`DEFAULT_SECRETS_LIMITS`): 200 files, 256 KiB per file,
@@ -153,9 +168,9 @@ reports findings at all.
   additionally carry the rule-defined `confidence`.
 - The web findings view is shared with SAST and renders rule id,
   severity, the **detection-confidence badge**, location (`file:line`
-  + CWE), redacted evidence and remediation — all as text. The raw
-  value never reaches the browser in any field, attribute, tooltip,
-  URL or client state (tested by whole-DOM sweeps).
+  + CWE), withheld source evidence and remediation — all as text. Synthetic
+  DOM sweeps cover selected cases; arbitrary filenames and other text fields
+  are not proven secret-free.
 - DAST is a separate limited passive HTTP engine (Pump 11); it does not
   inspect source snapshots. See `docs/DAST.md`.
 
@@ -174,6 +189,9 @@ cannot know that.
 - `apps/api/test/secretsEngine.test.ts` — redaction (long lines, tabs,
   neighbours, fail-closed), determinism, dedupe, partial/truncation,
   ignored dirs, all failure modes, no-execution invariant.
+- `apps/api/test/secretStaticConcat.test.ts` — literal-only reconstruction,
+  denylist, limits, comments/dynamic/escaped controls and coordinate-only
+  worker output, with synthetic values.
 - `apps/api/test/secretsApi.test.ts` — §29 adversarial file and §30
   no-fake snapshot over real HTTP, three-layer redaction sweep
   (response/store/logs), findings cap, cross-account isolation,

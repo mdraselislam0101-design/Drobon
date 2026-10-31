@@ -19,11 +19,12 @@ import { isDastRequestAuthorized, type DastRequestAuthorizer } from './authoriza
 import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } from './ast.js';
 
 /**
- * Active DAST engine — safe, bounded, opt-in complement to passive DAST.
+ * Active DAST engine — bounded, opt-in complement to passive DAST.
  *
- * Scope (paid-tool parity):
+ * Scope (not a paid-tool parity claim):
  * - crawls at most 10 same-host links from the baseline response (static HTML only, no JS)
- * - injects at most 1 safe payload per discovered point (GET only, max 10 injections)
+ * - attempts at most 1 synthetic marker per discovered point (GET only, max 10 injections)
+ * - GET requests may still have side effects on the target; safety is not guaranteed
  * - total requests ≤ 20 (passive is 3), redirects ≤ 2, deadline 30s, throttle 200ms between probes
  * - only synthetic payloads from payloads.ts (no user-supplied payloads, no POST/PUT/DELETE)
  * - every URL re-validated by DastTargetPolicy before use (public address, same-host, HTTPS downgrade blocked)
@@ -31,7 +32,7 @@ import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } fro
  *
  * Consent: the scan record must carry dastActiveConsent=true (set via the scan creation route
  * when the user explicitly confirms they have permission to test the target). Without it
- * the engine fails closed with DAST_ACTIVE_CONSENT_REQUIRED.
+ * the engine fails closed with DAST_TARGET_BLOCKED.
  */
 
 export const ACTIVE_DAST_MAX_REQUESTS = 20;
@@ -145,17 +146,20 @@ function failed(code: ScanFailureCode, msg: string): EngineOutcome { return { ki
 function timedOut(code: 'DAST_REQUEST_TIMEOUT' | 'DAST_SCAN_TIMEOUT', msg: string): EngineOutcome { return { kind: 'timed-out', failureCode: code, failureMessage: msg }; }
 function isRedirect(s: number): boolean { return s===301||s===302||s===303||s===307||s===308; }
 
-function activeReflectionFinding(_record: ScanRecord, _targetUrl: string, endpoint: string, response: DastProbeResponse, payload: ActivePayload, _observedAt: string): DastRuleMatch | undefined {
-  // Check body or relevant header depending on category.
-  let reflected = false;
-  if (payload.category === 'open-redirect' || payload.category === 'crlf-injection') {
-    const loc = responseHeader(response, 'location') ?? '';
-    const allHeaders = JSON.stringify(response.headers);
-    reflected = payload.detector.test(loc) || payload.detector.test(allHeaders);
-  } else {
-    reflected = payload.detector.test(response.body);
-  }
-  if (!reflected) return undefined;
+function activeReflectionFinding(endpoint: string, response: DastProbeResponse, baseline: DastProbeResponse, payload: ActivePayload): DastRuleMatch | undefined {
+  // A marker/error already present in the comparable baseline is not evidence
+  // that the injected request caused it. Compare the same bounded surface.
+  const detects = (item: DastProbeResponse): boolean => {
+    payload.detector.lastIndex = 0;
+    if (payload.category === 'open-redirect' || payload.category === 'crlf-injection') {
+      const loc = responseHeader(item, 'location') ?? '';
+      if (payload.detector.test(loc)) return true;
+      payload.detector.lastIndex = 0;
+      return payload.detector.test(JSON.stringify(item.headers));
+    }
+    return payload.detector.test(item.body);
+  };
+  if (!detects(response) || detects(baseline)) return undefined;
   const severity: FindingSeverity = payload.category === 'xss-reflected' ? 'MEDIUM' : payload.category === 'sqli-error' ? 'HIGH' : 'LOW';
   // Active markers are built-in probe observations, not dataset rule IDs.
   // Numeric DG identifiers satisfy the persisted Finding contract.
@@ -202,6 +206,12 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       // If not active mode, delegate to passive behavior (keep single engine backward compatible).
       // But we are the active engine — if passive requested, we still run passive baseline safely.
       const isActive = activeMode;
+      const requestLimit = isActive ? maxRequests : Math.min(maxRequests, 3);
+      // Scope/permission is checked before even resolving the target. It is
+      // checked again immediately before each transport operation below.
+      if (!(await isDastRequestAuthorized(record, configuredUrl, options.authorize))) {
+        return failed('DAST_TARGET_BLOCKED', 'The linked assessment does not authorize this DAST request.');
+      }
 
       const startedAt = now();
       const deadline = startedAt + scanDeadlineMs;
@@ -214,7 +224,10 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       const visited = new Set<string>();
       const observations: Array<{ endpoint: string; method: 'GET'; status: number; observedAt: string; responseTimeMs: number; bodyBytes: number; bodyTruncated: boolean; contentType?: string; headers: string[]; }> = [];
       const findings: Finding[] = [];
+      const baselineResponses = new Map<string, DastProbeResponse>();
+      let requestsAttempted = 0;
       let redirectsFollowed = 0;
+      let pendingRedirect = false;
       let partialReason: string | undefined;
       let baselineBody = '';
       let authorizationRefused = false;
@@ -224,10 +237,13 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       let allPackRules = options.packRules ?? [];
       if (options.dataset?.configured) {
         try {
-          const { getMergedDastRules } = await import('../../external/packIntegration.js');
+          const { getMergedDastRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
           const loaded = await getMergedDastRules(options.dataset);
           if (loaded.length > 0) allPackRules = loaded;
-        } catch { /* optional pack unavailable; coverage is marked below */ }
+          if (await hasRejectedPackRules(options.dataset, 'dast')) partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
+        } catch {
+          partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
+        }
       }
       const astRules: readonly DastAstRule[] = allPackRules;
       const markMissingRules = (): void => {
@@ -244,8 +260,12 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       };
 
       // Helper to probe one URL (with re-resolve, throttle, bounded response, passive+active checks)
-      const probeOne = async (url: string, payload?: ActivePayload): Promise<{ response: DastProbeResponse; bounded: DastProbeResponse; endpoint: string } | undefined> => {
+      const probeOne = async (url: string, payload?: ActivePayload, baseline?: DastProbeResponse): Promise<{ response: DastProbeResponse; bounded: DastProbeResponse; endpoint: string } | undefined> => {
         if (context.signal.aborted || now() >= deadline) return undefined;
+        if (requestsAttempted >= requestLimit) {
+          partialReason = 'The active DAST request limit was reached; remaining targets were not requested.';
+          return undefined;
+        }
         if (!(await isDastRequestAuthorized(record, url, options.authorize))) {
           authorizationRefused = true;
           partialReason = 'A request was skipped because the linked assessment scope or authorization no longer permits it.';
@@ -262,7 +282,7 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           return undefined;
         }
         // Throttle between requests (except first).
-        if (observations.length > 0 && throttleMs > 0) {
+        if (requestsAttempted > 0 && throttleMs > 0) {
           const wait = Math.min(throttleMs, Math.max(0, deadline - now()));
           if (wait > 0) await new Promise<void>((r) => setTimeout(r, wait));
           if (context.signal.aborted || now() >= deadline) return undefined;
@@ -276,6 +296,9 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           return undefined;
         }
         let resp: DastProbeResponse;
+        // Count attempts, not just successful observations: failed transports
+        // still consume the configured network budget.
+        requestsAttempted += 1;
         try {
           resp = await transport.probe(resolved, { timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)), maxResponseBytes, signal: context.signal });
         } catch (error) {
@@ -302,10 +325,14 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         // Passive checks on every response (same as passive engine)
         const passiveMatches = evaluateDastObservation({ url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, ...(ct === undefined ? {} : { contentType: ct }) });
         for (const rule of passiveMatches) findings.push(buildFinding(record, configuredUrl, endpoint, resp, rule, observedAt));
-        // Active reflection check if this was an injection
-        if (payload !== undefined) {
-          const activeMatch = activeReflectionFinding(record, configuredUrl, endpoint, resp, payload, observedAt);
+        // An injected response is only comparable to the same endpoint's
+        // previously observed baseline; do not infer causation without one.
+        if (payload === undefined) baselineResponses.set(endpoint, resp);
+        else if (baseline !== undefined) {
+          const activeMatch = activeReflectionFinding(endpoint, resp, baseline, payload);
           if (activeMatch) findings.push(buildFinding(record, configuredUrl, endpoint, resp, activeMatch, observedAt));
+        } else {
+          partialReason ??= 'Some active probes lacked a comparable baseline and were not classified.';
         }
         // Dataset packs
         if (allPackRules.length > 0) {
@@ -313,7 +340,9 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           for (const packRule of allPackRules) {
             let matched=false;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch { /* fail closed: optional path */ }
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: resp.status, headers: resp.headers, body: resp.body, contentType: ct } as any); } catch {
+              partialReason ??= 'A configured DAST check could not be evaluated.';
+            }
             if (matched) {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const pm = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
@@ -328,11 +357,12 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
 
       // Phase 1: Baseline passive probe (1 request, may follow redirects up to 2)
       let baselineResult: Awaited<ReturnType<typeof probeOne>> | undefined;
-      while (observations.length < (isActive ? 1 : maxRequests)) {
+      while (requestsAttempted < (isActive ? 1 : requestLimit)) {
         const urlToProbe = current.url;
         try {
           const res = await probeOne(urlToProbe);
           if (!res) break;
+          if (pendingRedirect) { redirectsFollowed += 1; pendingRedirect = false; }
           baselineResult = res;
           baselineBody = res.bounded.body;
         } catch (e) {
@@ -344,13 +374,18 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         if (!isRedirect(baselineResult!.bounded.status) || loc === undefined) break;
         // Active mode has a one-request baseline budget. Do not claim a
         // redirect was followed when the loop will not actually request it.
-        if (isActive || redirectsFollowed >= maxRedirects || observations.length >= maxRequests) { partialReason = 'The redirect/request limit was reached; no additional request was made.'; break; }
+        if (isActive || redirectsFollowed >= maxRedirects || requestsAttempted >= requestLimit) { partialReason = 'The redirect/request limit was reached; no additional request was made.'; break; }
         try {
+          const redirectUrl = new URL(loc, current.url).toString();
+          if (!(await isDastRequestAuthorized(record, redirectUrl, options.authorize))) {
+            partialReason = 'A subsequent request was skipped because the linked assessment scope or authorization no longer permits it.';
+            break;
+          }
           const next = await policy.resolveRedirect(current, loc, originalHostname);
           if (visited.has(next.url)) { partialReason = 'A redirect loop was detected; the repeated URL was not requested again.'; break; }
           current = next;
         } catch { partialReason = 'A redirect was not followed because it failed the same-host, HTTPS, or address safety policy.'; break; }
-        redirectsFollowed += 1;
+        pendingRedirect = true;
       }
 
       probingBaseline = false;
@@ -368,8 +403,8 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         if (truncated) partialReason = `${partialReason === undefined ? '' : `${partialReason} `}Finding details reached the configured cap.`.slice(0, 200);
         const bounded = findings.slice(0, MAX_FINDINGS_PER_SCAN);
         const partial = partialReason !== undefined;
-        const result: ScanResultSummary = { astSupplement, findingsTotal: bounded.length, findingsBySeverity: statusCounts(bounded), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
-        return { kind: 'completed', resultSummary: result, findings: bounded, dast: { targetUrl: configuredUrl, requestCount: observations.length, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
+        const result: ScanResultSummary = { astSupplement, findingsTotal: bounded.length, findingsBySeverity: statusCounts(bounded), requestsMade: requestsAttempted, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
+        return { kind: 'completed', resultSummary: result, findings: bounded, dast: { targetUrl: configuredUrl, requestCount: requestsAttempted, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
       }
 
       // Phase 2: Active crawl (only if active and we have budget left)
@@ -380,7 +415,7 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
 
       // Phase 2a: Probe crawled URLs (passive checks on each, throttled)
       for (const link of newLinks) {
-        if (observations.length >= maxRequests) { partialReason = 'The active DAST request limit was reached; remaining crawl targets were not probed.'; break; }
+        if (requestsAttempted >= requestLimit) { partialReason = 'The active DAST request limit was reached; remaining crawl targets were not probed.'; break; }
         if (now() >= deadline || context.signal.aborted) break;
         try { await probeOne(link); } catch (e) {
           if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
@@ -393,22 +428,20 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       const points = injectionPointsFromUrls(allUrls).slice(0, ACTIVE_DAST_MAX_INJECTIONS);
       const payloads = payloadsForBudget(1); // 1 payload per point to bound requests
       for (const point of points) {
-        if (observations.length >= maxRequests) { partialReason = 'The active DAST request limit was reached; remaining injection probes were skipped.'; break; }
+        if (requestsAttempted >= requestLimit) { partialReason = 'The active DAST request limit was reached; remaining injection probes were skipped.'; break; }
         if (now() >= deadline || context.signal.aborted) break;
         for (const payload of payloads.slice(0,1)) {
-          if (observations.length >= maxRequests) break;
-          const injected = buildInjectedUrl(point, payload.value);
-          if (!injected) continue;
-          // Validate injected URL still passes policy before probing. In particular,
-          // query-bearing URLs are forbidden by the existing target policy; do
-          // not silently imply they were inspected or weaken the SSRF boundary.
-          try { await policy.resolveNormalized(injected); } catch {
-            partialReason ??= point.param === '__path__'
-              ? 'Some active probe URLs did not pass target safety checks and were not requested.'
-              : 'Query-parameter probes are not supported by the current target safety policy and were not requested.';
+          if (requestsAttempted >= requestLimit) break;
+          const baseline = baselineResponses.get(point.url);
+          if (baseline === undefined) {
+            partialReason ??= 'Some active probes lacked a comparable baseline and were not requested.';
             continue;
           }
-          try { await probeOne(injected, payload); } catch (e) {
+          const injected = buildInjectedUrl(point, payload.value);
+          if (!injected) continue;
+          // probeOne checks authorization before DNS and enforces the same
+          // target policy; query-bearing URLs remain rejected by that policy.
+          try { await probeOne(injected, payload, baseline); } catch (e) {
             if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
             if ((e as Error).message === 'aborted') return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it completed.');
           }
@@ -423,8 +456,8 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       if (truncated) partialReason = `${partialReason === undefined ? '' : `${partialReason} `}Finding details reached the configured cap.`.slice(0, 200);
       const boundedFindings = findings.slice(0, MAX_FINDINGS_PER_SCAN);
       const partial = partialReason !== undefined;
-      const result: ScanResultSummary = { astSupplement, findingsTotal: boundedFindings.length, findingsBySeverity: statusCounts(boundedFindings), requestsMade: observations.length, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
-      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: { targetUrl: configuredUrl, mode: 'ACTIVE_SAFE', requestCount: observations.length, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
+      const result: ScanResultSummary = { astSupplement, findingsTotal: boundedFindings.length, findingsBySeverity: statusCounts(boundedFindings), requestsMade: requestsAttempted, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
+      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: { targetUrl: configuredUrl, mode: 'ACTIVE_SAFE', requestCount: requestsAttempted, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
     },
   };
 }

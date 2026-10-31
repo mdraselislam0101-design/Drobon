@@ -1,3 +1,4 @@
+import { WITHHELD_SOURCE_EVIDENCE } from '../src/scans/findingIdentity.js';
 import { describe, expect, test } from 'vitest';
 import { isFinding, isScanResultSummary, type Finding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
@@ -122,7 +123,8 @@ describe('SAST engine: happy paths', () => {
     const byRule = new Map(findings.map((finding) => [finding.ruleId, finding]));
     expect(byRule.get('DG-SAST-001')?.file).toBe('src/cmd.ts');
     expect(byRule.get('DG-SAST-001')?.line).toBe(3);
-    expect(byRule.get('DG-SAST-001')?.evidence).toContain('exec(`rm -rf ${dir}`)');
+    expect(byRule.get('DG-SAST-001')?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(byRule.get('DG-SAST-001')?.evidence).not.toContain('exec(`rm -rf ${dir}`)');
     expect(byRule.get('DG-SAST-005')?.evidence).toContain('<redacted>');
     expect(byRule.get('DG-SAST-005')?.evidence).not.toContain('sk_live_abcdef123456');
   });
@@ -344,7 +346,27 @@ describe('SAST engine: failure modes (fail closed, no leaks)', () => {
 });
 
 describe('SAST engine: evidence discipline', () => {
-  test('long lines produce bounded, match-centered evidence', async () => {
+  test('ignores inactive code comments but detects and fully redacts credential comments', async () => {
+    const evalRule = { ...TEST_SAST_RULES[3]!, id: 'DPK-SAST-900', category: 'code-injection', patterns: [/\beval\s*\(/] };
+    const { redactEvidence: _redactor, ...credentialBase } = evalRule;
+    void _redactor;
+    const credentialRule = { ...credentialBase, id: 'DPK-SAST-901', category: 'hardcoded-credential',
+      patterns: [/TODO: password\s*=/] };
+    const synthetic = 'disposable-value-4829';
+    const content = `// eval(userInput);\n// TODO: password = ${synthetic}\neval(userInput);\n`;
+    const outcome = await createSastEngine({ rules: [evalRule, credentialRule],
+      sources: providerFor(snapshot([{ path: 'src/check.js', content }])) }).execute(scanRecord(), ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind !== 'completed') return;
+    expect(outcome.findings?.filter((finding) => finding.ruleId === 'DPK-SAST-900').map((finding) => finding.line)).toEqual([3]);
+    const credential = outcome.findings?.find((finding) => finding.ruleId === 'DPK-SAST-901');
+    expect(credential?.line).toBe(2);
+    expect(credential?.evidence).toContain('<redacted>');
+    expect(JSON.stringify(outcome)).not.toContain(synthetic);
+    expect(isScanResultSummary(outcome.resultSummary)).toBe(true);
+  });
+
+  test('long lines retain locations while withholding untrusted source evidence', async () => {
     const pad = 'x'.repeat(500);
     const line = `const a = "${pad}"; exec(\`rm \${dir}\`);`;
     const engine = createSastEngine({ rules: TEST_SAST_RULES,
@@ -356,8 +378,10 @@ describe('SAST engine: evidence discipline', () => {
     const finding = (outcome.findings ?? [])[0];
     expect(finding).toBeDefined();
     expect(finding?.evidence.length).toBeLessThanOrEqual(200);
-    expect(finding?.evidence).toContain('exec(`rm ${dir}`)'); // the match is visible
-    expect(finding?.evidence.startsWith('…')).toBe(true); // windowed from a long line
+    expect(finding?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(finding?.evidence).not.toContain('exec(`rm ${dir}`)');
+    expect(finding?.file).toBe('src/long.ts');
+    expect(finding?.line).toBe(1);
     expect(finding !== undefined && isFinding(finding)).toBe(true); // guard accepts it
   });
 
@@ -392,7 +416,7 @@ describe('SAST engine: evidence discipline', () => {
     }
   });
 
-  test('XSS payloads in evidence are plain text (never markup)', async () => {
+  test('XSS payloads in source are withheld from evidence', async () => {
     const content = 'el.innerHTML = `<img src=x onerror=alert(1)>${user}`;\n';
     const engine = createSastEngine({ rules: TEST_SAST_RULES,
       sources: providerFor(snapshot([{ path: 'src/xss.ts', content }])),
@@ -401,7 +425,8 @@ describe('SAST engine: evidence discipline', () => {
     expect(outcome.kind).toBe('completed');
     if (outcome.kind !== 'completed') return;
     const finding = (outcome.findings ?? [])[0];
-    expect(finding?.evidence).toContain('<img src=x onerror=alert(1)>');
+    expect(finding?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(finding?.evidence).not.toContain('<img src=x onerror=alert(1)>');
     // eslint-disable-next-line no-control-regex -- the point of the test
     expect(finding?.evidence).not.toMatch(/[\x00-\x1f\x7f]/);
   });

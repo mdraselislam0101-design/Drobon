@@ -286,20 +286,32 @@ export function createRunner(options: RunnerOptions): Runner {
           finalize(record, 'cancelled');
           return;
         }
-        if (timedOut) {
-          if (attempt < maxAttempts) {
-            await sleep(computeRetryDelayMs(retry, attempt), controller.signal);
-            continue;
+        // The attempt is over. Its timeout must not interrupt backoff, and
+        // after a timeout its signal is already aborted. Give the backoff a
+        // separate cancellation signal so cancel() remains prompt.
+        clearTimeout(timer);
+        if (attempt < maxAttempts) {
+          const backoffController = new AbortController();
+          record.controller = backoffController;
+          try {
+            await sleep(computeRetryDelayMs(retry, attempt), backoffController.signal);
+          } catch (sleepError) {
+            if (record.cancelRequested) finalize(record, 'cancelled');
+            else finalize(record, 'failed', undefined, toFailure(sleepError));
+            return;
           }
+          if (record.cancelRequested) {
+            finalize(record, 'cancelled');
+            return;
+          }
+          continue;
+        }
+        if (timedOut) {
           finalize(record, 'timed_out', undefined, {
             code: 'TIMEOUT',
             message: `Job attempt exceeded its ${job.timeoutMs}ms timeout.`,
           });
           return;
-        }
-        if (attempt < maxAttempts) {
-          await sleep(computeRetryDelayMs(retry, attempt), controller.signal);
-          continue;
         }
         finalize(record, 'failed', undefined, toFailure(error));
         return;

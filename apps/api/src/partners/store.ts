@@ -1,10 +1,11 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
 import type {
   CommissionStatus,
   CouponStatus,
   PartnerAuditEvent,
   PartnerStatus,
+  Subscription,
 } from '@drobon/shared';
 import {
   COMMISSION_ID_PATTERN,
@@ -16,6 +17,8 @@ import {
   isCouponStatus,
   isPartnerAuditAction,
   isPartnerStatus,
+  isPlan,
+  isSubscriptionStatus,
 } from '@drobon/shared';
 
 /** Private partner record. Exactly one identity per user; the coupon is the attribution anchor. */
@@ -34,6 +37,12 @@ export interface PartnerRecord {
     updatedAt: string;
   };
   complimentaryProGrantedAt: string;
+  /** Legacy partner-store-only grant; startup recovery migrates it to the account. */
+  grantModel?: 'PARTNER_STORE_V1';
+  /** A pre-upgrade partial record awaiting an explicit matching admin retry. */
+  activationRecovery?: 'INCOMPLETE';
+  /** An inactive durable intent; no coupon is usable until finalization. */
+  activationPending?: { initiatedAt: string; previousSubscription: Subscription | null };
   createdAt: string;
   updatedAt: string;
   deactivatedAt: string | null;
@@ -70,6 +79,10 @@ export interface CommissionListFilters {
 export interface PartnerStore {
   /** One partner per user, one coupon globally unique. */
   createPartner(record: PartnerRecord): Promise<{ kind: 'CREATED'; partner: PartnerRecord } | { kind: 'USER_EXISTS' | 'COUPON_EXISTS' }>;
+  prepareLegacyActivation(partnerId: string, at: string, previous: Subscription | null, event: PartnerAuditEvent): Promise<PartnerRecord | undefined>;
+  refreshPendingActivation(partnerId: string, at: string, previous: Subscription | null): Promise<PartnerRecord | undefined>;
+  finishActivation(partnerId: string, at: string, event: PartnerAuditEvent): Promise<PartnerRecord | undefined>;
+  migrateAtomicGrant(partnerId: string, at: string, event: PartnerAuditEvent): Promise<void>;
   getPartnerById(partnerId: string): PartnerRecord | undefined;
   getPartnerByUserId(userId: string): PartnerRecord | undefined;
   getPartnerByCoupon(couponCode: string): PartnerRecord | undefined;
@@ -117,6 +130,22 @@ function isNullableTimestamp(value: unknown): value is string | null {
   return value === null || validTimestamp(value);
 }
 
+function isPreviousSubscription(value: unknown): value is Subscription | null {
+  if (value === null) return true;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  return Object.keys(s).length === 4 && isPlan(s['plan']) && isSubscriptionStatus(s['status']) &&
+    isNullableTimestamp(s['createdAt']) && isNullableTimestamp(s['updatedAt']);
+}
+
+function isPendingActivation(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const pending = value as Record<string, unknown>;
+  return Object.keys(pending).length === 2 && validTimestamp(pending['initiatedAt']) &&
+    isPreviousSubscription(pending['previousSubscription']);
+}
+
 function money(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -151,6 +180,10 @@ function isPartnerRecord(value: unknown): value is PartnerRecord {
     isNullableTimestamp(coupon['expiresAt']) &&
     validTimestamp(coupon['createdAt']) && validTimestamp(coupon['updatedAt']) &&
     validTimestamp(r['complimentaryProGrantedAt']) &&
+    (r['grantModel'] === undefined || r['grantModel'] === 'PARTNER_STORE_V1') &&
+    (r['activationRecovery'] === undefined || (r['activationRecovery'] === 'INCOMPLETE' && r['grantModel'] === undefined && r['status'] === 'DEACTIVATED')) &&
+    isPendingActivation(r['activationPending']) &&
+    (r['activationPending'] === undefined || (r['status'] === 'DEACTIVATED' && r['grantModel'] === undefined && r['activationRecovery'] === undefined)) &&
     validTimestamp(r['createdAt']) && validTimestamp(r['updatedAt']) &&
     isNullableTimestamp(r['deactivatedAt']) &&
     Array.isArray(r['audit']) && (r['audit'] as unknown[]).length <= MAX_AUDIT_EVENT_PER_PARTNER &&
@@ -225,7 +258,16 @@ function loadDocument(path: string): StoreDocument {
 }
 
 function clone(record: PartnerRecord): PartnerRecord {
-  return { ...record, coupon: { ...record.coupon }, audit: record.audit.map((event) => ({ ...event })) };
+  return {
+    ...record,
+    coupon: { ...record.coupon },
+    audit: record.audit.map((event) => ({ ...event })),
+    ...(record.activationPending === undefined ? {} : { activationPending: {
+      ...record.activationPending,
+      previousSubscription: record.activationPending.previousSubscription === null
+        ? null : { ...record.activationPending.previousSubscription },
+    } }),
+  };
 }
 
 function createStore(initial: StoreDocument, persist: (document: StoreDocument) => void): PartnerStore {
@@ -247,12 +289,56 @@ function createStore(initial: StoreDocument, persist: (document: StoreDocument) 
   };
   return {
     createPartner: (record) => exclusive(() => {
+      if (!isPartnerRecord(record)) throw new Error('Invalid partner record.');
       if ([...partners.values()].some((partner) => partner.userId === record.userId)) return { kind: 'USER_EXISTS' as const };
       if ([...partners.values()].some((partner) => partner.coupon.couponCode === record.coupon.couponCode)) return { kind: 'COUPON_EXISTS' as const };
       const draft = new Map([...partners.values()].map((partner) => [partner.partnerId, clone(partner)]));
       draft.set(record.partnerId, clone(record));
       commit(draft, commissions);
       return { kind: 'CREATED' as const, partner: clone(record) };
+    }),
+    prepareLegacyActivation: (partnerId, at, previous, event) => exclusive(() => {
+      const record = partners.get(partnerId);
+      if (record === undefined || record.grantModel !== undefined || record.activationPending !== undefined) return undefined;
+      const draft = new Map([...partners.values()].map((partner) => [partner.partnerId, clone(partner)]));
+      const next = draft.get(partnerId)!;
+      delete next.activationRecovery;
+      next.activationPending = { initiatedAt: at, previousSubscription: previous === null ? null : { ...previous } };
+      next.status = 'DEACTIVATED'; next.deactivatedAt = at; next.updatedAt = at;
+      next.audit = [...next.audit, { ...event }].slice(-MAX_AUDIT_EVENT_PER_PARTNER);
+      commit(draft, commissions);
+      return clone(next);
+    }),
+    refreshPendingActivation: (partnerId, at, previous) => exclusive(() => {
+      const record = partners.get(partnerId);
+      if (record?.activationPending === undefined) return undefined;
+      const draft = new Map([...partners.values()].map((partner) => [partner.partnerId, clone(partner)]));
+      const next = draft.get(partnerId)!;
+      next.activationPending = { initiatedAt: at, previousSubscription: previous === null ? null : { ...previous } };
+      next.updatedAt = at;
+      commit(draft, commissions);
+      return clone(next);
+    }),
+    finishActivation: (partnerId, at, event) => exclusive(() => {
+      const record = partners.get(partnerId);
+      if (record === undefined || record.activationPending === undefined) return undefined;
+      const draft = new Map([...partners.values()].map((partner) => [partner.partnerId, clone(partner)]));
+      const next = draft.get(partnerId)!;
+      next.complimentaryProGrantedAt = next.activationPending!.initiatedAt;
+      delete next.activationPending;
+      next.status = 'ACTIVE'; next.deactivatedAt = null; next.updatedAt = at;
+      next.audit = [...next.audit, { ...event }].slice(-MAX_AUDIT_EVENT_PER_PARTNER);
+      commit(draft, commissions);
+      return clone(next);
+    }),
+    migrateAtomicGrant: (partnerId, at, event) => exclusive(() => {
+      const record = partners.get(partnerId);
+      if (record?.grantModel !== 'PARTNER_STORE_V1') return;
+      const draft = new Map([...partners.values()].map((partner) => [partner.partnerId, clone(partner)]));
+      const next = draft.get(partnerId)!;
+      delete next.grantModel; next.updatedAt = at;
+      next.audit = [...next.audit, { ...event }].slice(-MAX_AUDIT_EVENT_PER_PARTNER);
+      commit(draft, commissions);
     }),
     getPartnerById: (partnerId) => {
       const record = partners.get(partnerId);
@@ -364,10 +450,7 @@ function createStore(initial: StoreDocument, persist: (document: StoreDocument) 
 export function createJsonFilePartnerStore(path: string): PartnerStore {
   const document = loadDocument(path);
   const persist = (next: StoreDocument): void => {
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    renameSync(tmp, path);
+    writePrivateJson(path, `${JSON.stringify(next, null, 2)}\n`);
   };
   return createStore(document, persist);
 }

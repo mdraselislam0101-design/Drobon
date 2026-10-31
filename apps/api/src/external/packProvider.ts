@@ -104,12 +104,17 @@ export function convertSecretsPackToRule(raw: any): SecretsRule | undefined {
     denylist,
   };
 
-  // Attach valueSpan + validate for denylist/redact handling
+  // Match the loader's denylist semantics: entries apply to the whole line,
+  // not just the substring captured by the regular expression.
   if (!matchOnlyEvidence) {
     rule.valueSpan = (match: { text: string }) => ({ start: 0, end: match.text.length });
-    if (denylist.length > 0) {
-      rule.validate = (matched: string) => !denylist.some(d => matched.toLowerCase().includes(d.toLowerCase()));
-    }
+  }
+  if (denylist.length > 0) {
+    const lowered = denylist.map((entry) => entry.toLowerCase());
+    rule.validate = (matched: string, line?: string) => {
+      const text = (line ?? matched).toLowerCase();
+      return !lowered.some((entry) => text.includes(entry));
+    };
   }
 
   return rule as SecretsRule;

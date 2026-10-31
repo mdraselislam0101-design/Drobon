@@ -55,7 +55,7 @@ export default tseslint.config(
   },
   {
     // Tooling scripts (Node, console output is their job).
-    files: ['scripts/**/*.mjs', 'eslint.config.mjs'],
+    files: ['scripts/**/*.mjs', 'benchmarks/**/*.mjs', 'eslint.config.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },

@@ -11,10 +11,12 @@ export async function inspectDataset(path: string): Promise<Record<'sast' | 'sec
   if (!(await lstat(root)).isDirectory()) throw new TypeError('Dataset must be a directory.');
   const counts = { sast: 0, secrets: 0, sca: 0 };
   let visited = 0;
-  const pending = ['packs', 'vuln-intel', 'knowledge', 'learning', 'assessments', 'engagements'];
+  let files = 0;
+  const pending = ['packs', 'vuln-intel', 'knowledge', 'learning', 'assessments', 'engagements'].map((rel) => ({ rel, depth: 0 }));
   while (pending.length > 0) {
-    const rel = pending.pop();
-    if (rel === undefined) break;
+    const item = pending.pop();
+    if (item === undefined) break;
+    const { rel, depth } = item;
     const full = join(root, rel);
     let info;
     try { info = await lstat(full); } catch (error) {
@@ -30,8 +32,13 @@ export async function inspectDataset(path: string): Promise<Record<'sast' | 'sec
       const child = join(full, entry.name);
       const childRel = relative(root, child);
       if (entry.isSymbolicLink()) throw new TypeError('Dataset symlinks are not allowed in CI.');
-      if (entry.isDirectory()) { pending.push(childRel); continue; }
+      if (entry.isDirectory()) {
+        if (depth >= 16) throw new RangeError('Dataset exceeds the CI directory depth limit.');
+        pending.push({ rel: childRel, depth: depth + 1 });
+        continue;
+      }
       if (!entry.isFile()) throw new TypeError('Dataset contains an unsupported filesystem entry.');
+      if (++files > 20_000) throw new RangeError('Dataset exceeds the CI file limit.');
       const metadata = await lstat(child);
       if (metadata.isSymbolicLink() || !metadata.isFile()) throw new TypeError('Dataset entry changed during inspection.');
       if (metadata.size > 2 * 1024 * 1024) throw new RangeError('Dataset contains an oversized file.');

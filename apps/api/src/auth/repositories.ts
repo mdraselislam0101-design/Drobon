@@ -74,6 +74,13 @@ export interface UserRepository {
   /** Server-only entitlement mutation used by the payment approval saga. */
   activatePro(id: string, at: string): Promise<'ACTIVATED' | 'ALREADY_ACTIVE' | 'NOT_FOUND'>;
   /**
+   * Conditional compensation for a partner activation. Restore exactly the
+   * prior subscription only if the current PRO record is still the one
+   * created by that attempt. Optional for older injected repositories;
+   * activation fails closed when compensation is unavailable.
+   */
+  restorePartnerSubscription?(id: string, activationAt: string, prior: Subscription | null): Promise<'RESTORED' | 'CHANGED' | 'NOT_FOUND'>;
+  /**
    * Classification-only mutation (Phase 20): rewrites `userType` and nothing
    * else. Role, subscription and every other field are untouched by design —
    * switching user type never grants entitlements, resets quota or changes

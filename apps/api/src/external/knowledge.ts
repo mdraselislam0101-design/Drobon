@@ -11,6 +11,8 @@ export interface RemediationEntry {
   actions: string[];
   verification: string;
   standardId?: string;
+  /** Optional, untrusted dataset content; the resolver validates it separately. */
+  example?: unknown;
 }
 
 export interface CweEntry {
@@ -24,9 +26,10 @@ export async function getRemediationMap(dataset: DatasetService): Promise<Map<st
   const map = new Map<string, RemediationEntry>();
   try {
     const raw = await dataset.remediation();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-    for (const r of raw as any[]) {
-      if (typeof r.ruleId === 'string') map.set(r.ruleId, r as RemediationEntry);
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+      const item = entry as Record<string, unknown>;
+      if (typeof item['ruleId'] === 'string') map.set(item['ruleId'], entry as RemediationEntry);
     }
   } catch { /* fail closed: optional path */ }
   return map;
@@ -36,9 +39,10 @@ export async function getCweMap(dataset: DatasetService): Promise<Map<string, Cw
   const map = new Map<string, CweEntry>();
   try {
     const raw = await dataset.cwe();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-    for (const r of raw as any[]) {
-      if (typeof r.id === 'string') map.set(r.id, r as CweEntry);
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+      const item = entry as Record<string, unknown>;
+      if (typeof item['id'] === 'string') map.set(item['id'], entry as CweEntry);
     }
   } catch { /* fail closed: optional path */ }
   return map;

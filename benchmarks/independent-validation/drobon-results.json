@@ -1,0 +1,2493 @@
+{
+  "schemaVersion": "drobon.local-benchmark/v2",
+  "fixtureManifestSha256": "8ae13962b8889b7f92018216868c2b1483556ae08c1dfc12d5e730890d6911e6",
+  "inheritedScaRuleSha256": "b9ee26e96f5022c8e113cbd7430cde44321e7c78ecbc964d3f4cf84aecbd8e2b",
+  "node": "v22.22.3",
+  "groundTruthReview": "AUTHOR_DEFINED_NOT_INDEPENDENTLY_REVIEWED",
+  "scope": "Existing Drobon engines, test-only rules, mock DAST transport, declaration-only SCA; not vendor comparison.",
+  "cases": [
+    {
+      "id": "SAST-01",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "87872f9872e856bb1b7a83de31d61cf9cce7935b22aa52bf92d5e98ec1b00cb6",
+      "rationale": "Request input is concatenated into a shell command."
+    },
+    {
+      "id": "SAST-02",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "2cde6ed1610708b69c90eacfeeeac0bfff7b7d8ee237cc989d3b5bbda76b1462",
+      "rationale": "The shell command is a fixed concatenation of two constants."
+    },
+    {
+      "id": "SAST-03",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "5d195249e39fbcf61bec9dd4f5f061de2fbf911d9790e5bf0c52bee4b2b8062b",
+      "rationale": "Request input is assigned on one line and then passed to a shell."
+    },
+    {
+      "id": "SAST-04",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "30bacd8d6851a69d452e81e40d60fde2471e681f198f353cce163085874a87cb",
+      "rationale": "An argument-vector API is used without a shell."
+    },
+    {
+      "id": "SAST-05",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-003",
+      "cwe": "CWE-89",
+      "path": "src/case.js",
+      "inputSha256": "38c50d0907d27664670bd5145306c6b426d86f8846134d20929cf3cb60ccf3c7",
+      "rationale": "Request input is concatenated into a SQL query."
+    },
+    {
+      "id": "SAST-06",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-003",
+      "cwe": "CWE-89",
+      "path": "src/case.js",
+      "inputSha256": "f8d39670092db9085a412b0a650fd04acc93216bf75706ceab43a81c7378d506",
+      "rationale": "The SQL value is supplied through a parameter placeholder."
+    },
+    {
+      "id": "SAST-07",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-004",
+      "cwe": "CWE-79",
+      "path": "src/case.js",
+      "inputSha256": "9aa55d64b2c61dcce0c1fb6261826caea9c6bcd23006e7b67aa9625ca1fa408f",
+      "rationale": "Request input is assigned to an HTML sink."
+    },
+    {
+      "id": "SAST-08",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "2f94cc004842c16ef6ff2e8298cc93525ee49cc924b18b37c14557cb1b3fb87b",
+      "rationale": "The apparent shell sink is only inside a comment."
+    },
+    {
+      "id": "SECRET-01",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "d797d5e3ca091a38d89087cfe55c699a9ddd93a7efde8bfbd9d41031b9bf28a9",
+      "rationale": "An invented service-key-shaped value is present as one literal."
+    },
+    {
+      "id": "SECRET-02",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "0663f6e40fb0989d2f7ce75fe2b3d107bcbd484ca6e5964ce379e0d4100de65a",
+      "rationale": "The same invented key shape is reconstructed from separate literals at runtime."
+    },
+    {
+      "id": "SECRET-03",
+      "family": "SECRETS",
+      "expected": false,
+      "rule": "DG-SEC-005",
+      "path": "src/case.js",
+      "inputSha256": "ae1215742813385c903b0adf42dc4dc6a67ecdf81d6a58571c43dac3f3052a20",
+      "rationale": "The literal is explicitly an example placeholder."
+    },
+    {
+      "id": "SECRET-04",
+      "family": "SECRETS",
+      "expected": false,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "0c71b36715ce57985b21761b97d474cd15826b8c89dd3b7daff5467319367873",
+      "rationale": "Only an environment-variable lookup is present, with no literal value."
+    },
+    {
+      "id": "SCA-01",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "da6c3b976a3c4940a80df5499a65d2ca8407b89678aa55d7b5766b5796623331",
+      "rationale": "A runtime dependency uses an unrestricted wildcard declaration."
+    },
+    {
+      "id": "SCA-02",
+      "family": "SCA",
+      "expected": false,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "0b8956102af7cd90a8e4073af1f218ce37665fb8fe7583c74423375aa0909da4",
+      "rationale": "The runtime dependency has a fixed version; no wildcard is declared."
+    },
+    {
+      "id": "SCA-03",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "773ffb789c9b8693b045cb01a65db60e57affeb2e5cdaf5e55f91cf8a3dfd20a",
+      "rationale": "An unrestricted wildcard occurs in development dependencies, outside this fixture rule path."
+    },
+    {
+      "id": "SCA-04",
+      "family": "SCA",
+      "expected": null,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "d00ccdd8913baad2eabf10375ec1b8a59b40b24ab39876149d4786fb23dc6f36",
+      "rationale": "Malformed JSON is not a valid ground-truth negative or a completed evaluation."
+    },
+    {
+      "id": "DAST-01",
+      "family": "DAST",
+      "expected": true,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-missing",
+      "rationale": "The response omits the nosniff header."
+    },
+    {
+      "id": "DAST-02",
+      "family": "DAST",
+      "expected": true,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-invalid",
+      "rationale": "The response sends an unrelated value instead of nosniff."
+    },
+    {
+      "id": "DAST-03",
+      "family": "DAST",
+      "expected": false,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-safe",
+      "rationale": "The response supplies nosniff."
+    },
+    {
+      "id": "DAST-04",
+      "family": "DAST",
+      "expected": true,
+      "rule": null,
+      "route": "/lab/reflect-unsafe",
+      "rationale": "The application reflects a marker into HTML without escaping; active query validation is required."
+    },
+    {
+      "id": "DAST-05",
+      "family": "DAST",
+      "expected": false,
+      "rule": null,
+      "route": "/lab/reflect-safe",
+      "rationale": "The application escapes the same marker before including it in HTML."
+    },
+    {
+      "id": "AX-SAST-01",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "0a1f37332b80742166dea2ed0dcb396f5328f2eff5188dc9a6d50a0ba7ce44cd",
+      "oracle": "shell",
+      "rationale": "Request interpolation reaches exec."
+    },
+    {
+      "id": "AX-SAST-02",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "2ba33dfb266bcce5a51d4b35853e74c0c63ed9d159bd4e52fb8d17e36331200b",
+      "oracle": "shell",
+      "rationale": "The executable itself is request-controlled."
+    },
+    {
+      "id": "AX-SAST-03",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "5aef566ff2430a2d66d6b863bbaf235c6eec95df87b6a070a6888992a8a2c8d9",
+      "oracle": "shell",
+      "rationale": "Explicit shell option with user input."
+    },
+    {
+      "id": "AX-SAST-04",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "a5664558897ef6da262cf51ff04f9b9b91e594cd4223674397f9a949bc30a1f7",
+      "oracle": "shell",
+      "rationale": "A shell interpreter receives a constructed command."
+    },
+    {
+      "id": "AX-SAST-05",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "985720f71def38471b28b221e513b1bc14fe9019e389aa65312d5b7363b424b6",
+      "oracle": "shell",
+      "rationale": "Constant program and constant argument."
+    },
+    {
+      "id": "AX-SAST-06",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "b6807221a981560153b46015fbaba4a14343fdc9ce4cb259ccb372d429d1472a",
+      "oracle": "shell",
+      "rationale": "Constant shell text; no request input."
+    },
+    {
+      "id": "AX-SAST-07",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "1d086723baa296acde3cf838c935184318c64b06f59e120057f5ff67aee5ca69",
+      "oracle": "shell",
+      "rationale": "Source-like text occurs only in a comment."
+    },
+    {
+      "id": "AX-SAST-08",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-003",
+      "cwe": "CWE-89",
+      "path": "src/case.js",
+      "inputSha256": "52f980fb7aea25e20b2ef417997e1b27947e9f2cc8059d48a3fcc1950e6ede99",
+      "oracle": "sql",
+      "rationale": "SQL text contains interpolated input."
+    },
+    {
+      "id": "AX-SAST-09",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-003",
+      "cwe": "CWE-89",
+      "path": "src/case.js",
+      "inputSha256": "25b38cc20039fd46d912675c921656b4f22c9131e91135abe1668069403dabff",
+      "oracle": "sql",
+      "rationale": "SQL input is passed as a separate parameter."
+    },
+    {
+      "id": "AX-SAST-10",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-004",
+      "cwe": "CWE-79",
+      "path": "src/case.js",
+      "inputSha256": "a7eb59bde0ac55779bf535d743758cedf97be3cb5207ebf57945827ca8ebd005",
+      "oracle": "html",
+      "rationale": "Unescaped input reaches an HTML sink."
+    },
+    {
+      "id": "AX-SAST-11",
+      "family": "SAST",
+      "expected": false,
+      "rule": "DG-SAST-004",
+      "cwe": "CWE-79",
+      "path": "src/case.js",
+      "inputSha256": "da7c08b0a2ad32b6caec535fa1c30121e1154b39fad49980ef5f8bdfa1be02c6",
+      "oracle": "html",
+      "rationale": "Input is assigned to a text, not an HTML, sink."
+    },
+    {
+      "id": "AX-SAST-12",
+      "family": "SAST",
+      "expected": true,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.txt",
+      "inputSha256": "87872f9872e856bb1b7a83de31d61cf9cce7935b22aa52bf92d5e98ec1b00cb6",
+      "oracle": "shell",
+      "unsupported": true,
+      "rationale": "Command source in an unsupported text extension."
+    },
+    {
+      "id": "AX-SAST-13",
+      "family": "SAST",
+      "expected": null,
+      "rule": "DG-SAST-001",
+      "cwe": "CWE-78",
+      "path": "src/case.js",
+      "inputSha256": "431332a56b3f3f705ebe6a8967c7baa02c0f81a463c72af11a3e8c054a7a248c",
+      "oracle": "syntax",
+      "rationale": "Malformed JavaScript: no trustworthy shell-flow truth."
+    },
+    {
+      "id": "AX-SEC-01",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.ts",
+      "inputSha256": "d797d5e3ca091a38d89087cfe55c699a9ddd93a7efde8bfbd9d41031b9bf28a9",
+      "oracle": "secret",
+      "rationale": "Single synthetic key-shaped literal."
+    },
+    {
+      "id": "AX-SEC-02",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "0663f6e40fb0989d2f7ce75fe2b3d107bcbd484ca6e5964ce379e0d4100de65a",
+      "oracle": "secret",
+      "requiresLiteralFold": true,
+      "rationale": "Two unescaped literals reconstruct the synthetic shape."
+    },
+    {
+      "id": "AX-SEC-03",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "477d92d6b04b1a68daf8a3e55df231c3c52f63916be162799a4a2cf5e7a16417",
+      "oracle": "secret",
+      "requiresLiteralFold": true,
+      "rationale": "Three literal pieces, including parentheses."
+    },
+    {
+      "id": "AX-SEC-04",
+      "family": "SECRETS",
+      "expected": false,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "1926bd670c255af1957578e3f57ae203112863bb7a6d4e7c1692c43d8025e5c9",
+      "oracle": "secret",
+      "rationale": "Literal fragments occur only in a comment."
+    },
+    {
+      "id": "AX-SEC-05",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "827497d8f070943a8e6b42cebeec2e74dea18eff1748b2163e3a3b932a51187f",
+      "oracle": "secret",
+      "unsupported": true,
+      "rationale": "The controlled oracle uses an empty environment value; dynamic folding is unsupported."
+    },
+    {
+      "id": "AX-SEC-06",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "363aee1b80530935f971c630d900a9563e39e802a87414f8064795902f69f0a8",
+      "oracle": "secret",
+      "unsupported": true,
+      "rationale": "A JavaScript escape is required to reconstruct the synthetic shape."
+    },
+    {
+      "id": "AX-SEC-07",
+      "family": "SECRETS",
+      "expected": false,
+      "rule": "DG-SEC-005",
+      "path": "src/case.js",
+      "inputSha256": "1c618cc6f80764ab7c335962d730e45f19767e4f1a8973d3a5e80036508c813e",
+      "oracle": "placeholder",
+      "requiresLiteralFold": true,
+      "rationale": "An explicitly example placeholder is not a credential."
+    },
+    {
+      "id": "AX-SEC-08",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "a8eb4242426cd85b3e576c00fa9e3665f9067bc6fcb9d736d5642881fdc74858",
+      "oracle": "secret",
+      "requiresLiteralFold": true,
+      "rationale": "Static fragments include an empty string."
+    },
+    {
+      "id": "AX-SEC-09",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "src/case.py",
+      "inputSha256": "42e5640d099e4c9445fbef54868c789866906768bbc50d9f6faf2373e9c80549",
+      "oracle": "python-secret",
+      "unsupported": true,
+      "rationale": "Static folding is not implemented for Python."
+    },
+    {
+      "id": "AX-SEC-10",
+      "family": "SECRETS",
+      "expected": null,
+      "rule": "DG-SEC-002",
+      "path": "src/case.js",
+      "inputSha256": "9787f1f5528133430e88d77aa8f2082364d00aebd6bbcb0661587be42fb98305",
+      "oracle": "syntax",
+      "requiresLiteralFold": true,
+      "rationale": "Malformed source has unknown runtime value and incomplete syntax analysis."
+    },
+    {
+      "id": "AX-SEC-11",
+      "family": "SECRETS",
+      "expected": true,
+      "rule": "DG-SEC-002",
+      "path": "node_modules/case.js",
+      "inputSha256": "d797d5e3ca091a38d89087cfe55c699a9ddd93a7efde8bfbd9d41031b9bf28a9",
+      "oracle": "secret",
+      "unsupported": true,
+      "rationale": "Ignored dependency directory; not assessed by source policy."
+    },
+    {
+      "id": "AX-SCA-01",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9002",
+      "path": "package.json",
+      "inputSha256": "e7c26cd64d38b858e42554119d1f6395742c4821608c6523f6afcaaa5a6404c5",
+      "oracle": "dev-wildcard",
+      "rationale": "Dev wildcard with a test-only dev-field rule."
+    },
+    {
+      "id": "AX-SCA-02",
+      "family": "SCA",
+      "expected": false,
+      "rule": "DPK-SCA-9002",
+      "path": "package.json",
+      "inputSha256": "8cc9790749ea29b04456e258a246e3ef7bb00e617c2d343281e2db118354d186",
+      "oracle": "dev-wildcard",
+      "rationale": "A fixed dev version does not match wildcard check."
+    },
+    {
+      "id": "AX-SCA-03",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "e2a9f25de56d3e316560720ee653ebbe1cc2e97b1f70f4148ce89a26203bc934",
+      "oracle": "runtime-wildcard",
+      "rationale": "A wildcard is present among runtime dependencies."
+    },
+    {
+      "id": "AX-SCA-04",
+      "family": "SCA",
+      "expected": false,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "ccf6ffa6e72543dd4b555dab955bb3cff514cb6b50d3ded3d36a67e017ddf736",
+      "oracle": "runtime-wildcard",
+      "rationale": "No runtime wildcard field."
+    },
+    {
+      "id": "AX-SCA-05",
+      "family": "SCA",
+      "expected": null,
+      "rule": "DPK-SCA-9001",
+      "path": "package.json",
+      "inputSha256": "d00ccdd8913baad2eabf10375ec1b8a59b40b24ab39876149d4786fb23dc6f36",
+      "oracle": "json-invalid",
+      "rationale": "Malformed JSON is unknown, not a negative."
+    },
+    {
+      "id": "AX-SCA-06",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9001",
+      "path": "requirements.in",
+      "inputSha256": "e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f",
+      "oracle": "unsupported-declaration",
+      "unsupported": true,
+      "rationale": "An unrestricted bare requirement is outside this npm rule artifact."
+    },
+    {
+      "id": "AX-SCA-07",
+      "family": "SCA",
+      "expected": true,
+      "rule": "DPK-SCA-9003",
+      "path": "nuget.config",
+      "inputSha256": "3bae35f0eb22fb1eaa7bb785e03d2289f62f8bb979c6fd29f0593daff382fc7b",
+      "oracle": "xml-http",
+      "rationale": "XML numeric reference decodes to a plain HTTP source."
+    },
+    {
+      "id": "AX-SCA-08",
+      "family": "SCA",
+      "expected": false,
+      "rule": "DPK-SCA-9003",
+      "path": "nuget.config",
+      "inputSha256": "dad6496db326cbf922bb1d8fc80b18a948377bdc08c4dfd7459a1361452730e0",
+      "oracle": "xml-http",
+      "rationale": "Source uses HTTPS, not this rule’s HTTP check."
+    },
+    {
+      "id": "AX-SCA-09",
+      "family": "SCA",
+      "expected": false,
+      "rule": "DPK-SCA-9003",
+      "path": "nuget.config",
+      "inputSha256": "03863189aca6b2af04d005ade8330a9ff24b1260fc567fbe8dcf0e1a3206dfa9",
+      "oracle": "xml-http",
+      "rationale": "Hexadecimal reference decodes to HTTPS."
+    },
+    {
+      "id": "AX-SCA-10",
+      "family": "SCA",
+      "expected": null,
+      "rule": "DPK-SCA-9003",
+      "path": "nuget.config",
+      "inputSha256": "c6a6d98b2776a6877c4788a6add682f277efad5e7e1bbc0a2ddd88d461227b37",
+      "oracle": "xml-http",
+      "rationale": "Unknown XML entity: no valid declaration truth."
+    },
+    {
+      "id": "AX-SCA-11",
+      "family": "SCA",
+      "expected": null,
+      "rule": "DPK-SCA-9003",
+      "path": "nuget.config",
+      "inputSha256": "9e64b52efe35854937bab7b77da7cb05d5cf87bb1e703c5a2753000c849f8014",
+      "oracle": "xml-http",
+      "rationale": "Trailing incomplete XML; parser must not claim completeness."
+    },
+    {
+      "id": "AX-DAST-01",
+      "family": "DAST",
+      "expected": true,
+      "rule": "DG-DAST-900",
+      "route": "/lab/header-invalid",
+      "oracle": "invalid-value",
+      "rationale": "The test-only value-aware rule sees a wrong nonempty header."
+    },
+    {
+      "id": "AX-DAST-02",
+      "family": "DAST",
+      "expected": false,
+      "rule": "DG-DAST-900",
+      "route": "/lab/header-safe",
+      "oracle": "invalid-value",
+      "rationale": "Correct nosniff value does not match the invalid-value rule."
+    },
+    {
+      "id": "AX-DAST-03",
+      "family": "DAST",
+      "expected": false,
+      "rule": "DG-DAST-900",
+      "route": "/lab/header-missing",
+      "oracle": "invalid-value",
+      "rationale": "A missing value is outside this specific value-only rule; absence is a separate concern."
+    },
+    {
+      "id": "AX-DAST-04",
+      "family": "DAST",
+      "expected": true,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-missing",
+      "oracle": "nosniff",
+      "rationale": "Presence-only test rule flags a missing header."
+    },
+    {
+      "id": "AX-DAST-05",
+      "family": "DAST",
+      "expected": false,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-safe",
+      "oracle": "nosniff",
+      "rationale": "Presence-only test rule accepts a present valid header."
+    },
+    {
+      "id": "AX-DAST-06",
+      "family": "DAST",
+      "expected": false,
+      "rule": "DG-DAST-003",
+      "route": "/lab/header-safe?fixture=1",
+      "oracle": "nosniff",
+      "unsupported": true,
+      "rationale": "The lab response is safe, but production query-bearing targets are blocked."
+    }
+  ],
+  "observations": [
+    {
+      "id": "SAST-01",
+      "matchingFindings": 2,
+      "uniqueMatchingFingerprints": 2,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        },
+        {
+          "ruleId": "DG-SAST-048",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-02",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-03",
+      "matchingFindings": 2,
+      "uniqueMatchingFingerprints": 2,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-048",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 4,
+          "targetLocationCorrect": null
+        },
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 4,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-04",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-05",
+      "matchingFindings": 2,
+      "uniqueMatchingFingerprints": 2,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-003",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        },
+        {
+          "ruleId": "DG-SAST-049",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-06",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-07",
+      "matchingFindings": 2,
+      "uniqueMatchingFingerprints": 2,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-004",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        },
+        {
+          "ruleId": "DG-SAST-050",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SAST-08",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SECRET-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SECRET-02",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SECRET-03",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SECRET-04",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SCA-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DPK-SCA-9001",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "SCA-02",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "SCA-03",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "SCA-04",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "Incomplete, skipped, invalid or truncated evaluation."
+    },
+    {
+      "id": "DAST-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-DAST-003",
+          "severity": "LOW",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": null,
+          "sourceLine": null,
+          "targetLocationCorrect": true
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "DAST-02",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "DAST-03",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "DAST-04",
+      "status": "UNASSESSED",
+      "reason": "Reflection cases require active query testing; this run is passive only."
+    },
+    {
+      "id": "DAST-05",
+      "status": "UNASSESSED",
+      "reason": "Reflection cases require active query testing; this run is passive only."
+    },
+    {
+      "id": "AX-SAST-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-02",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-03",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-04",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-001",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 2,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-05",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-06",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-07",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-08",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-003",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-09",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-10",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SAST-004",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-11",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SAST-12",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SAST-13",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "Incomplete, skipped, invalid or truncated evaluation."
+    },
+    {
+      "id": "AX-SEC-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-02",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-03",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-04",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-05",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SEC-06",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SEC-07",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-08",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-SEC-002",
+          "severity": "HIGH",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SEC-09",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SEC-10",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SEC-11",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SCA-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DPK-SCA-9002",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SCA-02",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "AX-SCA-03",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DPK-SCA-9001",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SCA-04",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "AX-SCA-05",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "Incomplete, skipped, invalid or truncated evaluation."
+    },
+    {
+      "id": "AX-SCA-06",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "The specific format or literal-fold analysis was not completely covered."
+    },
+    {
+      "id": "AX-SCA-07",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DPK-SCA-9003",
+          "severity": "MEDIUM",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": true,
+          "sourceLine": 1,
+          "targetLocationCorrect": null
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-SCA-08",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "AX-SCA-09",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "NOT_DETECTED",
+      "reason": "Declaration rule evaluated; advisory assessment remains unavailable."
+    },
+    {
+      "id": "AX-SCA-10",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "Incomplete, skipped, invalid or truncated evaluation."
+    },
+    {
+      "id": "AX-SCA-11",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": true,
+      "status": "UNASSESSED",
+      "reason": "Incomplete, skipped, invalid or truncated evaluation."
+    },
+    {
+      "id": "AX-DAST-01",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-DAST-900",
+          "severity": "LOW",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": null,
+          "sourceLine": null,
+          "targetLocationCorrect": true
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-DAST-02",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-DAST-03",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-DAST-04",
+      "matchingFindings": 1,
+      "uniqueMatchingFingerprints": 1,
+      "otherFindingsUnjudged": 0,
+      "quality": [
+        {
+          "ruleId": "DG-DAST-003",
+          "severity": "LOW",
+          "evidencePresent": true,
+          "sourceLocationCorrect": null,
+          "sourceLocationInFile": null,
+          "sourceLine": null,
+          "targetLocationCorrect": true
+        }
+      ],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-DAST-05",
+      "matchingFindings": 0,
+      "uniqueMatchingFingerprints": 0,
+      "otherFindingsUnjudged": 0,
+      "quality": [],
+      "report": {
+        "integrity": true,
+        "countMatches": true,
+        "sourceOrSyntheticSecretPresent": false
+      },
+      "partial": false,
+      "status": "NOT_DETECTED",
+      "reason": null
+    },
+    {
+      "id": "AX-DAST-06",
+      "status": "UNASSESSED",
+      "reason": "Engine failed: DAST_TARGET_INVALID"
+    }
+  ],
+  "scores": {
+    "families": {
+      "SAST": {
+        "cases": 21,
+        "truePositive": 10,
+        "falsePositive": 2,
+        "trueNegative": 7,
+        "falseNegative": 0,
+        "unassessed": 1,
+        "unknownTruth": 1,
+        "assessed": 19,
+        "precision": 0.8333333333333334,
+        "recall": 1
+      },
+      "SECRETS": {
+        "cases": 15,
+        "truePositive": 6,
+        "falsePositive": 0,
+        "trueNegative": 4,
+        "falseNegative": 0,
+        "unassessed": 4,
+        "unknownTruth": 1,
+        "assessed": 10,
+        "precision": 1,
+        "recall": 1
+      },
+      "SCA": {
+        "cases": 15,
+        "truePositive": 4,
+        "falsePositive": 0,
+        "trueNegative": 5,
+        "falseNegative": 1,
+        "unassessed": 1,
+        "unknownTruth": 4,
+        "assessed": 10,
+        "precision": 1,
+        "recall": 0.8
+      },
+      "DAST": {
+        "cases": 11,
+        "truePositive": 3,
+        "falsePositive": 0,
+        "trueNegative": 4,
+        "falseNegative": 1,
+        "unassessed": 3,
+        "unknownTruth": 0,
+        "assessed": 8,
+        "precision": 1,
+        "recall": 0.75
+      }
+    },
+    "rows": [
+      {
+        "id": "SAST-01",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 2,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-02",
+        "family": "SAST",
+        "expected": false,
+        "status": "DETECTED",
+        "verdict": "FP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-03",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 2,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-04",
+        "family": "SAST",
+        "expected": false,
+        "status": "DETECTED",
+        "verdict": "FP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-05",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 2,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-06",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-07",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 2,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SAST-08",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SECRET-01",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SECRET-02",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SECRET-03",
+        "family": "SECRETS",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SECRET-04",
+        "family": "SECRETS",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SCA-01",
+        "family": "SCA",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SCA-02",
+        "family": "SCA",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SCA-03",
+        "family": "SCA",
+        "expected": true,
+        "status": "NOT_DETECTED",
+        "verdict": "FN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "SCA-04",
+        "family": "SCA",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "Incomplete, skipped, invalid or truncated evaluation.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "DAST-01",
+        "family": "DAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "DAST-02",
+        "family": "DAST",
+        "expected": true,
+        "status": "NOT_DETECTED",
+        "verdict": "FN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "DAST-03",
+        "family": "DAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "DAST-04",
+        "family": "DAST",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "Reflection cases require active query testing; this run is passive only.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "DAST-05",
+        "family": "DAST",
+        "expected": false,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "Reflection cases require active query testing; this run is passive only.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-01",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-02",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-03",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-04",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-05",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-06",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-07",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-08",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-09",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-10",
+        "family": "SAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-11",
+        "family": "SAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-12",
+        "family": "SAST",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SAST-13",
+        "family": "SAST",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "Incomplete, skipped, invalid or truncated evaluation.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-01",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-02",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-03",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-04",
+        "family": "SECRETS",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-05",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-06",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-07",
+        "family": "SECRETS",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-08",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-09",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-10",
+        "family": "SECRETS",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SEC-11",
+        "family": "SECRETS",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-01",
+        "family": "SCA",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-02",
+        "family": "SCA",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-03",
+        "family": "SCA",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-04",
+        "family": "SCA",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-05",
+        "family": "SCA",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "Incomplete, skipped, invalid or truncated evaluation.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-06",
+        "family": "SCA",
+        "expected": true,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "The specific format or literal-fold analysis was not completely covered.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-07",
+        "family": "SCA",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-08",
+        "family": "SCA",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-09",
+        "family": "SCA",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": "Declaration rule evaluated; advisory assessment remains unavailable.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-10",
+        "family": "SCA",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "Incomplete, skipped, invalid or truncated evaluation.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-SCA-11",
+        "family": "SCA",
+        "expected": null,
+        "status": "UNASSESSED",
+        "verdict": "UNKNOWN_TRUTH",
+        "reason": "Incomplete, skipped, invalid or truncated evaluation.",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-01",
+        "family": "DAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-02",
+        "family": "DAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-03",
+        "family": "DAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-04",
+        "family": "DAST",
+        "expected": true,
+        "status": "DETECTED",
+        "verdict": "TP",
+        "reason": null,
+        "matchingFindings": 1,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-05",
+        "family": "DAST",
+        "expected": false,
+        "status": "NOT_DETECTED",
+        "verdict": "TN",
+        "reason": null,
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      },
+      {
+        "id": "AX-DAST-06",
+        "family": "DAST",
+        "expected": false,
+        "status": "UNASSESSED",
+        "verdict": "UNASSESSED",
+        "reason": "Engine failed: DAST_TARGET_INVALID",
+        "matchingFindings": 0,
+        "otherFindingsUnjudged": 0
+      }
+    ]
+  }
+}

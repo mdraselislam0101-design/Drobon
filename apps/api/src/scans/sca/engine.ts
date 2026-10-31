@@ -337,9 +337,21 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       // rules against the same read-only snapshot. This is additive — no
       // dataset configured means no rules and therefore no declaration
       // findings; inventory/SBOM/advisory behaviour is unchanged.
-      const declarationRules = options.dataset?.configured === true
-        ? await options.dataset.scaPacks()
-        : [];
+      let declarationRules: unknown[] = [];
+      let rejectedDeclarationRules = 0;
+      let datasetRulesIncomplete = false;
+      if (options.dataset?.configured === true) {
+        try {
+          declarationRules = await options.dataset.scaPacks();
+          if (typeof options.dataset.conformance === 'function') {
+            const report = (await options.dataset.conformance()).sca;
+            rejectedDeclarationRules = Math.max(0, report.filesSeen - report.accepted);
+            datasetRulesIncomplete = rejectedDeclarationRules > 0 || report.enumerationFailures > 0 || report.manifestIssue !== undefined;
+          }
+        } catch {
+          datasetRulesIncomplete = true;
+        }
+      }
       const declarations = evaluateScaDeclarations({
         rawRules: declarationRules,
         files: snapshot.files.map((file) => ({ path: file.path, content: file.content })),
@@ -484,6 +496,7 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       const astSupplement = await analyzeScaManifestAst(discovery.manifests, ctx.signal, () => deadline - now());
       if (ctx.signal.aborted || now() >= deadline) return deadlineFailure();
       const partialReasons: string[] = [];
+      if (datasetRulesIncomplete) partialReasons.push('Some configured SCA rules were rejected or could not be loaded.');
       if (assessment.datasetStatus !== 'DATASET_AVAILABLE') partialReasons.push('Dependency advisory data was unavailable.');
       else if (assessment.incomplete === true || invalidAdvisory || coordinates.some((coordinate) => coordinate.version === undefined)) {
         partialReasons.push('Some dependency advisory checks were unknown or lacked version evidence.');
@@ -509,7 +522,7 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         dependenciesTotal: inventory.totalUnique,
         directDependencies: inventory.directCount,
         declarationRulesEvaluated: declarations.rulesEvaluated,
-        declarationRulesNotEvaluated: declarations.rulesNotEvaluated,
+        declarationRulesNotEvaluated: declarations.rulesNotEvaluated + rejectedDeclarationRules,
       };
 
       const sca: ScaResult = {

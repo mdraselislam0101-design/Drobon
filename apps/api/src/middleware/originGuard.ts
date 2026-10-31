@@ -63,9 +63,9 @@ export function originGuardMiddleware(options: {
         return;
       }
       ctx.logger.info('Origin guard refused request', {
-        requestId: ctx.id,
+        requestId: ctx.logId,
         method: req.method,
-        path: ctx.pathname,
+        path: ctx.logPath,
       });
       throw forbidden('Request origin is not allowed.');
     }
@@ -81,9 +81,9 @@ export function originGuardMiddleware(options: {
         return;
       }
       ctx.logger.info('Origin guard refused request', {
-        requestId: ctx.id,
+        requestId: ctx.logId,
         method: req.method,
-        path: ctx.pathname,
+        path: ctx.logPath,
       });
       throw forbidden('Request origin is not allowed.');
     }

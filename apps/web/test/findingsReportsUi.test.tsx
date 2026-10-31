@@ -307,6 +307,14 @@ describe('completed scan findings and report UI', () => {
     await waitFor(() => expect(downloadProjectReport).toHaveBeenCalledWith(project.id));
     await userEvent.click(screen.getByTestId('download-report-sarif'));
     await waitFor(() => expect(downloadReport).toHaveBeenCalledWith(project.id, scan.id, 'sarif'));
+    expect(screen.getByTestId('report-guidance')).not.toBeChecked();
+    expect(screen.getByTestId('project-report-guidance')).not.toBeChecked();
+    await userEvent.click(screen.getByTestId('report-guidance'));
+    await userEvent.click(screen.getByTestId('download-report-json'));
+    await waitFor(() => expect(downloadReport).toHaveBeenCalledWith(project.id, scan.id, 'json', undefined, true));
+    await userEvent.click(screen.getByTestId('project-report-guidance'));
+    await userEvent.click(screen.getByTestId('download-project-pdf'));
+    await waitFor(() => expect(downloadProjectReport).toHaveBeenCalledWith(project.id, undefined, true));
     await userEvent.click(screen.getByTestId('download-report-sbom'));
     await waitFor(() => expect(downloadSbom).toHaveBeenCalledWith(project.id, scan.id));
     await userEvent.click(screen.getByTestId('refresh-report'));

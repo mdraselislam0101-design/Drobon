@@ -1,3 +1,4 @@
+import { redactAssistantText } from '../assistant/redaction.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   FINDING_HISTORY_EVENTS_MAX,
@@ -243,7 +244,7 @@ export function prepareFindingNote(value: unknown): PreparedFindingNote {
     );
     const sastMatch = sastCredentialRule !== undefined && matchRuleLine(sastCredentialRule, line) !== undefined;
     const opaqueLongValue = /\b[A-Za-z0-9+/_=-]{32,}\b/.test(line);
-    if (hasSecretRuleMatch || sastMatch || opaqueLongValue) {
+    if (hasSecretRuleMatch || sastMatch || opaqueLongValue || redactAssistantText(line).redacted) {
       redacted = true;
       return '[credential-shaped content omitted]';
     }

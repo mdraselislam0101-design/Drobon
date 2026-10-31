@@ -38,11 +38,14 @@ type HeaderMap = Record<string, Array<string | undefined>>;
 
 /** Case-fold header names and trim RFC 7230 optional whitespace per value. */
 function normalizeHeaders(headers: unknown): HeaderMap {
-  const out: HeaderMap = {};
+  const out: HeaderMap = Object.create(null) as HeaderMap;
   if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) return out;
   for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
     const list = Array.isArray(value) ? value : [value];
-    out[name.toLowerCase()] = list.map((entry) => (typeof entry === 'string' ? entry.trim() : undefined));
+    // Case-variant keys represent repeated HTTP fields, not replacements.
+    // Keep values separate: joining them can create cross-value matches.
+    const values = out[name.toLowerCase()] ??= [];
+    for (const entry of list) values.push(typeof entry === 'string' ? entry.trim() : undefined);
   }
   return out;
 }

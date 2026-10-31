@@ -5,15 +5,24 @@
 import { engagementAllowsScan } from '@drobon/shared';
 import type { AssessmentStore } from '../../assessments/store.js';
 import type { ScanRecord } from '../store.js';
+import { hasAmbiguousDastReference } from './reference.js';
 
 export type DastRequestAuthorizer = (record: ScanRecord, url: string) => Promise<boolean>;
 
 /** The app-owned callback; network destination safety remains a separate policy. */
-export function createAssessmentDastAuthorizer(assessments: AssessmentStore, now: () => number = Date.now): DastRequestAuthorizer {
+export function createAssessmentDastAuthorizer(
+  assessments: AssessmentStore,
+  now: () => number = Date.now,
+  options: { requireEngagement?: boolean } = {},
+): DastRequestAuthorizer {
   return async (record, url) => {
-    if (record.assessmentId === undefined) return true; // Legacy unlinked scans remain unverified.
+    // Check the original reference before URL parsing can normalize away
+    // information needed for an authorization decision.
+    if (hasAmbiguousDastReference(url)) return false;
+    if (record.assessmentId === undefined) return options.requireEngagement !== true; // Legacy unlinked scans remain unverified.
     const assessment = await assessments.findByProjectAndId(record.ownerId, record.projectId, record.assessmentId);
     if (assessment === undefined || assessment.status !== 'ACTIVE') return false;
+    if (options.requireEngagement === true && (assessment.engagements?.length ?? 0) === 0) return false;
     let target: URL;
     try { target = new URL(url); } catch { return false; }
     const hostname = target.hostname.toLowerCase();

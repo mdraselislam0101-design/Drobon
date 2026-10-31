@@ -7,6 +7,7 @@ import {
   hasEntitlement,
 } from '@drobon/shared';
 import type { UsageStore } from './store.js';
+import type { ScanStore } from '../scans/store.js';
 
 /**
  * The usage service (Pump 5) — the SINGLE authority for scan-quota
@@ -39,6 +40,13 @@ export interface ConsumeDenied {
 export interface ConsumeGranted {
   ok: true;
   usage: UsageResponse;
+  /**
+   * Internal, idempotent compensation for a failed scan-store write.
+   * Never sent to clients. Reservation-backed grants also recover on restart.
+   */
+  rollback(): Promise<void>;
+  /** Finalize a scan reservation after its scan has been durably appended. */
+  commit?: () => Promise<void>;
 }
 
 export type ConsumeOutcome = ConsumeGranted | ConsumeDenied;
@@ -48,6 +56,7 @@ export interface UsageService {
   getUsageView(record: UserRecord, deviceHash: string): UsageResponse;
   /** Consume exactly one security scan, atomically. */
   consumeScan(record: UserRecord, deviceHash: string): Promise<ConsumeOutcome>;
+  reserveScan(record: UserRecord, deviceHash: string, projectId: string, scanId: string): Promise<ConsumeOutcome>;
 }
 
 export interface UsageServiceOptions {
@@ -139,15 +148,51 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
     };
   };
 
+  // One grant can be compensated at most once, even if two internal
+  // callers race. Failed compensation can be retried while this process
+  // is alive; only a successful persistence marks it complete.
+  const onceAfterSuccess = (release: () => Promise<void>): (() => Promise<void>) => {
+    let completed = false;
+    let pending: Promise<void> | undefined;
+    return () => {
+      if (completed) return Promise.resolve();
+      if (pending === undefined) {
+        pending = Promise.resolve().then(release).then(() => { completed = true; }).finally(() => { pending = undefined; });
+      }
+      return pending;
+    };
+  };
+
   return {
     getUsageView: (record, deviceHash) => view(record, deviceHash, now()),
+
+    reserveScan: async (record, deviceHash, projectId, scanId) => {
+      const timeMs = now();
+      const period = usagePeriodIdAt(timeMs);
+      const at = new Date(timeMs).toISOString();
+      const free = !isExempt(record);
+      const result = await store.reserveScan({
+        scanId, projectId, accountId: record.id, period, at,
+        ...(free ? { deviceHash, accountLimit: FREE_MONTHLY_SCAN_QUOTA, deviceLimit: FREE_DEVICE_MONTHLY_SCAN_QUOTA } : {}),
+      });
+      if (result !== 'OK') return { ok: false, code: 'QUOTA_EXCEEDED', retryAfterSec: secondsUntilNextPeriod(timeMs), usage: view(record, deviceHash, timeMs) };
+      return {
+        ok: true, usage: view(record, deviceHash, timeMs),
+        rollback: () => store.settleScan(scanId, 'RELEASED', 'SCAN_WRITE_FAILED', new Date(now()).toISOString()),
+        commit: () => store.settleScan(scanId, 'COMMITTED', 'SCAN_PERSISTED', new Date(now()).toISOString()),
+      };
+    },
 
     consumeScan: async (record, deviceHash) => {
       const timeMs = now();
       const periodId = usagePeriodIdAt(timeMs);
       if (isExempt(record)) {
         await store.consumeExempt({ accountId: record.id, period: periodId });
-        return { ok: true, usage: view(record, deviceHash, timeMs) };
+        return {
+          ok: true,
+          usage: view(record, deviceHash, timeMs),
+          rollback: onceAfterSuccess(() => store.releaseExempt({ accountId: record.id, period: periodId })),
+        };
       }
       const outcome = await store.consumeFree({
         accountId: record.id,
@@ -166,7 +211,24 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
           usage: view(record, deviceHash, timeMs),
         };
       }
-      return { ok: true, usage: view(record, deviceHash, timeMs) };
+      return {
+        ok: true,
+        usage: view(record, deviceHash, timeMs),
+        rollback: onceAfterSuccess(() => store.releaseFree({ accountId: record.id, deviceHash, period: periodId })),
+      };
     },
   };
+}
+
+/** Complete reservations against the authoritative scan document before
+ * serving traffic. A failure leaves startup closed and the durable intent
+ * available for the next retry; each decision is idempotent and audited. */
+export async function recoverScanUsageReservations(store: UsageStore, scans: ScanStore, now: () => number = Date.now): Promise<void> {
+  for (const reservation of store.pendingScanReservations()) {
+    const scan = await scans.findByProjectAndId(reservation.projectId, reservation.scanId);
+    if (scan !== undefined && scan.ownerId !== reservation.accountId) throw new Error('Scan quota reservation owner mismatch.');
+    const present = scan !== undefined;
+    await store.settleScan(reservation.scanId, present ? 'COMMITTED' : 'RELEASED',
+      present ? 'RECOVERED_SCAN_PRESENT' : 'RECOVERED_SCAN_ABSENT', new Date(now()).toISOString());
+  }
 }

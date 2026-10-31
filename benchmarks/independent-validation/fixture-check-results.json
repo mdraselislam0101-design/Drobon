@@ -1,0 +1,508 @@
+{
+  "schemaVersion": "drobon.scanner-free-fixture-check/v1",
+  "fixtureManifestSha256": "8ae13962b8889b7f92018216868c2b1483556ae08c1dfc12d5e730890d6911e6",
+  "independentHumanReview": false,
+  "blindedHumanReview": false,
+  "scannerOutputUsed": false,
+  "note": "Scanner-free mechanical cross-check created by the same agent; not independently adjudicated or exploit proof.",
+  "rows": [
+    {
+      "id": "SAST-01",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SAST-02",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SAST-03",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SAST-04",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SAST-05",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SAST-06",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SAST-07",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SAST-08",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SECRET-01",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SECRET-02",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SECRET-03",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SECRET-04",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SCA-01",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SCA-02",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "SCA-03",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "SCA-04",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "DAST-01",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "DAST-02",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "DAST-03",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "DAST-04",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "DAST-05",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-01",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-02",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-03",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-04",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-05",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-06",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-07",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-08",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-09",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-10",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-11",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-12",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SAST-13",
+      "family": "SAST",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-01",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-02",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-03",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-04",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-05",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "controlledEmptyEnvironment": true,
+      "nonEmptyEnvironmentChangesResult": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-06",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-07",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-08",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-09",
+      "family": "SECRETS",
+      "method": "PYTHON_AST",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-10",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "AX-SEC-11",
+      "family": "SECRETS",
+      "method": "ACORN_STATIC_SUBSET",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-01",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-02",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-03",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-04",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-05",
+      "family": "SCA",
+      "method": "PYTHON_JSON",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-06",
+      "family": "SCA",
+      "method": "PIP_PACKAGING_OFFLINE",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-07",
+      "family": "SCA",
+      "method": "PYTHON_MINIDOM",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-08",
+      "family": "SCA",
+      "method": "PYTHON_MINIDOM",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-09",
+      "family": "SCA",
+      "method": "PYTHON_MINIDOM",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-10",
+      "family": "SCA",
+      "method": "PYTHON_MINIDOM",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "AX-SCA-11",
+      "family": "SCA",
+      "method": "PYTHON_MINIDOM",
+      "observed": null,
+      "authoredExpected": null,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-01",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-02",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-03",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-04",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": true,
+      "authoredExpected": true,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-05",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    },
+    {
+      "id": "AX-DAST-06",
+      "family": "DAST",
+      "method": "LOOPBACK_HTTP",
+      "observed": false,
+      "authoredExpected": false,
+      "agrees": true
+    }
+  ]
+}

@@ -224,6 +224,9 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
       if (configuredUrl === undefined) {
         return failed('DAST_TARGET_NOT_FOUND', 'Configure a safe DAST target before requesting a scan.');
       }
+      if (!(await isDastRequestAuthorized(record, configuredUrl, options.authorize))) {
+        return failed('DAST_TARGET_BLOCKED', 'The linked assessment does not authorize this DAST request.');
+      }
       const startedAt = now();
       const deadline = startedAt + scanDeadlineMs;
       let current: ResolvedDastTarget;
@@ -253,6 +256,7 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
       // deduplicated by (ruleId, location, version) before findings are built.
       const advisoryMatches = new Map<string, { match: AdvisoryMatch; endpoint: string; status: number; elapsedMs: number; observedAt: string }>();
       let redirectsFollowed = 0;
+      let pendingRedirect = false;
       let partialReason: string | undefined;
       let astObservation: DastAstObservation | undefined;
       // Resolve the same rule set once per scan, rather than reloading and
@@ -260,10 +264,13 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
       let allPackRules = options.packRules ?? [];
       if (options.dataset?.configured) {
         try {
-          const { getMergedDastRules } = await import('../../external/packIntegration.js');
+          const { getMergedDastRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
           const loaded = await getMergedDastRules(options.dataset);
           if (loaded.length > 0) allPackRules = loaded;
-        } catch { /* optional pack unavailable; coverage is marked below */ }
+          if (await hasRejectedPackRules(options.dataset, 'dast')) partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
+        } catch {
+          partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
+        }
       }
       const astRules: readonly DastAstRule[] = allPackRules;
 
@@ -326,6 +333,7 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           return failed('DAST_REQUEST_FAILED', 'The DAST target did not return a usable HTTP response.');
         }
         response = boundedResponse;
+        if (pendingRedirect) { redirectsFollowed += 1; pendingRedirect = false; }
         const observedAt = new Date(now()).toISOString();
         const contentType = safeContentType(response);
         const endpoint = current.url;
@@ -361,7 +369,9 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           for (const packRule of allPackRules) {
             let matched = false;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
-            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch { /* fail closed: optional path */ }
+            try { matched = evaluatePackDastCheck(packRule.check, { url: endpoint, status: response.status, headers: response.headers, body: response.body, contentType } as any); } catch {
+              partialReason ??= 'A configured DAST check could not be evaluated.';
+            }
             if (matched) {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
               const packMatch = { ruleId: packRule.id, severity: packRule.severity, title: packRule.title, description: packRule.description, evidence: `Observed ${endpoint.slice(0,120)} → pack check ${packRule.check.type} matched.`, remediation: packRule.remediation, cwe: packRule.cwe, observedHeaders: [] } as any;
@@ -395,6 +405,11 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           break;
         }
         try {
+          const redirectUrl = new URL(location, current.url).toString();
+          if (!(await isDastRequestAuthorized(record, redirectUrl, options.authorize))) {
+            partialReason = 'A subsequent request was skipped because the linked assessment scope or authorization no longer permits it.';
+            break;
+          }
           const next = await policy.resolveRedirect(current, location, originalHostname);
           if (visited.has(next.url)) {
             partialReason = 'A redirect loop was detected; the repeated URL was not requested again.';
@@ -405,7 +420,7 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
           partialReason = 'A redirect was not followed because it failed the same-host, HTTPS, or address safety policy.';
           break;
         }
-        redirectsFollowed += 1;
+        pendingRedirect = true;
       }
 
       let advisoryDetailsOmitted = false;

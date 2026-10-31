@@ -7,6 +7,22 @@ import type { PackReport } from './conformance.js';
 
 export type DatasetAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_CONFIGURED';
 
+/** Aggregate loading gaps. An enumeration failure means the hidden count is unknown. */
+export interface DatasetLoadIssues {
+  /** Discovered JSON files; this is not the total when enumeration failed. */
+  filesSeen: number;
+  /** Discovered files that could not be read or parsed as JSON. */
+  unreadableFiles: number;
+  /** Records refused by the category's existing identity checks, if any. */
+  invalidRecords: number;
+  /** Failed directory/entry inspection or refused symbolic links. */
+  enumerationFailures: number;
+  /** Ambiguous duplicate identities; records remain available for compatibility. */
+  duplicateRecords?: number;
+  /** Files or subtrees refused because a resource limit was reached. */
+  resourceLimitFailures?: number;
+}
+
 export interface DatasetCategoryStatus {
   status: DatasetAvailability;
   count: number;
@@ -14,6 +30,9 @@ export interface DatasetCategoryStatus {
   version?: string;
   packId?: string;
   lastLoadedAt?: string;
+  /** Optional additive diagnostics; absence is not proof of semantic completeness. */
+  incomplete?: true;
+  loadIssues?: DatasetLoadIssues;
 }
 
 /** Canonical vuln-intel counters (GAP-043): raw files vs. deduplicated identity. */
@@ -40,7 +59,7 @@ export interface DatasetConformanceStatus {
   scaDeclarationEvaluator: 'AVAILABLE' | 'NOT_IMPLEMENTED';
   /** Parser kinds the SCAN-TIME declaration reader can turn into a document (v1: JSON). */
   scaDeclarationScanParsers?: readonly string[];
-  /** Potentially eligible rules: supported reader + uploadable basename. Not full format coverage. */
+  /** Potentially eligible rules: supported reader + uploadable artifact path. Not full format coverage. */
   scaDeclarationScanReachableRules?: number;
 }
 

@@ -5,6 +5,7 @@ import {
   secretsRuleById,
 } from '../src/scans/secrets/rules.js';
 import { TEST_SECRETS_RULES } from './fixtures/testData.js';
+import { convertSecretsPackToRule } from '../src/external/packProvider.js';
 
 const SYNTH = {
   awsKey: 'AKIAP10QZ9WM7XK2BR4J',
@@ -35,6 +36,21 @@ function fires(ruleId: string, line: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
   return matchSecretsRuleLine(rule as any, line) !== undefined;
 }
+
+describe('dataset secrets denylist', () => {
+  test('denies a marker anywhere on the line, not just inside the regex match', () => {
+    const rule = convertSecretsPackToRule({
+      schemaVersion: 'drobon.pack.secrets/v1', id: 'DPK-SEC-900', title: 'Fixture',
+      description: 'Fixture only', category: 'fixture', severity: 'MEDIUM', confidence: 'MEDIUM',
+      remediation: 'Replace it.', limitation: 'Fixture only.', redact: true,
+      patterns: [{ source: 'VALUE-[0-9]+' }], denylist: ['placeholder'],
+    });
+    expect(rule).toBeDefined();
+    if (rule === undefined) return;
+    expect(matchSecretsRuleLine(rule, 'VALUE-123')).toBeDefined();
+    expect(matchSecretsRuleLine(rule, 'VALUE-123 // PLACEHOLDER')).toBeUndefined();
+  });
+});
 
 describe('secrets rules: registry integrity', () => {
   test('closed registry: main app has 0 embedded (paid-tool parity: data in dataset)', () => {

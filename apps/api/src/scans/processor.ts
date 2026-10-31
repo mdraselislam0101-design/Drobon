@@ -45,6 +45,8 @@ export interface ScanProcessor {
   kick(): void;
   /** Stop the periodic sweep (in-flight work still settles). */
   stop(): void;
+  /** Permanently stop scheduling and wait for owned startup/drain writes to settle. */
+  shutdown(): Promise<void>;
   /** Whether `start` has been called. */
   readonly started: boolean;
 }
@@ -64,8 +66,17 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
   const { store, engines, logger } = options;
   const intervalMs = options.intervalMs ?? 5000;
   let started = false;
+  let closed = false;
+  let generation = 0;
+  let starting: Promise<void> | undefined;
+  const pendingStarts = new Set<Promise<void>>();
   let timer: ReturnType<typeof setInterval> | undefined;
-  let kicking = false;
+  let kickTimer: ReturnType<typeof setTimeout> | undefined;
+  // A sweep, startup and concurrent kicks must share one drain. Without
+  // this guard different queued scans could execute concurrently without a
+  // process-wide bound, despite each individual claim being serialized.
+  let activeDrain: Promise<void> | undefined;
+  let drainAgain = false;
 
   const processOne = async (): Promise<boolean> => {
     const scan = await store.claimNextQueued();
@@ -247,59 +258,98 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
     }
   };
 
-  const drain = async (): Promise<void> => {
-    for (let index = 0; index < MAX_DRAIN_ITERATIONS; index += 1) {
-      const progressed = await processOne();
-      if (!progressed) {
-        return;
-      }
+  const drain = (): Promise<void> => {
+    if (closed) return Promise.resolve();
+    if (activeDrain !== undefined) {
+      // A job can arrive while the current drain is checking for an empty
+      // queue. Remember the request instead of starting a parallel engine.
+      drainAgain = true;
+      return activeDrain;
     }
-    logger.error('Scan processor drain hit its iteration bound');
+    activeDrain = (async () => {
+      let processed = 0;
+      try {
+        do {
+          drainAgain = false;
+          while (!closed && processed < MAX_DRAIN_ITERATIONS) {
+            if (!(await processOne())) break;
+            processed += 1;
+          }
+          if (processed >= MAX_DRAIN_ITERATIONS) {
+            logger.error('Scan processor drain hit its iteration bound');
+            return;
+          }
+        } while (drainAgain);
+      } finally {
+        // Clear before resolving the promise, so a request arriving at the
+        // completion boundary starts a fresh drain rather than being lost.
+        activeDrain = undefined;
+        drainAgain = false;
+      }
+    })();
+    return activeDrain;
+  };
+
+  const stop = (): void => {
+    started = false;
+    generation += 1;
+    if (timer !== undefined) { clearInterval(timer); timer = undefined; }
+    if (kickTimer !== undefined) { clearTimeout(kickTimer); kickTimer = undefined; }
   };
 
   return {
-    start: async () => {
-      if (started) {
-        return;
-      }
+    start: () => {
+      if (closed) return Promise.resolve();
+      if (started) return starting ?? Promise.resolve();
       started = true;
-      // Recover first: a RUNNING scan at boot was interrupted by the
-      // restart — deterministically FAILED, never resurrected, never
-      // executed twice (COMPLETED/FAILED → RUNNING does not exist).
-      const recovered = await store.failAllRunning(
-        'SCAN_INTERRUPTED',
-        'Processing was interrupted before the scan could finish.',
+      const current = ++generation;
+      const startup = (async () => {
+        // Recovery must settle before a runtime lease can be released.
+        const recovered = await store.failAllRunning(
+          'SCAN_INTERRUPTED',
+          'Processing was interrupted before the scan could finish.',
+        );
+        if (!started || closed || generation !== current) return;
+        if (recovered > 0) logger.info('Scan processor recovered interrupted scans', { count: recovered });
+        await drain();
+        if (!started || closed || generation !== current) return;
+        timer = setInterval(() => {
+          void drain().catch((error: unknown) => {
+            logger.error('Scan processor sweep failed', { err: error });
+          });
+        }, intervalMs);
+        timer.unref?.();
+      })();
+      starting = startup;
+      pendingStarts.add(startup);
+      void startup.then(
+        () => { pendingStarts.delete(startup); if (starting === startup) starting = undefined; },
+        () => { pendingStarts.delete(startup); if (starting === startup) { starting = undefined; if (generation === current) started = false; } },
       );
-      if (recovered > 0) {
-        logger.info('Scan processor recovered interrupted scans', { count: recovered });
-      }
-      await drain();
-      timer = setInterval(() => {
-        void drain().catch((error: unknown) => {
-          logger.error('Scan processor sweep failed', { err: error });
-        });
-      }, intervalMs);
-      timer.unref?.();
+      return startup;
     },
     drain,
     kick: () => {
-      if (!started || kicking) {
-        return;
-      }
-      kicking = true;
-      setTimeout(() => {
-        kicking = false;
+      if (!started || closed || kickTimer !== undefined) return;
+      const current = generation;
+      kickTimer = setTimeout(() => {
+        kickTimer = undefined;
+        if (!started || closed || generation !== current) return;
         void drain().catch((error: unknown) => {
           logger.error('Scan processor kick failed', { err: error });
         });
-      }, 0).unref?.();
+      }, 0);
+      kickTimer.unref?.();
     },
-    stop: () => {
-      if (timer !== undefined) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-      started = false;
+    stop,
+    shutdown: async () => {
+      closed = true;
+      stop();
+      // Both promises may fail; either way they have settled before the
+      // runtime releases its lease. Engine code that ignores abort can
+      // still outlive its timeout and is not covered by this guarantee.
+      await Promise.allSettled([...pendingStarts]);
+      if (activeDrain !== undefined) await activeDrain.catch(() => undefined);
     },
     get started(): boolean {
       return started;

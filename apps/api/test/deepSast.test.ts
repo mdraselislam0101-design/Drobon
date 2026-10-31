@@ -8,6 +8,7 @@ import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
 import type { SourceSnapshotProvider } from '../src/scans/sast/engine.js';
 import { createSastEngine } from '../src/scans/sast/engine.js';
+import { WITHHELD_SOURCE_EVIDENCE } from '../src/scans/findingIdentity.js';
 import { createDatasetService } from '../src/external/service.js';
 import { supportsBoundedAst } from '../src/scans/sast/languages.js';
 import { AST_SUPPORTED_FAMILIES, astProfileFor, isSourceChain } from '../src/scans/sast/astProfiles.js';
@@ -255,8 +256,11 @@ describe('SAST engine integration: AST findings are real persisted findings', ()
     expect(finding.scanner).toBe('SAST');
     expect(finding.line).toBe(2);
     expect(isFinding(finding)).toBe(true);
-    expect(finding.evidence).toContain('exec');
-    // The dataset rule pattern does NOT match this source → the AST pass found it.
+    expect(finding.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(finding.evidence).not.toContain('exec');
+    // The Dataset rule pattern does NOT match this source; explicit AST
+    // attribution, rule, sink line and coverage counters establish the pass.
+    expect(finding.astFlow).toMatchObject({ category: 'command', attribution: 'CATEGORY_REPORTER' });
     expect(finding.evidence).not.toContain('spawnSync');
   });
 

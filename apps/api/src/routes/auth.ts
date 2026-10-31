@@ -154,7 +154,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           sessions.revoke(priorToken);
         }
         const { token } = sessions.issue(record.id);
-        ctx.logger.info('Account registered', { requestId: ctx.id, userId: record.id });
+        ctx.logger.info('Account registered', { requestId: ctx.logId, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
         sendSuccess(
           res,
@@ -191,12 +191,12 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           // Equalize CPU against the "wrong password" path so 401 timing
           // cannot distinguish unknown emails from failed verifications.
           await dummyVerify(parsed.value.password, config.authScryptCost);
-          ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'unknown_email' });
+          ctx.logger.warn('Login failed', { requestId: ctx.logId, reason: 'unknown_email' });
           throw invalidCredentials();
         }
         const ok = await verifyPassword(parsed.value.password, record.passwordHash);
         if (!ok) {
-          ctx.logger.warn('Login failed', { requestId: ctx.id, reason: 'bad_password' });
+          ctx.logger.warn('Login failed', { requestId: ctx.logId, reason: 'bad_password' });
           throw invalidCredentials();
         }
         const priorToken = readSessionToken(req.headers.cookie);
@@ -204,7 +204,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
           sessions.revoke(priorToken);
         }
         const { token } = sessions.issue(record.id);
-        ctx.logger.info('Login succeeded', { requestId: ctx.id, userId: record.id });
+        ctx.logger.info('Login succeeded', { requestId: ctx.logId, userId: record.id });
         const body: AuthResponse = { user: toAuthUser(record) };
         sendSuccess(res, ctx, body, 200, {
           'set-cookie': sessionCookie(token, {
@@ -231,7 +231,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
         const token = readSessionToken(req.headers.cookie);
         const loggedOut = token !== undefined && sessions.revoke(token);
         if (loggedOut) {
-          ctx.logger.info('Logout succeeded', { requestId: ctx.id });
+          ctx.logger.info('Logout succeeded', { requestId: ctx.logId });
         }
         const body: LogoutResponse = { loggedOut };
         sendSuccess(res, ctx, body, 200, {
@@ -275,7 +275,7 @@ export function createAuthRoutes(deps: AuthRouteDeps): Route[] {
         }
         const updated = await users.setUserType(actor.id, parsed.value.userType);
         if (updated === undefined) throw unauthorized();
-        ctx.logger.info('User type updated', { requestId: ctx.id, userId: updated.id });
+        ctx.logger.info('User type updated', { requestId: ctx.logId, userId: updated.id });
         const body: CurrentUserResponse = { user: toAuthUser(updated) };
         sendSuccess(res, ctx, body);
       },

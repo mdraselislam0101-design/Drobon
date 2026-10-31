@@ -499,6 +499,11 @@ function PlanPanel({
             PRO source: paid subscription
           </span>
         )}
+        {proEnabled && proEntitlementSource === undefined && (
+          <span className="pill" data-testid="pro-source-badge">
+            PRO source not verified (may be complimentary or legacy)
+          </span>
+        )}
       </p>
       <ul className="access-checks" aria-label="Plan entitlements">
         <li data-testid="pro-entitlement">

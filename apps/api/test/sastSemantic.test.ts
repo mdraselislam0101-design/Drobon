@@ -3,6 +3,7 @@ import { isFinding } from '@drobon/shared';
 import type { ScanRecord } from '../src/scans/store.js';
 import type { SourceSnapshotRecord } from '../src/scans/sources.js';
 import { ALL_TEST_SAST_RULES } from './fixtures/testData.js';
+import { WITHHELD_SOURCE_EVIDENCE } from '../src/scans/findingIdentity.js';
 import {
   createSastEngine,
   type SourceSnapshotProvider,
@@ -10,6 +11,7 @@ import {
 import {
   analyzeFileFlows,
   maskLiterals,
+  maskComments,
   MAX_FLOW_FINDINGS_PER_RULE_PER_FILE,
   MAX_FLOW_VARS,
   flowRulesForFamily,
@@ -51,6 +53,14 @@ describe('literal masking', () => {
     expect(lines[1]).toMatch(/^s = +$/);
     expect(lines[2]).toMatch(/^ +$/);
     expect(lines[3]).toBe('y = 2');
+  });
+
+  test('Ruby command interpolation keeps # inside backticks while masking real comments', () => {
+    const source = 'out = `ls #{user}` # inactive';
+    const masked = maskComments(source, 'ruby');
+    expect(masked).toContain('`ls #{user}`');
+    expect(masked).not.toContain('inactive');
+    expect(masked.length).toBe(source.length);
   });
 
   test('rust lifetimes are NOT treated as strings (documented limitation)', () => {
@@ -278,7 +288,9 @@ describe('engine × semantic integration', () => {
     expect(flow?.file).toBe('srv/run.js');
     expect(flow?.severity).toBe('HIGH');
     expect(flow?.cwe).toBe('CWE-78');
-    expect((flow?.evidence ?? '')).toContain('exec');
+    expect(flow?.column).toBe(1);
+    expect(flow?.evidence).toBe(WITHHELD_SOURCE_EVIDENCE);
+    expect(flow?.evidence).not.toContain('exec');
     expect(flow?.remediation.length).toBeGreaterThan(10);
   });
 

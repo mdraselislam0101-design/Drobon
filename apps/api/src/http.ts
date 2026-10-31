@@ -8,11 +8,15 @@ import type { Logger } from './logger.js';
  * threaded through every middleware and route handler.
  */
 export interface RequestContext {
-  /** Correlation ID: echoed from `x-request-id` or server-generated. */
+  /** Public correlation ID: echoed from `x-request-id` or server-generated. */
   id: string;
+  /** Separate server-generated correlation ID; safe to put in logs. */
+  logId: string;
   method: string;
   /** Normalized URL pathname (no query string, no trailing slash). */
   pathname: string;
+  /** Static route template, never a client-controlled path segment. */
+  logPath: string;
   /** Direct peer address. Proxy headers are never trusted (see docs). */
   ip: string;
   startedAtMs: number;

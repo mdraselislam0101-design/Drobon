@@ -606,6 +606,24 @@ describe('SCA engine: security boundaries', () => {
     expect(invalid?.note).toBe('Manifest is not valid JSON.'); // bounded, no content leak
   });
 
+  test('skipped requirement directives propagate partial coverage without reading or leaking the referenced file', async () => {
+    const source = snapshot([
+      { path: 'requirements.txt', content: 'flask==2.3.2\n-r hidden-fixture.txt\n' },
+      { path: 'hidden-fixture.txt', content: 'unread-package==9.9.9\n' },
+    ]);
+    const outcome = await createScaEngine({ sources: providerFor(source) }).execute(scanRecord(), ctx);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind !== 'completed' || outcome.sca === undefined) throw new Error('fixture scan did not complete');
+    expect(isScaResult(outcome.sca)).toBe(true);
+    expect(outcome.sca.dependencies.map((dep) => dep.name)).toEqual(['flask']);
+    expect(outcome.sca.summary.manifestsAnalyzed).toBe(0);
+    expect(outcome.sca.summary.manifestsPartial).toBe(1);
+    expect(outcome.sca.manifests[0]?.status).toBe('PARTIAL');
+    expect(outcome.resultSummary.partial).toBe(true);
+    expect(JSON.stringify(outcome)).not.toContain('hidden-fixture.txt');
+    expect(JSON.stringify(outcome)).not.toContain('unread-package');
+  });
+
   test('DEFAULT_SCA_LIMITS are the documented values', () => {
     expect(DEFAULT_SCA_LIMITS).toEqual({
       maxManifests: 50,

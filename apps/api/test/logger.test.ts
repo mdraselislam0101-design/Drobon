@@ -96,33 +96,27 @@ describe('createLogger', () => {
     expect(entry['requestId']).toBe('req-test-1');
   });
 
-  test('serializes errors without stack in production, with stack elsewhere', () => {
-    const prodLines: string[] = [];
-    const prod = createLogger({
-      env: 'production',
-      out: (line) => {
-        prodLines.push(line);
-      },
-    });
-    const error = new Error('boom-example');
-    prod.error('failed', { err: error });
-    const prodEntry = JSON.parse(prodLines[0] as string) as {
-      err: { name: string; message: string; stack?: string };
-    };
-    expect(prodEntry.err.message).toBe('boom-example');
-    expect(prodEntry.err.stack).toBeUndefined();
-
-    const devLines: string[] = [];
-    const dev = createLogger({
-      env: 'development',
-      out: (line) => {
-        devLines.push(line);
-      },
-    });
-    dev.error('failed', { err: error });
-    const devEntry = JSON.parse(devLines[0] as string) as {
-      err: { stack?: string };
-    };
-    expect(typeof devEntry.err.stack).toBe('string');
+  test('withholds arbitrary exception messages and stacks in every environment', () => {
+    // A short unlabeled fixture cannot reliably be recognized as a secret.
+    const secret = 'q7z'; // test-only synthetic fixture
+    const error = new TypeError(`unstructured ${secret}`);
+    error.stack = `TypeError: ${secret}\n    at /tmp/${secret}.js:1:1`;
+    for (const env of ['production', 'development', 'test'] as const) {
+      const lines: string[] = [];
+      const logger = createLogger({ env, out: (line) => lines.push(line) });
+      logger.error('failed', { err: error, nested: { exception: error } });
+      logger.error('thrown non-error', { err: secret });
+      expect(lines.join('\n')).not.toContain(secret);
+      const entry = JSON.parse(lines[0]!) as {
+        err: { name: string; message: string; stack?: string };
+        nested: { exception: { name: string; message: string; stack?: string } };
+      };
+      expect(entry.err).toEqual({ name: 'TypeError', message: REDACTED });
+      expect(entry.nested.exception).toEqual({ name: 'TypeError', message: REDACTED });
+      expect(entry.err.stack).toBeUndefined();
+    }
+    const disguised = new Error('ignored');
+    disguised.name = secret;
+    expect(redactValue(disguised)).toEqual({ name: 'Error', message: REDACTED });
   });
 });

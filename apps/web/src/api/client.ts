@@ -383,9 +383,9 @@ export interface ApiClient {
   /** Retrieve an existing persisted report without regenerating it. */
   getReport(projectId: string, scanId: string, signal?: AbortSignal): Promise<SecurityReportResponse>;
   /** Authenticated, bounded export of a persisted single-scan report. */
-  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal): Promise<ReportDownload>;
+  downloadReport(projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal, includeGuidance?: boolean): Promise<ReportDownload>;
   /** On-demand summary of the latest attempted scan of each type. */
-  downloadProjectReport(projectId: string, signal?: AbortSignal): Promise<ReportDownload>;
+  downloadProjectReport(projectId: string, signal?: AbortSignal, includeGuidance?: boolean): Promise<ReportDownload>;
   downloadSbom(projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload>;
   /** Internally authored Student lesson catalog; quiz answers stay server-side. */
   getStudentLessons(signal?: AbortSignal): Promise<StudentLessonCatalogResponse>;
@@ -556,6 +556,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     path: string,
     format: 'json' | 'markdown' | 'sarif' | 'cdx' | 'pdf' | 'portfolio',
     signal?: AbortSignal,
+    includeGuidance = false,
   ): Promise<ReportDownload> => {
     const requestId = generateId();
     const controller = new AbortController();
@@ -583,8 +584,8 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const contentType = response.headers.get('content-type') ?? '';
       const contentDisposition = response.headers.get('content-disposition') ?? '';
       const filenamePattern = format === 'portfolio'
-        ? /^attachment; filename="(drobon-project-prj_[0-9a-f-]{36}\.pdf)"$/
-        : /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json|pdf))"$/;
+        ? (includeGuidance ? /^attachment; filename="(drobon-project-prj_[0-9a-f-]{36}-guidance\.pdf)"$/ : /^attachment; filename="(drobon-project-prj_[0-9a-f-]{36}\.pdf)"$/)
+        : (includeGuidance ? /^attachment; filename="(drobon-rpt_[0-9a-f]{24}-guidance\.(?:json|md|sarif|pdf))"$/ : /^attachment; filename="(drobon-rpt_[0-9a-f]{24}\.(?:json|md|sarif|cdx\.json|pdf))"$/);
       const filenameMatch = filenamePattern.exec(contentDisposition);
       const expectedType = format === 'pdf' || format === 'portfolio' ? /^application\/pdf$/i : format === 'markdown' ? /^text\/markdown(?:;\s*charset=utf-8)?$/i : format === 'sarif' ? /^application\/sarif\+json(?:;\s*charset=utf-8)?$/i : /^application\/json(?:;\s*charset=utf-8)?$/i;
       const expectedSuffix = format === 'pdf' || format === 'portfolio' ? '.pdf' : format === 'markdown' ? '.md' : format === 'sarif' ? '.sarif' : format === 'cdx' ? '.cdx.json' : '.json';
@@ -1038,17 +1039,19 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSecurityReportResponse,
       ),
-    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal): Promise<ReportDownload> =>
+    downloadReport: (projectId: string, scanId: string, format: 'json' | 'markdown' | 'sarif' | 'pdf', signal?: AbortSignal, includeGuidance = false): Promise<ReportDownload> =>
       requestReportDownload(
-        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}`,
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/report/download?format=${format}${includeGuidance ? '&guidance=1' : ''}`,
         format,
         signal,
+        includeGuidance,
       ),
-    downloadProjectReport: (projectId: string, signal?: AbortSignal): Promise<ReportDownload> =>
+    downloadProjectReport: (projectId: string, signal?: AbortSignal, includeGuidance = false): Promise<ReportDownload> =>
       requestReportDownload(
-        `/api/v1/projects/${encodeURIComponent(projectId)}/reports/portfolio/download`,
+        `/api/v1/projects/${encodeURIComponent(projectId)}/reports/portfolio/download${includeGuidance ? '?guidance=1' : ''}`,
         'portfolio',
         signal,
+        includeGuidance,
       ),
     downloadSbom: (projectId: string, scanId: string, signal?: AbortSignal): Promise<ReportDownload> =>
       requestReportDownload(

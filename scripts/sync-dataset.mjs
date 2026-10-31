@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, opendirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 const DATASET_REPO = 'https://github.com/mdraselislam0101-design/Drobon-Dataset.git';
@@ -47,25 +47,52 @@ function run(cmd, args, opts = {}) {
   return result.stdout;
 }
 
+/** Read-only check with streaming traversal and finite work; never follows links. */
+function countJsonFiles(root) {
+  const info = lstatSync(root);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('unsafe root');
+  const pending = [{ path: root, depth: 0 }];
+  let entries = 0;
+  let files = 0;
+  let jsonFiles = 0;
+  while (pending.length > 0) {
+    const item = pending.pop();
+    const stream = opendirSync(item.path);
+    try {
+      let entry;
+      while ((entry = stream.readSync()) !== null) {
+        if (++entries > 50_000) throw new Error('entry limit');
+        const full = join(item.path, entry.name);
+        const metadata = lstatSync(full);
+        if (metadata.isSymbolicLink()) throw new Error('symlink');
+        if (metadata.isDirectory()) {
+          if (item.depth >= 16) throw new Error('depth limit');
+          pending.push({ path: full, depth: item.depth + 1 });
+        } else if (metadata.isFile()) {
+          if (++files > 20_000) throw new Error('file limit');
+          if (entry.name.endsWith('.json')) jsonFiles += 1;
+        } else throw new Error('unsupported filesystem entry');
+      }
+    } finally { stream.closeSync(); }
+  }
+  return jsonFiles;
+}
+
 function main() {
   const { datasetPath, check } = parseArgs();
-  console.log(`[sync-dataset] Dataset path: ${datasetPath}`);
+  // A configured path can itself contain sensitive text.
+  console.log(check ? '[sync-dataset] Checking configured dataset path' : `[sync-dataset] Dataset path: ${datasetPath}`);
 
   if (check) {
-    if (!existsSync(datasetPath)) {
-      console.error(`[sync-dataset] FAIL: path does not exist: ${datasetPath}`);
+    try {
+      const count = countJsonFiles(join(datasetPath, 'vuln-intel'));
+      console.log(`[sync-dataset] PASS: ${count} advisory files under vuln-intel/`);
+      console.log('[sync-dataset] Ready for VULN_INTEL_PROVIDER=filesystem with the configured DATASET_PATH');
+    } catch {
+      // Filesystem errors may contain arbitrary configured paths.
+      console.error('[sync-dataset] FAIL: bounded dataset inspection failed (details withheld)');
       process.exit(1);
     }
-    const vulnIntel = join(datasetPath, 'vuln-intel');
-    if (!existsSync(vulnIntel)) {
-      console.error(`[sync-dataset] FAIL: vuln-intel/ not found under ${datasetPath}`);
-      console.error(`  Expected: ${vulnIntel}`);
-      process.exit(1);
-    }
-    const files = run('find', [vulnIntel, '-name', '*.json', '-type', 'f']);
-    const count = files.trim().split('\n').filter(Boolean).length;
-    console.log(`[sync-dataset] PASS: ${count} advisory files under vuln-intel/`);
-    console.log(`[sync-dataset] Ready for VULN_INTEL_PROVIDER=filesystem DATASET_PATH=${datasetPath}`);
     return;
   }
 

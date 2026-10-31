@@ -34,22 +34,24 @@ Every initial observation, user state change, note, reobservation, and eligible 
 
 ## Notes, guidance, and data safety
 
-Notes are NFC-normalized plain text. HTML tags and unsupported control characters are rejected. Credential-shaped lines, private-key blocks, and long opaque token-like values are redacted before persistence; raw note input is not echoed in validation errors or logs. The note limit and retained note count are enforced server-side. Rendered notes and evidence are inert text, never HTML.
+Notes are NFC-normalized plain text. HTML tags and unsupported control characters are rejected. Credential-shaped assignments, private-key blocks, and long opaque token-like values are redacted before persistence; raw note input is not echoed in validation errors or logs. This is a heuristic, not a guarantee that arbitrary or unlabelled secrets are detected: do not put secrets in notes. The note limit and retained note count are enforced server-side. Rendered notes and evidence are inert text, never HTML. Source snippets in SAST and Secrets findings are withheld, but uploaded source and historical data can remain on disk and require appropriate access and retention controls.
 
 Guidance is closed-rule-based and read-only:
 
-- SAST and Secrets guidance uses the existing scanner rule registries; secret values are never interpolated into guidance. Rotation/revocation is recommended as an operator action but is never claimed as performed or verified.
-- Passive DAST guidance is available only for supported observed rules and describes a future authorized passive scan, not exploit validation.
-- SCA currently has inventory and SBOM data, but no vulnerability intelligence dataset. It remains `NOT ASSESSED`; no package upgrade, safety verdict, advisory, CVE, CWE, CVSS, or exploitability claim is invented. The UI directs the user to review observed coordinates out of band and rerun SCA when authorized intelligence is available.
-- Unsupported rules receive explicit limited/unavailable guidance rather than inferred vulnerability detail.
+- Rule-specific guidance is resolved from the configured, process-cached Dataset; absent or malformed entries receive an explicit `UNAVAILABLE` fallback. Secret values are not intentionally interpolated, but free-form Dataset text is filtered heuristically, not provably secret-free.
+- DAST guidance describes observations and future authorized checks, not exploit validation.
+- SCA includes only advisory data actually returned by the configured provider; without it, vulnerability intelligence is `NOT ASSESSED`, not a safety verdict.
+- Examples are illustrative, separately reviewed, and available only for a small exact-match allowlist; they are not verified project patches.
 
-Drobon does not execute shell commands, source files, browser code, active DAST, fuzzing, exploit attempts, credential checks, external AI, or automatic source edits.
+Drobon does not execute uploaded source, browser code, shell commands, credential checks, external AI, or automatic source edits. An explicitly consented `ACTIVE_SAFE` DAST mode performs limited network probes; see `DAST.md` for scope and limitations.
 
 ## Persistence and reports
 
 Workflow records and event histories are written atomically in the existing durable scan JSON document. Scan completion and fingerprint observation changes share the scan's existing serialized durable write. Older Pump 12 documents without workflow rows deterministically migrate workflows from their completed scan findings; scanner records are not rewritten. Corrupt workflow records fail startup rather than being silently repaired. The JSON store remains single-process/single-writer foundation storage.
 
-Pump 12 reports can now contain a bounded point-in-time workflow snapshot (state, observation/verification identifiers and timestamps, and safe notes). The snapshot is covered by the content digest. `POST .../report` refreshes the one persisted report for that scan when lifecycle content changed; it does not consume quota. `GET .../report` retrieves the saved snapshot as-is. A legacy report without workflow data stays compatible and is not rewritten until report generation is requested. Markdown escapes workflow notes and explicitly states that a user-selected resolved state or a missing finding is not proof of a fix. Reports do not include the full audit history.
+Reports can contain a bounded point-in-time workflow snapshot (state, observation/verification identifiers and timestamps, and notes). The snapshot is covered by the content digest. `POST .../report` normally refreshes the one persisted report for that scan when lifecycle content changed; it does not consume quota. `GET .../report` retrieves its safe view. A historical report containing source snippets is projected to a safe view with a new digest and ID; its original bytes are not rewritten. If regeneration would replace a different unsafe historical snapshot, it returns 409 instead; a migration/retention policy is still needed. Markdown escapes notes and explicitly states that a user-selected resolved state or a missing finding is not proof of a fix. Reports do not include the full audit history.
+
+The default saved report and JSON/Markdown/SARIF/PDF downloads remain compatible and contain the snapshot's existing remediation. To include current Dataset guidance explicitly, use `GET .../report/download?format=json|markdown|sarif|pdf&guidance=1` or `GET .../reports/portfolio/download?guidance=1`; the existing web download controls offer an unchecked option. In JSON this produces a versioned bundle `{ bundleVersion: "1.0", report, guidance, notice }`, rather than a bare report. Each guidance entry is associated with a finding ID and rule ID; unavailable entries are labelled. Guidance comes from the currently loaded, process-cached Dataset at export time, can differ from scan-time data, and **is not covered by the saved report digest**. Review and test suggestions; Drobon neither applies nor verifies fixes. PDF has existing bounded finding limits and explicitly reports omitted details. SBOM export is unchanged.
 
 ## Verification coverage
 

@@ -82,13 +82,19 @@ describe('unsafe error disclosure', () => {
     expect(res.status).toBe(200);
   });
 
-  test('500s are still logged server-side with the request ID', async () => {
+  test('500s retain a safe log correlation ID without disclosing the exception or caller-supplied ID', async () => {
     server.logs.length = 0;
-    await fetch(`${server.baseUrl}/test/boom-unknown`, {
+    const response = await fetch(`${server.baseUrl}/test/boom-unknown`, {
       headers: { 'x-request-id': 'disclosure-log-test' },
     });
+    const logId = response.headers.get('x-log-id');
+    expect(logId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(response.headers.get('x-request-id')).toBe('disclosure-log-test');
     const joined = server.logs.join('\n');
-    expect(joined).toContain('disclosure-log-test');
-    expect(joined).toContain(SECRET_MARKER);
+    expect(joined).toContain(logId);
+    expect(joined).toContain('Request failed');
+    expect(joined).toContain('[REDACTED]');
+    expect(joined).not.toContain('disclosure-log-test');
+    expect(joined).not.toContain(SECRET_MARKER);
   });
 });

@@ -65,12 +65,13 @@ export function createSubscriptionRoutes(deps: {
             proEntitlementSource: 'ADMIN_GRANT',
           };
         } else {
+          // Persisted PRO is not necessarily paid: partner complimentary
+          // grants and legacy records share the same subscription shape.
+          const source = grants?.proEntitlementSourceForSubscription(ctx.user.id, subscription);
           body = {
             subscription,
             entitlements: [...entitlements],
-            ...(subscription.plan === 'PRO' && subscription.status === 'ACTIVE'
-              ? { proEntitlementSource: 'PAID' as const }
-              : {}),
+            ...(source === undefined ? {} : { proEntitlementSource: source }),
           };
         }
         sendSuccess(res, ctx, body);

@@ -122,6 +122,7 @@ describe('project-associated DAST target configuration and API lifecycle', () =>
       'http://127.0.0.1/', 'http://localhost/', 'http://169.254.169.254/latest/meta-data/',
       'ftp://app.example.org/', 'https://user:pass@app.example.org/',
       'https://app.example.org/?secret=1', 'https://app.example.org:8443/',
+      'https://app.example.org/api/%252e%252e%252foutside',
     ]) {
       expect((await setTarget(server, owner, projectId, targetUrl)).status, targetUrl).toBe(422);
     }
@@ -188,6 +189,11 @@ describe('project-associated DAST target configuration and API lifecycle', () =>
     const replay = await requestDast(server, owner, projectId, 'dast-key-valid-1');
     expect(replay.status).toBe(200);
     expect(await getUsage(server, owner)).toEqual({ used: 1 });
+    // A replay still runs destination preflight; failure must not charge again.
+    answer = '127.0.0.1';
+    expect((await requestDast(server, owner, projectId, 'dast-key-valid-1')).status).toBe(409);
+    expect(await getUsage(server, owner)).toEqual({ used: 1 });
+    answer = SAFE_IP;
 
     expect((await setTarget(server, owner, projectId, 'https://other.example.org/')).status).toBe(200);
     const changedTargetReplay = await requestDast(server, owner, projectId, 'dast-key-valid-1');
@@ -277,6 +283,44 @@ describe('project-associated DAST target configuration and API lifecycle', () =>
       expect(persisted.data.scan.resultSummary?.requestsMade).toBe(1);
       expect(persisted.data.scan.dast?.observations).toHaveLength(1);
       expect(persisted.data.scan.findings.length).toBeGreaterThan(0);
+    } finally {
+      if (first !== undefined) await first.stop();
+      if (second !== undefined) await second.stop();
+      cleanupTempStoreDir(dir);
+    }
+  });
+
+  test('enabling strict mode after restart blocks an old queued unlinked scan but keeps completed history readable', async () => {
+    const dir = makeTempStoreDir('dast-strict-legacy');
+    const users = createMemoryUserRepository();
+    await seed(users, 'owner@example.test', 'usr_dast_strict_legacy');
+    let resolutions = 0;
+    const policy = createDastTargetPolicy({ resolve: async () => { resolutions += 1; return [SAFE_IP]; } });
+    const durable = (strict: boolean) => startTestServer({ users, projectStoreDir: dir, scanStoreDir: dir,
+      usageStoreDir: dir, dastTargetPolicy: policy, dastRequireEngagement: strict });
+    let first: TestServer | undefined; let second: TestServer | undefined;
+    try {
+      first = await durable(false);
+      const owner = await login(first, 'owner@example.test');
+      const projectId = await createProject(first, owner);
+      await configureFixtureDastTarget(first, cookieHeader(owner), projectId);
+      const finished = await requestDast(first, owner, projectId, 'legacy-finished');
+      expect(finished.status).toBe(201);
+      const finishedId = (await readJson(finished) as { data: { scan: { id: string } } }).data.scan.id;
+      await first.scanProcessor.drain();
+      const queued = await requestDast(first, owner, projectId, 'legacy-queued-1');
+      expect(queued.status).toBe(201);
+      const queuedId = (await readJson(queued) as { data: { scan: { id: string } } }).data.scan.id;
+      await first.stop(); first = undefined;
+      second = await durable(true);
+      const ownerAfter = await login(second, 'owner@example.test');
+      resolutions = 0;
+      await second.scanProcessor.drain();
+      expect(resolutions).toBe(0);
+      expect((await second.scans.findByProjectAndId(projectId, queuedId))?.failureCode).toBe('DAST_TARGET_BLOCKED');
+      const history = await fetch(`${second.baseUrl}/api/v1/projects/${projectId}/scans/${finishedId}`, { headers: { cookie: cookieHeader(ownerAfter) } });
+      expect(history.status).toBe(200);
+      expect((await readJson(history) as { data: { scan: { status: string } } }).data.scan.status).toBe('COMPLETED');
     } finally {
       if (first !== undefined) await first.stop();
       if (second !== undefined) await second.stop();

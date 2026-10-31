@@ -1,3 +1,4 @@
+import { safeFindingEvidence } from '../scans/findingIdentity.js';
 import {
   ASSISTANT_CONTEXT_ITEM_MAX_LENGTH,
   ASSISTANT_CONTEXT_MAX_ITEMS,
@@ -126,7 +127,7 @@ function findingContent(finding: Finding): string {
     `Title: ${finding.title}`,
     `Description: ${finding.description}`,
     ...(finding.file === undefined ? [] : [`Location: ${finding.file}:${finding.line ?? 0}:${finding.column ?? 0}`]),
-    `Evidence (untrusted, redacted): ${finding.evidence}`,
+    `Evidence (untrusted, redacted): ${safeFindingEvidence(finding).evidence}`,
   ].join('\n');
 }
 

@@ -15,6 +15,7 @@ import type { ApiConfig } from '../config.js';
 import { conflict, notFound, validationError } from '../errors.js';
 import { redactAssistantText } from '../assistant/redaction.js';
 import type { UserRepository } from '../auth/repositories.js';
+import { createAccountMutationLock, type AccountMutationLock } from '../auth/accountMutationLock.js';
 import { manualMethodsFromState, type PaymentConfigStore } from './configStore.js';
 import type { PaymentAdminCounts, PaymentAdminFilters, PaymentAuditFilters, PaymentRecord, PaymentStore } from './store.js';
 
@@ -164,14 +165,16 @@ export function createPaymentService(options: {
   now?: () => number;
   provider?: PaymentProvider;
   partners?: PaymentPartnerHooks;
+  withAccountMutation?: AccountMutationLock;
 }): PaymentService {
   const { config, store, users, paymentConfig } = options;
   const partners = options.partners;
   const now = options.now ?? Date.now;
   const provider = options.provider ?? unavailablePaymentProvider;
   const timestamp = (): string => new Date(now()).toISOString();
+  const withAccountMutation = options.withAccountMutation ?? createAccountMutationLock();
 
-  const approveSaga = async (payment: PaymentRecord, reviewerId: string): Promise<PaymentSummary> => {
+  const approveSaga = (payment: PaymentRecord, reviewerId: string): Promise<PaymentSummary> => withAccountMutation(payment.accountId, async () => {
     const activation = await users.activatePro(payment.accountId, timestamp());
     if (activation === 'NOT_FOUND') {
       // Keep APPROVING durable so a later operator retry or restart recovery
@@ -201,7 +204,7 @@ export function createPaymentService(options: {
       await partners.settleCommissionForPayment(result.payment, reviewerId);
     }
     return toSummary(result.payment);
-  };
+  });
 
   return {
     config: (currentPlan) => {

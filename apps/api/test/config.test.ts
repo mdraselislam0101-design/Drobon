@@ -34,6 +34,15 @@ describe('loadConfig', () => {
     expect(config.paymentRateLimitMaxRequests).toBe(10);
   });
 
+  test('strict DAST engagement policy is opt-in and invalid values fail closed', () => {
+    expect(loadConfig({ NODE_ENV: 'test' }).dastRequireEngagement).toBe(false);
+    expect(loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: 'true' }).dastRequireEngagement).toBe(true);
+    expect(loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: 'false' }).dastRequireEngagement).toBe(false);
+    for (const value of ['', 'TRUE', '1', 'yes']) {
+      expect(() => loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: value })).toThrow(ConfigError);
+    }
+  });
+
   test('authorization probes are on outside production, off in it', () => {
     expect(loadConfig({}).authzProbeRoutes).toBe(true);
     expect(loadConfig({ NODE_ENV: 'development' }).authzProbeRoutes).toBe(true);
@@ -234,6 +243,18 @@ describe('loadConfig', () => {
     ['tiny auth window', { AUTH_RATE_LIMIT_WINDOW_MS: '10' }],
   ])('rejects %s', (_label, env) => {
     expect(() => loadConfig(env)).toThrowError(ConfigError);
+  });
+
+  test('invalid origin diagnostics do not echo untrusted credential-shaped input', () => {
+    const synthetic = 'q7z';
+    try {
+      loadConfig({ CORS_ALLOWED_ORIGINS: `https://user:${synthetic}@example.test` });
+      expect.unreachable('expected ConfigError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toContain('CORS_ALLOWED_ORIGINS');
+      expect((error as ConfigError).message).not.toContain(synthetic);
+    }
   });
 
   test('collects every issue into a single ConfigError', () => {
