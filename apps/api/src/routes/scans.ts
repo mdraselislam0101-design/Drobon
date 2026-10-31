@@ -1,8 +1,6 @@
 import { sourceFindingIdentity } from '../scans/findingIdentity.js';
 import type { ServerResponse } from 'node:http';
 import {
-  ASSESSMENT_ID_PATTERN,
-  engagementAllowsScan,
   FINDING_SEVERITIES,
   IDEMPOTENCY_KEY_PATTERN,
   type ScanComparisonEntry,
@@ -11,14 +9,12 @@ import {
   type ScanDetailResponse,
   type ScanResponse,
   type ScansResponse,
-  type Assessment,
   isScanType,
 } from '@drobon/shared';
 import type { ApiConfig } from '../config.js';
 import {
   badRequest,
   conflict,
-  internal,
   notFound,
   projectArchived,
   quotaExceeded,
@@ -41,7 +37,8 @@ import type { ScanProcessor } from '../scans/processor.js';
 import type { UserRepository } from '../auth/repositories.js';
 import type { UsageService } from '../usage/service.js';
 import { sendSuccess } from '../respond.js';
-import { createDastTargetPolicy, DastTargetError, normalizeDastTarget, type DastTargetPolicy } from '../scans/dast/target.js';
+import type { DastTargetPolicy } from '../scans/dast/target.js';
+import { createScanRequestService, type ScanRequestService } from '../scans/request.js';
 
 /**
  * Scan-job API — the authenticated orchestration boundary for the
@@ -96,13 +93,14 @@ export interface ScanRouteDeps {
   usage: UsageService;
   processor: ScanProcessor;
   dastTargetPolicy?: DastTargetPolicy;
+  requestService?: ScanRequestService;
   /** Injectable clock (tests); defaults to the system clock. */
   now?: () => number;
 }
 
 export function createScanRoutes(deps: ScanRouteDeps): Route[] {
-  const { config, users, projects, assessments, scans, sources, usage, processor } = deps;
-  const dastTargetPolicy = deps.dastTargetPolicy ?? createDastTargetPolicy();
+  const { config, projects, scans, processor } = deps;
+  const requestService = deps.requestService ?? createScanRequestService(deps);
   const access: OwnProjectResolver = createOwnProjectResolver(projects);
   const now = deps.now ?? Date.now;
   const at = (): string => new Date(now()).toISOString();
@@ -187,169 +185,28 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             { path: 'scanType', message: 'Unsupported scan type.' },
           ]);
         }
-        let assessmentId: string | undefined;
-        let linkedAssessment: Assessment | undefined;
-        if (parsed.value.assessmentId !== undefined) {
-          if (!ASSESSMENT_ID_PATTERN.test(parsed.value.assessmentId)) throw notFound('Assessment not found.');
-          const assessment = await assessments.findByProjectAndId(actor.id, project.id, parsed.value.assessmentId);
-          if (assessment === undefined) throw notFound('Assessment not found.');
-          if (assessment.status !== 'ACTIVE') throw conflict('Only an active project assessment can be linked to a new scan.');
-          assessmentId = assessment.id;
-          linkedAssessment = assessment;
-        }
-        // PUMPS 8–11 PRE-FLIGHT (quota protection): source engines need
-        // a snapshot; DAST needs a configured, currently safe project
-        // target. Reject impossible/unsafe requests BEFORE quota
-        // consumption. Each engine repeats its target safety checks when
-        // execution begins to close the preflight race window.
-        let targetUrl: string | undefined;
-        let dastMode: 'PASSIVE' | 'ACTIVE_SAFE' | undefined;
-        let dastActiveConsent: boolean | undefined;
-        if (parsed.value.dastMode !== undefined || parsed.value.dastActiveConsent !== undefined) {
-          if (scanType !== 'DAST') throw validationError([{ path: 'dastMode', message: 'dastMode only allowed for DAST scans.' }]);
-        }
-        if (parsed.value.dastMode !== undefined) {
-          if (parsed.value.dastMode !== 'PASSIVE' && parsed.value.dastMode !== 'ACTIVE_SAFE') {
-            throw validationError([{ path: 'dastMode', message: 'dastMode must be PASSIVE or ACTIVE_SAFE.' }]);
-          }
-          dastMode = parsed.value.dastMode as 'PASSIVE' | 'ACTIVE_SAFE';
-        }
-        if (parsed.value.dastActiveConsent !== undefined) {
-          if (parsed.value.dastActiveConsent !== true) throw validationError([{ path: 'dastActiveConsent', message: 'Active DAST requires explicit consent (true).' }]);
-          dastActiveConsent = true;
-        }
-        if (dastMode === 'ACTIVE_SAFE' && dastActiveConsent !== true) {
-          throw validationError([{ path: 'dastActiveConsent', message: 'Active DAST requires dastActiveConsent: true.' }]);
-        }
-        if (scanType === 'DAST') {
-          if (project.dastTargetUrl === undefined) {
-            throw conflict('Configure a DAST target on this project before requesting a scan.');
-          }
-          try {
-            // Only syntax normalization here: an assessment's scope and
-            // engagement must be checked before contacting any DNS resolver.
-            targetUrl = normalizeDastTarget(project.dastTargetUrl).url;
-          } catch {
-            throw conflict('The configured DAST target no longer passes the public-address safety policy.');
-          }
-          if (assessmentId !== undefined) {
-            const linked = await assessments.findByProjectAndId(actor.id, project.id, assessmentId);
-            const targetHost = new URL(targetUrl).hostname.toLowerCase();
-            if (linked === undefined || linked.status !== 'ACTIVE') throw conflict('The linked assessment is no longer active.');
-            if (!linked.scope.inScopeHosts.includes(targetHost) || linked.scope.outOfScopeHosts.includes(targetHost)) {
-              throw conflict('The DAST target host is not explicitly included in this assessment scope.');
-            }
-          }
-        }
-        if (
-          scanType === 'SAST' ||
-          scanType === 'SCA' ||
-          scanType === 'SECRETS'
-        ) {
-          const snapshot = await sources.findByProject(project.id);
-          if (snapshot === undefined || snapshot.files.length === 0) {
-            throw conflict(
-              `Upload a source snapshot before requesting a ${parsed.value.scanType} scan.`,
-            );
-          }
-        }
-        // Optional strict mode rejects legacy unlinked/undeclared DAST
-        // before DNS and quota. The default retains compatibility.
-        if (scanType === 'DAST' && config.dastRequireEngagement === true &&
-            (linkedAssessment?.engagements?.length ?? 0) === 0) {
-          throw conflict('DAST requires a linked active assessment with an active scoped engagement.');
-        }
-        // Pump 17 — AUTHORIZATION GATE (before quota consumption).
-        // With no engagement record the legacy UNVERIFIED path is kept:
-        // existing workspace behaviour is unchanged. Once an engagement is
-        // declared it becomes the authority for the linked scan's type,
-        // target host, path and validity window. This is an owner-attested
-        // workspace record, NOT independent legal verification.
-        if (linkedAssessment !== undefined) {
-          const gateInput: { scanType: typeof scanType; nowIso: string; hostname?: string; path?: string } = {
-            scanType, nowIso: at(),
-          };
-          if (targetUrl !== undefined) {
-            const parsedTarget = new URL(targetUrl);
-            gateInput.hostname = parsedTarget.hostname.toLowerCase();
-            gateInput.path = parsedTarget.pathname || '/';
-          }
-          const gate = engagementAllowsScan(linkedAssessment.engagements, gateInput);
-          if (!gate.allowed) {
-            throw conflict(`Authorization gate: ${gate.reason} Declare an active engagement for this target, scope and scan type first.`);
-          }
-        }
-        const idempotencyKey = idempotencyKeyFrom(req.headers);
-        if (targetUrl !== undefined) {
-          try {
-            // After scope/engagement authorization but still before quota.
-            // Execution rechecks authorization and DNS before each request.
-            const prepared = await dastTargetPolicy.prepare(targetUrl);
-            if (prepared.url !== targetUrl) throw new DastTargetError('DAST_TARGET_INVALID');
-          } catch (error) {
-            const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
-              ? 'The configured DAST target cannot currently be resolved safely.'
-              : 'The configured DAST target no longer passes the public-address safety policy.';
-            throw conflict(message);
-          }
-        }
-        // Quota reservation and creation are serialized within this
-        // process but persisted in separate documents; startup recovery
-        // reconciles interrupted reservations. The device hash is server-derived (opaque cookie →
-        // SHA-256); the account record is re-loaded live so the plan
-        // verdict is never stale.
-        const deviceHash = ctx.deviceHash;
-        if (deviceHash === undefined) {
-          throw internal('Device identity missing for an authenticated request.');
-        }
-        const record = await users.findById(actor.id);
-        if (record === undefined) {
-          // Account vanished mid-session — the session is worthless.
-          throw unauthorized();
-        }
-        const createScan = () => scans.createScanWithQuota({
-          ownerId: actor.id,
-          projectId: project.id,
+        const outcome = await requestService.request({
+          actorId: actor.id,
+          deviceHash: ctx.deviceHash,
+          project,
           scanType,
-          ...(assessmentId === undefined ? {} : { assessmentId }),
-          ...(targetUrl === undefined ? {} : { targetUrl }),
-          ...(dastMode === undefined ? {} : { dastMode }),
-          ...(dastActiveConsent === undefined ? {} : { dastActiveConsent }),
-          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-          consume: (scanId) => usage.reserveScan(record, deviceHash, project.id, scanId),
+          assessmentId: parsed.value.assessmentId,
+          dastMode: parsed.value.dastMode,
+          dastActiveConsent: parsed.value.dastActiveConsent,
+          idempotencyKeyFromRequest: () => idempotencyKeyFrom(req.headers),
         });
-        let outcome: Awaited<ReturnType<typeof scans.createScanWithQuota>>;
-        if (assessmentId === undefined) {
-          outcome = await createScan();
-        } else {
-          const gated = await assessments.withActiveAssessment(actor.id, project.id, assessmentId, async (current) => {
-            // Re-evaluate while holding the assessment store's serialization
-            // lock so a concurrent withdrawal cannot race scan creation.
-            const target = targetUrl === undefined ? undefined : new URL(targetUrl);
-            if (scanType === 'DAST' && config.dastRequireEngagement === true && (current.engagements?.length ?? 0) === 0) {
-              throw conflict('DAST requires a linked active assessment with an active scoped engagement.');
-            }
-            const gate = engagementAllowsScan(current.engagements, {
-              scanType,
-              nowIso: at(),
-              ...(target === undefined ? {} : { hostname: target.hostname.toLowerCase(), path: target.pathname || '/' }),
-            });
-            if (!gate.allowed) throw conflict(`Authorization gate: ${gate.reason}`);
-            return createScan();
-          });
-          if (gated.outcome === 'not-found') throw notFound('Assessment not found.');
-          if (gated.outcome === 'inactive') throw conflict('Only an active project assessment can be linked to a new scan.');
-          outcome = gated.value;
-        }
         if (outcome.outcome === 'invalid-target') {
           throw conflict('The DAST target is missing or no longer passes the safety policy.');
+        }
+        if (outcome.outcome === 'compatibility-required') {
+          throw conflict('The scan store requires a reviewed compatibility migration.');
         }
         if (outcome.outcome === 'quota-denied') {
           // Uniform 429 QUOTA_EXCEEDED + Retry-After (next UTC month).
           // Nothing was appended; no hint which limit tripped.
           ctx.logger.info('Scan quota denied', {
             requestId: ctx.logId,
-            userId: record.id,
+            userId: actor.id,
             projectId: project.id,
           });
           throw quotaExceeded(outcome.retryAfterSec);
@@ -363,7 +220,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           // A safe retry: the ORIGINAL scan, no second consumption.
           ctx.logger.info('Scan request replayed', {
             requestId: ctx.logId,
-            userId: record.id,
+            userId: actor.id,
             scanId: outcome.scan.id,
           });
           sendScan(res, ctx, outcome.scan);
@@ -374,7 +231,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         }
         ctx.logger.info('Scan created', {
           requestId: ctx.logId,
-          userId: record.id,
+          userId: actor.id,
           projectId: project.id,
           scanId: outcome.scan.id,
         });

@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 
-const interleaving = vi.hoisted(() => ({ replacement: '' }));
+const interleaving = vi.hoisted(() => ({ replacement: '', failSync: false }));
 vi.mock('node:fs', async (original) => {
   const fs = await original<typeof import('node:fs')>();
-  return { ...fs, renameSync: (from: Parameters<typeof fs.renameSync>[0], to: Parameters<typeof fs.renameSync>[1]) => {
+  return { ...fs, fsyncSync: (descriptor: number) => {
+    if (interleaving.failSync) throw new Error('synthetic pre-rename fsync failure');
+    return fs.fsyncSync(descriptor);
+  }, renameSync: (from: Parameters<typeof fs.renameSync>[0], to: Parameters<typeof fs.renameSync>[1]) => {
     if (interleaving.replacement !== '') {
       const replacement = interleaving.replacement;
       interleaving.replacement = '';
@@ -37,6 +40,19 @@ describe('private JSON writes', () => {
       expect(readFileSync(destination, 'utf8')).toBe('old synthetic destination');
       expect(readFileSync(collision, 'utf8')).toBe('preexisting synthetic temporary file');
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a pre-rename fsync failure leaves the destination unchanged and removes only the owned temporary file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'main-app-fsync-failure-'));
+    try {
+      const destination = join(dir, 'store.json');
+      const temporary = join(dir, '.abababababab.tmp');
+      writeFileSync(destination, 'old synthetic destination');
+      interleaving.failSync = true;
+      expect(() => writePrivateJson(destination, 'new synthetic document', { syncFile: true })).toThrow(/fsync/);
+      expect(readFileSync(destination, 'utf8')).toBe('old synthetic destination');
+      expect(() => readFileSync(temporary)).toThrow();
+    } finally { interleaving.failSync = false; rmSync(dir, { recursive: true, force: true }); }
   });
 
   test('does not clean up a replacement file installed before a failed rename', () => {

@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { createApp, type App, type AppDeps } from './app.js';
 import { acquireJsonStoreLeases } from './lib/jsonStoreLease.js';
+import { knownJsonFileStorePath } from './lib/jsonFileWriteFence.js';
 
 export type ServerDeps = AppDeps;
 
@@ -15,14 +16,18 @@ export interface StartedServer {
 /** Start the HTTP server with conservative socket timeouts. */
 export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const { config, logger } = deps;
-  // Only the stores constructed by createApp are covered: an injected
-  // repository can point elsewhere and must provide its own coordination.
+  // Cover default stores and the actual paths of directly injected, known
+  // JSON scan/assessment stores. Wrapped or third-party repositories remain
+  // opaque and must provide their own coordination; this is not mandatory
+  // fencing against an old process or another network namespace/host.
+  const injectedScanPath = deps.scanStore === undefined ? undefined : knownJsonFileStorePath(deps.scanStore);
+  const injectedAssessmentPath = deps.assessmentStore === undefined ? undefined : knownJsonFileStorePath(deps.assessmentStore);
   const paths = [
     ...(deps.users === undefined ? [config.authStorePath] : []),
     ...(deps.usageStore === undefined ? [config.usageStorePath] : []),
     ...(deps.projectStore === undefined ? [config.projectStorePath] : []),
-    ...(deps.scanStore === undefined ? [config.scanStorePath] : []),
-    ...(deps.assessmentStore === undefined ? [config.assessmentStorePath] : []),
+    ...(deps.scanStore === undefined ? [config.scanStorePath] : injectedScanPath === undefined ? [] : [injectedScanPath]),
+    ...(deps.assessmentStore === undefined ? [config.assessmentStorePath] : injectedAssessmentPath === undefined ? [] : [injectedAssessmentPath]),
     config.studentStorePath,
     ...(deps.sourceStore === undefined ? [config.sourceStorePath] : []),
     ...(deps.paymentStore === undefined ? [config.paymentStorePath] : []),

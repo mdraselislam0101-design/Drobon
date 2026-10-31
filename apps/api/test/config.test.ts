@@ -43,6 +43,17 @@ describe('loadConfig', () => {
     }
   });
 
+  test('experimental agent is disabled by default, rejects invalid flags and cannot be enabled in production', () => {
+    expect(loadConfig({}).agentExperimentalEnabled).toBe(false);
+    expect(loadConfig({ NODE_ENV: 'test', AGENT_EXPERIMENTAL_ENABLED: 'true' }).agentExperimentalEnabled).toBe(true);
+    expect(loadConfig({ NODE_ENV: 'development', AGENT_EXPERIMENTAL_ENABLED: 'true' }).agentExperimentalEnabled).toBe(true);
+    expect(loadConfig({ NODE_ENV: 'production' }).agentExperimentalEnabled).toBe(false);
+    expect(() => loadConfig({ NODE_ENV: 'production', AGENT_EXPERIMENTAL_ENABLED: 'true' })).toThrow(/not allowed in production/);
+    for (const value of ['', 'TRUE', '1', 'yes']) {
+      expect(() => loadConfig({ NODE_ENV: 'test', AGENT_EXPERIMENTAL_ENABLED: value })).toThrow(ConfigError);
+    }
+  });
+
   test('authorization probes are on outside production, off in it', () => {
     expect(loadConfig({}).authzProbeRoutes).toBe(true);
     expect(loadConfig({ NODE_ENV: 'development' }).authzProbeRoutes).toBe(true);

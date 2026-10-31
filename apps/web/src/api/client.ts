@@ -1,5 +1,9 @@
 import {
   isAssessmentResponse,
+  isEngagementResponse,
+  isAgentAssessmentResponse,
+  isAgentCancellationResponse,
+  isAgentExecutionResponse,
   isAssessmentDetailResponse,
   isAssessmentSummaryResponse,
   isAssessmentsResponse,
@@ -51,6 +55,10 @@ import {
   type ApiErrorDetail,
   type AssessmentDetailResponse,
   type AssessmentResponse,
+  type EngagementResponse,
+  type AgentAssessmentResponse,
+  type AgentCancellationResponse,
+  type AgentExecutionResponse,
   type AssessmentStatus,
   type AssessmentsResponse,
   type AssessmentScope,
@@ -167,6 +175,18 @@ export class ApiClientError extends Error {
       this.details = options.details;
     }
   }
+}
+
+export interface EngagementCreateInput {
+  clientName: string;
+  targetUrl: string;
+  inScopeHosts: string[];
+  scopePaths: string[];
+  allowedScanTypes: ScanType[];
+  validFrom: string;
+  validUntil: string;
+  statement: string;
+  confirm: true;
 }
 
 export interface ApiClientOptions {
@@ -322,6 +342,11 @@ export interface ApiClient {
   /** Assessment UI is classification-only; all ownership and lifecycle checks stay server-side. */
   getAssessments(projectId: string, signal?: AbortSignal): Promise<AssessmentsResponse>;
   getAssessment(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse>;
+  createEngagement(projectId: string, assessmentId: string, input: EngagementCreateInput, signal?: AbortSignal): Promise<EngagementResponse>;
+  withdrawEngagement(projectId: string, assessmentId: string, engagementId: string, signal?: AbortSignal): Promise<EngagementResponse>;
+  getAgentAssessment(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentAssessmentResponse>;
+  executeAgent(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentExecutionResponse>;
+  cancelAgentScan(projectId: string, assessmentId: string, scanId: string, signal?: AbortSignal): Promise<AgentCancellationResponse>;
   createAssessment(projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
   updateAssessment(projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
   setAssessmentStatus(projectId: string, assessmentId: string, status: AssessmentStatus, signal?: AbortSignal): Promise<AssessmentResponse>;
@@ -913,6 +938,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
     getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
       authRequest<AssessmentDetailResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}`, signal === undefined ? {} : { signal }, isAssessmentDetailResponse),
+    createEngagement: (projectId: string, assessmentId: string, input: EngagementCreateInput, signal?: AbortSignal): Promise<EngagementResponse> =>
+      authRequest<EngagementResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/engagements`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) }, isEngagementResponse),
+    withdrawEngagement: (projectId: string, assessmentId: string, engagementId: string, signal?: AbortSignal): Promise<EngagementResponse> =>
+      authRequest<EngagementResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/engagements/${encodeURIComponent(engagementId)}/withdraw`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }), ...(signal === undefined ? {} : { signal }) }, isEngagementResponse),
+    getAgentAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentAssessmentResponse> =>
+      authRequest<AgentAssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent`, signal === undefined ? {} : { signal }, isAgentAssessmentResponse),
+    executeAgent: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentExecutionResponse> =>
+      authRequest<AgentExecutionResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }), ...(signal === undefined ? {} : { signal }) }, isAgentExecutionResponse),
+    cancelAgentScan: (projectId: string, assessmentId: string, scanId: string, signal?: AbortSignal): Promise<AgentCancellationResponse> =>
+      authRequest<AgentCancellationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent/scans/${encodeURIComponent(scanId)}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }), ...(signal === undefined ? {} : { signal }) }, isAgentCancellationResponse),
     compareScans: (projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse> =>
       authRequest<ScanComparisonResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(currentScanId)}/compare/${encodeURIComponent(baselineScanId)}`,

@@ -40,6 +40,7 @@ import type { ProjectStore } from '../projects/store.js';
 import { createOwnProjectResolver } from '../projects/access.js';
 import type { AssessmentStore } from '../assessments/store.js';
 import type { ScanRecord, ScanStore } from '../scans/store.js';
+import type { ScanProcessor } from '../scans/processor.js';
 import { sendSuccess } from '../respond.js';
 
 export interface AssessmentRouteDeps {
@@ -47,6 +48,7 @@ export interface AssessmentRouteDeps {
   projects: ProjectStore;
   assessments: AssessmentStore;
   scans: ScanStore;
+  processor: ScanProcessor;
   now?: () => number;
 }
 
@@ -114,7 +116,7 @@ function assessmentIdFrom(raw: unknown): string {
 }
 
 export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
-  const { config, projects, assessments, scans } = deps;
+  const { config, projects, assessments, scans, processor } = deps;
   const access = createOwnProjectResolver(projects);
   const now = deps.now ?? Date.now;
   const at = (): string => new Date(now()).toISOString();
@@ -434,6 +436,9 @@ export function createAssessmentRoutes(deps: AssessmentRouteDeps): Route[] {
         if (outcome.outcome === 'invalid' || outcome.outcome === 'not-declared') throw notFound('Engagement not found.');
         if (outcome.outcome === 'history-limit') throw conflict('Assessment history is full; no withdrawal was recorded.');
         if (outcome.assessment === undefined) throw internal('Engagement withdrawal returned no record.');
+        // The withdrawal is durable before signalling the matching in-flight
+        // Agent attempt; queued jobs recheck this same engagement on claim.
+        processor.abortAgentEngagement(actor.id, project.id, assessment.id, engagementId);
         const updated = (outcome.assessment.engagements ?? []).find((item) => item.id === engagementId);
         if (updated === undefined) throw internal('Engagement withdrawal returned no engagement.');
         const response: EngagementResponse = { engagement: view(updated) };

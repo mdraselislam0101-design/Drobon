@@ -1,6 +1,6 @@
 import type { Logger } from '../logger.js';
 import type { EngineOutcome, ScanEngineRegistry } from './engines.js';
-import type { ScanStore } from './store.js';
+import type { ScanRecord, ScanStore } from './store.js';
 
 /**
  * The scan processor (Pump 7) — the durable worker loop of the scan
@@ -15,8 +15,8 @@ import type { ScanStore } from './store.js';
  * engine host): scan state must survive restarts, so the durable store
  * drives processing here.
  *
- * Lifecycle (the ONLY transition path — there is no client-facing
- * mutation endpoint):
+ * Lifecycle (Agent cancellation is a durable intent; it never creates a
+ * fabricated completed scan):
  *
  *   QUEUED → RUNNING → COMPLETED   (engine produced a real summary)
  *   QUEUED → RUNNING → FAILED      (deterministic failure, incl.
@@ -43,6 +43,10 @@ export interface ScanProcessor {
   drain(): Promise<void>;
   /** Schedule an async drain without awaiting (used after creation). */
   kick(): void;
+  /** Signal the one owned in-process agent attempt after cancellation commits. */
+  abortAgentJob(scanId: string): void;
+  /** Signal only attempts bound to the exact withdrawn authorization. */
+  abortAgentEngagement(ownerId: string, projectId: string, assessmentId: string, engagementId: string): void;
   /** Stop the periodic sweep (in-flight work still settles). */
   stop(): void;
   /** Permanently stop scheduling and wait for owned startup/drain writes to settle. */
@@ -57,6 +61,8 @@ export interface ScanProcessorOptions {
   logger: Logger;
   /** Periodic sweep interval (default 5s; injectable for tests). */
   intervalMs?: number;
+  /** Serialize Agent completion with its exact engagement's withdrawal. */
+  finalizeAgent?: (scan: ScanRecord, complete: () => Promise<ScanRecord | undefined>) => Promise<ScanRecord | undefined>;
 }
 
 /** Safety bound: one drain call never spins forever. */
@@ -77,10 +83,18 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
   // process-wide bound, despite each individual claim being serialized.
   let activeDrain: Promise<void> | undefined;
   let drainAgain = false;
+  const activeAgents = new Map<string, { scan: ScanRecord; controller: AbortController }>();
 
   const processOne = async (): Promise<boolean> => {
     const scan = await store.claimNextQueued();
     if (scan === undefined) {
+      return false;
+    }
+    // Shutdown may have committed while an injected or durable claim was
+    // awaiting I/O. Do not start the engine after that boundary; record a
+    // recoverable interruption rather than leaving the claimed job running.
+    if (closed) {
+      await store.failScan(scan.id, 'SCAN_INTERRUPTED', 'Processing stopped before the scan could start.');
       return false;
     }
     const engine = engines.get(scan.scanType);
@@ -105,19 +119,28 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       return true;
     }
     const controller = new AbortController();
+    // Register immediately after claim, before any asynchronous recheck.
+    if (scan.agent !== undefined) activeAgents.set(scan.id, { scan, controller });
     // Defensive per-engine bound (mirrors the Pump 1 runner's timeout
     // posture): a hung engine fails the scan deterministically instead
     // of blocking the sweep. The attempt may still be running in the
     // background — the durable store already moved on, exactly like the
     // worker runner's documented at-most-once caveat.
     const engineTimeoutMs = 30_000;
-    const timer = setTimeout(() => controller.abort(), engineTimeoutMs);
-    timer.unref?.();
     let timedOut = false;
-    controller.signal.addEventListener('abort', () => {
-      timedOut = true;
-    }, { once: true });
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, engineTimeoutMs);
+    timer.unref?.();
     try {
+      if (scan.agent !== undefined) {
+        // Cancellation can commit between claim and controller registration.
+        // Reread the durable intent before invoking any scanner.
+        const latest = await store.findByProjectAndId(scan.projectId, scan.id);
+        if (latest?.agent === undefined || latest.agent.cancelRequestedAt !== undefined || controller.signal.aborted) {
+          await store.failScan(scan.id, closed ? 'SCAN_INTERRUPTED' : 'SCAN_ENGINE_ERROR', closed
+            ? 'Agent processing stopped before completion.' : 'Agent execution was cancelled or its authorization was withdrawn.');
+          return true;
+        }
+      }
       let outcome: EngineOutcome;
       try {
         outcome = await Promise.race([
@@ -154,6 +177,11 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
           });
           return true;
         }
+        if (controller.signal.aborted && scan.agent !== undefined) {
+          await store.failScan(scan.id, closed ? 'SCAN_INTERRUPTED' : 'SCAN_ENGINE_ERROR', closed
+            ? 'Agent processing stopped before completion.' : 'Agent execution was cancelled or its authorization was withdrawn.');
+          return true;
+        }
         throw error;
       }
       if (outcome.kind === 'completed') {
@@ -161,13 +189,13 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
         // atomically with the terminal transition. Pump 9: the SCA
         // payload (inventory + manifest results + SBOM + assessment)
         // persists the same way — one linearized terminal write.
-        const completed = await store.completeScan(
-          scan.id,
-          outcome.resultSummary,
-          outcome.findings,
-          outcome.sca,
-          outcome.dast,
+        const complete = (): Promise<ScanRecord | undefined> => store.completeScan(
+          scan.id, outcome.resultSummary, outcome.findings, outcome.sca, outcome.dast,
         );
+        // A withdrawal and result commit share the assessment mutation
+        // lock. Cancellation additionally races in the scan-store queue.
+        const completed = scan.agent === undefined ? await complete()
+          : options.finalizeAgent === undefined ? undefined : await options.finalizeAgent(scan, complete);
         if (completed === undefined) {
           // FAIL CLOSED (Pump 3): the durable store rejected the engine
           // outcome (it failed the shared closed-shape/invariant
@@ -254,6 +282,7 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       return true;
     } finally {
       clearTimeout(timer);
+      activeAgents.delete(scan.id);
       controller.abort();
     }
   };
@@ -329,6 +358,13 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       return startup;
     },
     drain,
+    abortAgentJob: (scanId) => { activeAgents.get(scanId)?.controller.abort(); },
+    abortAgentEngagement: (ownerId, projectId, assessmentId, engagementId) => {
+      for (const { scan, controller } of activeAgents.values()) {
+        if (scan.ownerId === ownerId && scan.projectId === projectId && scan.assessmentId === assessmentId &&
+            scan.agent?.engagementId === engagementId) controller.abort();
+      }
+    },
     kick: () => {
       if (!started || closed || kickTimer !== undefined) return;
       const current = generation;
@@ -345,6 +381,11 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
     shutdown: async () => {
       closed = true;
       stop();
+      // Signal owned Agent attempts immediately, before waiting for drain.
+      // A cooperative network transport closes; a transport/CPU loop that
+      // ignores the signal can still outlive the processor and cannot have
+      // already-sent requests recalled.
+      for (const { controller } of activeAgents.values()) controller.abort();
       // Both promises may fail; either way they have settled before the
       // runtime releases its lease. Engine code that ignores abort can
       // still outlive its timeout and is not covered by this guarantee.

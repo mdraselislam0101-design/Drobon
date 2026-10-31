@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, test } from 'vitest';
-import { createNodeDastTransport } from '../src/scans/dast/http.js';
+import { createNodeDastTransport, runBoundedDastProbe, type DastTransport } from '../src/scans/dast/http.js';
 import type { ResolvedDastTarget } from '../src/scans/dast/target.js';
 
 const servers: Server[] = [];
@@ -39,6 +39,48 @@ function options(overrides: Partial<{ timeoutMs: number; maxResponseBytes: numbe
     ...overrides,
   };
 }
+
+describe('managed bounds for injected DAST transports', () => {
+  test('a pre-aborted operation never calls the injected transport', async () => {
+    const controller = new AbortController(); controller.abort();
+    let probes = 0;
+    const transport: DastTransport = { probe: async () => { probes += 1; throw new Error('must not start'); } };
+    await expect(runBoundedDastProbe(transport, loopbackFixtureTarget(1), options({ signal: controller.signal })))
+      .rejects.toMatchObject({ kind: 'aborted' });
+    expect(probes).toBe(0);
+  });
+
+  test('timeout aborts the transport signal and discards a late result', async () => {
+    let signal: AbortSignal | undefined; let finish!: () => void;
+    const gate = new Promise<void>((resolveGate) => { finish = resolveGate; });
+    const transport: DastTransport = { probe: async (_target, probeOptions) => {
+      signal = probeOptions.signal; await gate;
+      return { status: 200, headers: {}, body: 'late fixture', bodyTruncated: false, elapsedMs: 1 };
+    } };
+    const result = runBoundedDastProbe(transport, loopbackFixtureTarget(1), options({ timeoutMs: 20 }));
+    try {
+      await expect(result).rejects.toMatchObject({ kind: 'timeout' });
+      expect(signal?.aborted).toBe(true);
+    } finally { finish(); }
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  });
+
+  test('cancellation settles without waiting for an uncooperative callback', async () => {
+    let signal: AbortSignal | undefined; let finish!: () => void;
+    const gate = new Promise<void>((resolveGate) => { finish = resolveGate; });
+    const transport: DastTransport = { probe: async (_target, probeOptions) => {
+      signal = probeOptions.signal; await gate; throw new Error('late fixture failure');
+    } };
+    const controller = new AbortController();
+    const result = runBoundedDastProbe(transport, loopbackFixtureTarget(1), options({ signal: controller.signal }));
+    controller.abort();
+    try {
+      await expect(result).rejects.toMatchObject({ kind: 'aborted' });
+      expect(signal?.aborted).toBe(true);
+    } finally { finish(); }
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  });
+});
 
 describe('bounded Node DAST HTTP transport (loopback fixture only)', () => {
   test('pins the connection to the supplied address, sends one unauthenticated GET, and stops at the body cap', async () => {

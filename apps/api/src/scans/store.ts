@@ -1,9 +1,9 @@
-import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { createJsonFileWriteFence, JsonStorePathUnavailableError, readJsonFileSnapshot, registerJsonFileStore, type JsonFileSnapshot } from '../lib/jsonFileWriteFence.js';
 import { safeFindingEvidence, safeFindingWorkflow, sourceFindingIdentity } from './findingIdentity.js';
-import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import {
   ASSESSMENT_ID_PATTERN,
+  ENGAGEMENT_ID_PATTERN,
   IDEMPOTENCY_KEY_PATTERN,
   MAX_FINDINGS_PER_SCAN,
   PROJECT_ID_PATTERN,
@@ -77,16 +77,18 @@ import {
  * architecture of the account (Pump 2), usage (Pump 5) and project
  * (Pump 6) stores:
  *
- * - one JSON document (`{ version: 1, scans: [...], idempotency: [...] }`),
- *   one writer, isolated behind the `ScanStore` interface so the future
- *   database phase swaps this module with zero changes elsewhere;
+ * - one JSON document, one writer, isolated behind the `ScanStore` interface.
+ *   Legacy-only documents retain version 1; a newly created agent-bearing
+ *   document uses version 2 so the pre-agent version-1 parser refuses it.
+ *   Existing version-1 data is never automatically upgraded for the agent;
  * - scans survive process restarts (loaded at startup, fail fast on a
  *   corrupt document or an invalid record — security state is never
  *   silently repaired);
- * - writes use a private same-directory temp file and rename; this is not
- *   an fsync-backed power-loss guarantee or a multi-file transaction;
- * - every mutation runs inside the serialized in-process queue and
- *   persists BEFORE it is observable;
+ * - writes use a synced private temp file and same-directory rename; the
+ *   directory is not synced, so this is not a power-loss or cross-file guarantee;
+ * - every mutation runs inside the serialized in-process queue. Cooperating
+ *   file writers also use an advisory per-write lock and snapshot check;
+ *   stale/noncooperating old writers can ignore both and remain unsafe;
  * - ids are `scan_` + `crypto.randomUUID()` — cryptographically strong,
  *   never counters, never client-supplied.
  *
@@ -106,6 +108,32 @@ export const DAST_MODES = ['PASSIVE', 'ACTIVE_SAFE'] as const;
 export type DastMode = (typeof DAST_MODES)[number];
 export function isDastMode(v: unknown): v is DastMode { return typeof v === 'string' && (DAST_MODES as readonly string[]).includes(v); }
 
+/** Server-created, additive agent execution metadata; absent on legacy scans. */
+export interface AgentScanContext {
+  version: 1;
+  datasetDigest: string;
+  /** Required for source-based agent scans; never includes source contents. */
+  sourceDigest?: string;
+  /** The particular operator declaration that authorized creation. */
+  engagementId: string;
+  /** Durable cancellation intent, not a claim that the worker has stopped. */
+  cancelRequestedAt?: string;
+}
+
+/** Before the assessment lock selects the specific engagement. */
+export type AgentScanIntent = Omit<AgentScanContext, 'engagementId' | 'cancelRequestedAt'>;
+
+function isAgentScanContext(value: unknown): value is AgentScanContext {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).every((key) => ['version', 'datasetDigest', 'sourceDigest', 'engagementId', 'cancelRequestedAt'].includes(key)) &&
+    record['version'] === 1 && typeof record['datasetDigest'] === 'string' && /^[a-f0-9]{64}$/.test(record['datasetDigest']) &&
+    typeof record['engagementId'] === 'string' && ENGAGEMENT_ID_PATTERN.test(record['engagementId']) &&
+    (record['cancelRequestedAt'] === undefined || (typeof record['cancelRequestedAt'] === 'string' &&
+      Number.isFinite(Date.parse(record['cancelRequestedAt'])))) &&
+    (record['sourceDigest'] === undefined || (typeof record['sourceDigest'] === 'string' && /^[a-f0-9]{64}$/.test(record['sourceDigest'])));
+}
+
 /** The stored record — includes the owner; the API response never does. */
 export interface ScanRecord {
   id: string;
@@ -114,6 +142,8 @@ export interface ScanRecord {
   scanType: ScanType;
   /** Assessment association is metadata/control context, never scan permission. */
   assessmentId?: string;
+  /** Set only by the server's bounded agent coordinator. */
+  agent?: AgentScanContext;
   status: ScanStatus;
   /** Canonical target URL, only for DAST scans; never contains credentials/query/fragment. */
   dastTargetUrl?: string;
@@ -186,6 +216,8 @@ export interface CreateScanInput {
   scanType: ScanType;
   /** Assessment association validated against this owner's project-bound active record. */
   assessmentId?: string;
+  /** Internal agent context; HTTP clients cannot supply this field. */
+  agent?: AgentScanContext;
   /** Preflight-validated canonical target, required for new DAST scans. */
   targetUrl?: string;
   /** DAST mode for this scan (PASSIVE default). */
@@ -210,6 +242,7 @@ export type CreateScanOutcome =
   | { outcome: 'replayed'; scan: ScanRecord }
   | { outcome: 'conflict' }
   | { outcome: 'invalid-target' }
+  | { outcome: 'compatibility-required' }
   | { outcome: 'quota-denied'; retryAfterSec: number };
 
 export interface AdminScanFilters {
@@ -243,6 +276,8 @@ export interface ScanAdminSummary {
 }
 
 export interface ScanStore {
+  /** Whether an agent job can be added without upgrading an existing v1 file. */
+  agentStorageReady(): boolean;
   /**
    * Serializes creation within one process. Quota and scan documents are
    * separate writes; reservation recovery is not a cross-file transaction.
@@ -269,6 +304,15 @@ export interface ScanStore {
   listLatestCompletedByScannerForAssistant(projectId: string): Promise<ScanRecord[]>;
   /** One scan of one project (ownership is resolved by the caller). */
   findByProjectAndId(projectId: string, scanId: string): Promise<ScanRecord | undefined>;
+  /** Start, but never await, one probe inside the cancellation mutation queue. */
+  beginAgentProbe<T>(input: { ownerId: string; projectId: string; assessmentId: string; scanId: string; engagementId: string },
+    begin: () => T): Promise<{ value: T } | undefined>;
+  /** Persist cancellation intent only for an owned assessment-bound agent job. */
+  requestAgentCancellation(input: { ownerId: string; projectId: string; assessmentId: string; scanId: string }): Promise<
+    | { outcome: 'requested' | 'already-requested'; scan: ScanRecord }
+    | { outcome: 'not-found' }
+    | { outcome: 'terminal' }
+  >;
   /**
    * Claim the oldest QUEUED scan for processing: QUEUED → RUNNING with
    * `startedAt`, persisted before it is observable. Returns `undefined`
@@ -341,7 +385,7 @@ export interface ScanStore {
 }
 
 interface StoreDocument {
-  version: 1;
+  version: 1 | 2;
   scans: ScanRecord[];
   idempotency: IdempotencyEntry[];
   /** Added in Pump 12; missing on Pump 7–11 documents is an empty report set. */
@@ -410,6 +454,10 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   if (record['dastMode'] !== undefined && record['dastMode'] !== 'PASSIVE' && record['dastMode'] !== 'ACTIVE_SAFE') return undefined;
   if (record['dastActiveConsent'] !== undefined && typeof record['dastActiveConsent'] !== 'boolean') return undefined;
   if (record['dastMode'] === 'ACTIVE_SAFE' && record['dastActiveConsent'] !== true) return undefined;
+  if (record['agent'] !== undefined && (!isAgentScanContext(record['agent']) || record['assessmentId'] === undefined ||
+      record['dastMode'] === 'ACTIVE_SAFE' || record['dastActiveConsent'] === true ||
+      (record['agent'].cancelRequestedAt !== undefined && (status === 'COMPLETED' || status === 'TIMED_OUT')) ||
+      (record['scanType'] !== 'DAST' && record['agent'].sourceDigest === undefined))) return undefined;
   if (record['startedAt'] !== undefined && typeof record['startedAt'] !== 'string') {
     return undefined;
   }
@@ -532,6 +580,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     projectId: record['projectId'],
     scanType: record['scanType'],
     ...(typeof record['assessmentId'] === 'string' ? { assessmentId: record['assessmentId'] } : {}),
+    ...(isAgentScanContext(record['agent']) ? { agent: { ...record['agent'] } } : {}),
     status,
     createdAt: record['createdAt'],
     ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
@@ -738,20 +787,18 @@ function reportMatchesScan(report: SecurityReport, scan: ScanRecord): boolean {
     : report.inventory.status === 'INCLUDED' && canonicalJson(report.inventory.sca) === canonicalJson(scan.sca);
 }
 
-function loadDocument(path: string): StoreDocument {
-  let raw: string;
+function loadDocument(path: string): { document: StoreDocument | undefined; snapshot: JsonFileSnapshot | undefined } {
+  let snapshot: JsonFileSnapshot | undefined;
   try {
-    raw = readFileSync(path, 'utf8');
+    snapshot = readJsonFileSnapshot(path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') {
-      return { version: 1, scans: [], idempotency: [], reports: [] };
-    }
     throw new Error(`Cannot read scan store at ${path}: ${String(code ?? error)}`);
   }
+  if (snapshot === undefined) return { document: undefined, snapshot: undefined };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    parsed = JSON.parse(snapshot.bytes.toString('utf8')) as unknown;
   } catch {
     throw new Error(
       `Scan store at ${path} is not valid JSON — refusing to start with corrupt scan data.`,
@@ -760,7 +807,7 @@ function loadDocument(path: string): StoreDocument {
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
-    (parsed as Record<string, unknown>)['version'] !== 1 ||
+    ((parsed as Record<string, unknown>)['version'] !== 1 && (parsed as Record<string, unknown>)['version'] !== 2) ||
     !Array.isArray((parsed as Record<string, unknown>)['scans']) ||
     !Array.isArray((parsed as Record<string, unknown>)['idempotency']) ||
     ((parsed as Record<string, unknown>)['reports'] !== undefined &&
@@ -772,6 +819,26 @@ function loadDocument(path: string): StoreDocument {
     throw new Error(`Scan store at ${path} has an unexpected shape — refusing to start.`);
   }
   const rawScans = (parsed as StoreDocument).scans;
+  const version = (parsed as StoreDocument).version;
+  // A v2 writer must not silently discard fields from an unsupported writer
+  // that reused the same version. V1 retains its historical compatibility
+  // behavior; old/noncooperating writers are not fenced by this check.
+  const unknownFields = (value: unknown, allowed: readonly string[]): boolean =>
+    typeof value === 'object' && value !== null && Object.keys(value).some((key) => !allowed.includes(key));
+  if (version === 2 && (unknownFields(parsed, ['version', 'scans', 'idempotency', 'reports', 'findingWorkflows']) ||
+      rawScans.some((scan) => unknownFields(scan, ['id', 'ownerId', 'projectId', 'scanType', 'assessmentId', 'agent', 'status',
+        'dastTargetUrl', 'dastMode', 'dastActiveConsent', 'createdAt', 'updatedAt', 'startedAt', 'completedAt',
+        'failureCode', 'failureMessage', 'resultSummary', 'findings', 'sca', 'dast'])) ||
+      (parsed as StoreDocument).idempotency.some((entry) => unknownFields(entry, ['accountId', 'key', 'projectId', 'scanType',
+        'assessmentId', 'targetUrl', 'scanId', 'createdAt'])))) {
+    throw new Error(`Scan store at ${path} has unsupported version 2 fields — refusing to start.`);
+  }
+  // The earlier experimental version wrote agent metadata into v1. Never
+  // silently rewrite or execute those records: their identity may already
+  // have been lost by an older reader. Offline reconciliation is required.
+  if (version === 1 && rawScans.some((scan) => typeof scan === 'object' && scan !== null && Object.hasOwn(scan, 'agent'))) {
+    throw new Error(`Scan store at ${path} contains agent metadata in version 1 — refusing to start; reviewed offline reconciliation is required.`);
+  }
   const seenIds = new Set<string>();
   const scans: ScanRecord[] = [];
   rawScans.forEach((entry, index) => {
@@ -850,7 +917,7 @@ function loadDocument(path: string): StoreDocument {
       findingWorkflows.push(workflow);
     });
   }
-  return { version: 1, scans, idempotency, reports, findingWorkflows };
+  return { document: { version, scans, idempotency, reports, findingWorkflows }, snapshot };
 }
 
 interface StoreInternals {
@@ -858,6 +925,12 @@ interface StoreInternals {
   idempotency: IdempotencyEntry[];
   reports: SecurityReport[];
   findingWorkflows: FindingWorkflowRecord[];
+  /** In-memory is safe; v1 files require an explicit offline migration. */
+  agentStorageReady(): boolean;
+  /** Refuse cached state that no longer matches the underlying file. */
+  assertCurrent(): void;
+  /** Cooperating file writers serialize a synchronous probe start with writes. */
+  withCurrent<T>(action: () => T): T;
   /** Persist the full next state atomically (called inside the queue). */
   persistWith(scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[], findingWorkflows: FindingWorkflowRecord[]): void;
 }
@@ -902,6 +975,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
 
   const toPublic = (record: ScanRecord): ScanRecord => ({
     ...record,
+    ...(record.agent === undefined ? {} : { agent: { ...record.agent } }),
     ...(record.findings === undefined ? {} : { findings: record.findings.map(safeFindingEvidence) }),
   });
 
@@ -923,13 +997,28 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   };
 
   return {
+    agentStorageReady: () => internals.agentStorageReady(),
     createScanWithQuota: (input) =>
       runExclusive(async () => {
+        // Refuse a changed/missing/unsupported cached document before quota.
+        // A legacy-only request retains its existing quota-compensation path
+        // for a temporary non-file obstruction; the guarded persist still
+        // rejects it before rename. Agent requests refuse it before quota.
+        try { internals.assertCurrent(); }
+        catch (error) {
+          if (input.agent !== undefined || !(error instanceof JsonStorePathUnavailableError)) throw error;
+        }
+        // This check is inside the scan mutation queue and precedes quota.
+        // A legacy v1 file is never converted merely by requesting a scan.
+        if (input.agent !== undefined && !internals.agentStorageReady()) return { outcome: 'compatibility-required' };
         // Defense in depth: malformed/missing DAST targets and stray
         // target claims on other scan types never reach quota consumption.
         if (
           (input.scanType === 'DAST' && !isSafeDastUrl(input.targetUrl)) ||
-          (input.scanType !== 'DAST' && input.targetUrl !== undefined)
+          (input.scanType !== 'DAST' && input.targetUrl !== undefined) ||
+          (input.agent !== undefined && (!isAgentScanContext(input.agent) || input.agent.cancelRequestedAt !== undefined || input.assessmentId === undefined ||
+            input.dastMode === 'ACTIVE_SAFE' || input.dastActiveConsent === true ||
+            (input.scanType !== 'DAST' && input.agent.sourceDigest === undefined)))
         ) return { outcome: 'invalid-target' };
         // 1. Idempotency replay — BEFORE consuming anything. Scoped to
         //    (ownerId, key); another account's key is simply absent.
@@ -946,6 +1035,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             }
             const scan = scansById.get(existing.scanId);
             if (scan !== undefined) {
+              // Agent and ordinary requests are never interchangeable; an
+              // idempotency replay must not erase the stricter boundary.
+              if (JSON.stringify(scan.agent ?? null) !== JSON.stringify(input.agent ?? null)) return { outcome: 'conflict' };
               // The original scan is authoritative for DAST mode and
               // consent, including older idempotency entries that did not
               // store these fields. An absent mode means legacy PASSIVE.
@@ -976,6 +1068,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           projectId: input.projectId,
           scanType: input.scanType,
           ...(input.assessmentId === undefined ? {} : { assessmentId: input.assessmentId }),
+          ...(input.agent === undefined ? {} : { agent: { ...input.agent } }),
           ...(input.targetUrl === undefined ? {} : { dastTargetUrl: input.targetUrl }),
           ...(input.dastMode === undefined ? {} : { dastMode: input.dastMode }),
           ...(input.dastActiveConsent === true ? { dastActiveConsent: true as const } : {}),
@@ -1294,6 +1387,33 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
       return Promise.resolve(toPublic(record));
     },
 
+    beginAgentProbe: (input, begin) => runExclusive(() => internals.withCurrent(() => {
+      const current = scansById.get(input.scanId);
+      if (current === undefined || current.status !== 'RUNNING' || current.scanType !== 'DAST' || current.ownerId !== input.ownerId ||
+          current.projectId !== input.projectId || current.assessmentId !== input.assessmentId ||
+          current.agent === undefined || current.agent.engagementId !== input.engagementId ||
+          current.agent.cancelRequestedAt !== undefined) return undefined;
+      // Wrap the result so both locks release immediately even when begin()
+      // returns a pending network promise. Never await I/O under either lock.
+      return { value: begin() };
+    })),
+
+    requestAgentCancellation: (input) => runExclusive(() => {
+      const current = scansById.get(input.scanId);
+      if (current === undefined || current.ownerId !== input.ownerId || current.projectId !== input.projectId ||
+          current.assessmentId !== input.assessmentId || current.agent === undefined) return { outcome: 'not-found' as const };
+      if (current.agent.cancelRequestedAt !== undefined) return { outcome: 'already-requested' as const, scan: toPublic(current) };
+      if (current.status !== 'QUEUED' && current.status !== 'RUNNING') return { outcome: 'terminal' as const };
+      const at = new Date().toISOString();
+      const updated: ScanRecord = { ...current, updatedAt: at, agent: { ...current.agent, cancelRequestedAt: at } };
+      // Persist before acknowledging/aborting. The same mutation queue
+      // serializes this decision with claim, completion and failure.
+      const nextScans = [...scansById.values()].map((scan) => scan.id === updated.id ? updated : scan);
+      internals.persistWith(nextScans, [...idempotencyByKey.values()], [...reportsByScan.values()], workflowValues());
+      scansById.set(updated.id, updated);
+      return { outcome: 'requested' as const, scan: toPublic(updated) };
+    }),
+
     claimNextQueued: () =>
       runExclusive(() => {
         const candidate = [...scansById.values()]
@@ -1317,7 +1437,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
     completeScan: (id, resultSummary, findings, sca, dast) =>
       runExclusive(() => {
         const current = scansById.get(id);
-        if (current === undefined || current.status !== 'RUNNING') return undefined;
+        // Cancellation and completion are serialized; whichever commits
+        // first wins, and cancelled work never persists scanner findings.
+        if (current === undefined || current.status !== 'RUNNING' || current.agent?.cancelRequestedAt !== undefined) return undefined;
         if (!isScanResultSummary(resultSummary)) return undefined;
         if ((resultSummary.astParser !== undefined || resultSummary.astCoverage !== undefined) && current.scanType !== 'SAST') return undefined;
         if (!isAstSupplementForScanType(resultSummary, current.scanType)) return undefined;
@@ -1419,6 +1541,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         const current = scansById.get(id);
         if (
           current === undefined || current.status !== 'RUNNING' || current.scanType !== 'DAST' ||
+          current.agent?.cancelRequestedAt !== undefined ||
           (failureCode !== 'DAST_REQUEST_TIMEOUT' && failureCode !== 'DAST_SCAN_TIMEOUT')
         ) return undefined;
         const updated = applyClaimPersist(current, (record) => ({
@@ -1438,13 +1561,14 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (current === undefined || current.status !== 'RUNNING') {
           return undefined;
         }
+        const cancelled = current.agent?.cancelRequestedAt !== undefined;
         const updated = applyClaimPersist(current, (record) => ({
           ...record,
           status: 'FAILED',
           completedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          failureCode,
-          failureMessage: failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
+          failureCode: cancelled ? 'SCAN_ENGINE_ERROR' : failureCode,
+          failureMessage: cancelled ? 'Agent job cancellation was requested.' : failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
         }));
         return updated === undefined ? undefined : toPublic(updated);
       }),
@@ -1583,8 +1707,9 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
             status: 'FAILED',
             completedAt: now,
             updatedAt: now,
-            failureCode,
-            failureMessage: failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
+            failureCode: record.agent?.cancelRequestedAt === undefined ? failureCode : 'SCAN_ENGINE_ERROR',
+            failureMessage: record.agent?.cancelRequestedAt === undefined
+              ? failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH) : 'Agent job cancellation was requested.',
           });
         }
         const nextScans = [...scansById.values()].map((record) => updatedById.get(record.id) ?? record);
@@ -1597,27 +1722,40 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   };
 }
 
-/** Durable scan store: one JSON document, atomic writes. */
+/** Durable scan store: cooperative local guards, not mandatory or distributed fencing. */
 export function createJsonFileScanStore(path: string): ScanStore {
-  const document = loadDocument(path);
+  const { document, snapshot } = loadDocument(path);
+  const fence = createJsonFileWriteFence(path, snapshot, 'Scan');
+  let version: 1 | 2 | undefined = document?.version;
   const persistWith = (
     scans: ScanRecord[], idempotency: IdempotencyEntry[], reports: SecurityReport[], findingWorkflows: FindingWorkflowRecord[],
   ): void => {
-    const payload: StoreDocument = { version: 1, scans, idempotency, reports, findingWorkflows };
-    writePrivateJson(path, `${JSON.stringify(payload, null, 2)}\n`);
+    const hasAgent = scans.some((scan) => scan.agent !== undefined);
+    if (hasAgent && version === 1) throw new Error('An existing version 1 scan store cannot be upgraded automatically.');
+    // Version 2 is sticky, even if future operations have no agent records.
+    // The first write of a genuinely new agent store uses v2; a legacy-only
+    // store retains v1 and requires a separately approved offline migration.
+    const nextVersion = version ?? (hasAgent ? 2 : 1);
+    const payload: StoreDocument = { version: nextVersion, scans, idempotency, reports, findingWorkflows };
+    fence.persist(`${JSON.stringify(payload, null, 2)}\n`);
+    version = nextVersion;
   };
-  return createScanStoreFrom({
-    scans: document.scans,
-    idempotency: document.idempotency,
-    reports: document.reports,
-    findingWorkflows: document.findingWorkflows ?? [],
+  return registerJsonFileStore(createScanStoreFrom({
+    scans: document?.scans ?? [],
+    idempotency: document?.idempotency ?? [],
+    reports: document?.reports ?? [],
+    findingWorkflows: document?.findingWorkflows ?? [],
+    agentStorageReady: () => version !== 1 && !fence.fenced,
+    assertCurrent: fence.assertAvailable,
+    withCurrent: fence.withCurrent,
     persistWith,
-  });
+  }), path);
 }
 
 /** In-memory scan store (tests and explicit `:memory:` setups). */
 export function createMemoryScanStore(): ScanStore {
-  return createScanStoreFrom({ scans: [], idempotency: [], reports: [], findingWorkflows: [], persistWith: () => undefined });
+  return createScanStoreFrom({ scans: [], idempotency: [], reports: [], findingWorkflows: [],
+    agentStorageReady: () => true, assertCurrent: () => undefined, withCurrent: (action) => action(), persistWith: () => undefined });
 }
 
 /**

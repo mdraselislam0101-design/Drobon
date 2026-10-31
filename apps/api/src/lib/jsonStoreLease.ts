@@ -6,8 +6,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 /**
  * A best-effort local guard for the standard HTTP runtime, not a distributed
  * lock. Linux abstract sockets are scoped to the network namespace. Direct
- * store/createApp users, injected stores, other namespaces/hosts, hard links,
- * and hostile filesystem aliases are outside this guard. No lockfiles are
+ * store/createApp users, opaque injected stores, other namespaces/hosts, hard
+ * links, and hostile filesystem aliases are outside this guard. No lockfiles are
  * created and the kernel releases these leases on process exit or SIGKILL.
  */
 export interface JsonStoreLeases {
