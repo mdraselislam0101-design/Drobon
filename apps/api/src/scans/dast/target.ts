@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { hasAmbiguousDastReference } from './reference.js';
 
 export type DastTargetErrorCode = 'DAST_TARGET_INVALID' | 'DAST_TARGET_BLOCKED' | 'DAST_DNS_FAILED';
 
@@ -139,7 +140,9 @@ export function isPublicDastAddress(address: string): boolean {
 function rejectTraversalPath(raw: string): void {
   const match = raw.match(/^https?:\/\/[^/?#]*(\/[^?#]*)?/i);
   const path = match?.[1] ?? '/';
-  if (/%(?:2e|2f|5c)/i.test(path)) throw new DastTargetError('DAST_TARGET_INVALID');
+  // %25 can hide another layer of encoded dots or separators. Reject it
+  // before DNS, including for legacy unlinked scans without an engagement.
+  if (/%(?:2e|2f|5c|25)/i.test(path)) throw new DastTargetError('DAST_TARGET_INVALID');
   for (const segment of path.split('/')) {
     let decoded = segment;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -168,6 +171,9 @@ export function normalizeDastTarget(raw: unknown): { url: string; hostname: stri
   ) {
     throw new DastTargetError('DAST_TARGET_INVALID');
   }
+  // Check raw input before WHATWG URL normalization; matrix-parameter
+  // dot segments may otherwise cross an engagement prefix on some servers.
+  if (hasAmbiguousDastReference(raw)) throw new DastTargetError('DAST_TARGET_INVALID');
   rejectTraversalPath(raw);
   let parsed: URL;
   try {
@@ -263,7 +269,8 @@ export function createDastTargetPolicy(options: { resolve?: DastAddressResolver;
     resolveNormalized,
     resolveRedirect: async (current, location, originalHostname) => {
       // eslint-disable-next-line no-control-regex -- reject control characters in untrusted redirects.
-      if (location.length === 0 || location.length > MAX_TARGET_URL_LENGTH || /[\u0000-\u001f\u007f\\]/.test(location)) {
+      if (location.length === 0 || location.length > MAX_TARGET_URL_LENGTH || /[\u0000-\u001f\u007f\\]/.test(location) ||
+          hasAmbiguousDastReference(location)) {
         throw new DastTargetError('DAST_TARGET_INVALID');
       }
       let redirectUrl: URL;
@@ -272,13 +279,15 @@ export function createDastTargetPolicy(options: { resolve?: DastAddressResolver;
       } catch {
         throw new DastTargetError('DAST_TARGET_INVALID');
       }
-      const resolved = await resolveNormalized(redirectUrl.toString());
+      // Reject cross-host and HTTPS downgrade redirects on syntax alone,
+      // before DNS can contact a resolver for an out-of-scope hostname.
+      const normalized = normalizeDastTarget(redirectUrl.toString());
       const currentProtocol = new URL(current.url).protocol;
-      const nextProtocol = new URL(resolved.url).protocol;
-      if (resolved.hostname !== originalHostname || (currentProtocol === 'https:' && nextProtocol !== 'https:')) {
+      const nextProtocol = new URL(normalized.url).protocol;
+      if (normalized.hostname !== originalHostname || (currentProtocol === 'https:' && nextProtocol !== 'https:')) {
         throw new DastTargetError('DAST_TARGET_BLOCKED');
       }
-      return resolved;
+      return resolveNormalized(normalized.url);
     },
   };
 }

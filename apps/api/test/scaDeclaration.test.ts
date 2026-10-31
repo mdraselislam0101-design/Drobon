@@ -173,6 +173,24 @@ describe('declaration scan layer: real findings, honest coverage', () => {
     expect(result.findings).toHaveLength(1);
   });
 
+  test('path-qualified artifacts only match their relative suffix and never hidden paths', () => {
+    const qualified = rule('DPK-SCA-9012', { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '^\\*$' }, { artifact: 'configs/package.json' });
+    const hidden = rule('DPK-SCA-9013', { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '^\\*$' }, { artifact: '.hidden/package.json' });
+    const contents = JSON.stringify({ dependencies: { fixture: '*' } });
+    const result = evaluateScaDeclarations({
+      rawRules: [qualified, hidden], record: scanRecord(),
+      files: [
+        { path: 'other/package.json', content: contents },
+        { path: 'workspace/configs/package.json', content: contents },
+        { path: 'workspace/.hidden/package.json', content: contents },
+      ],
+    });
+    expect(result.findings.map((finding) => finding.ruleId)).toEqual(['DPK-SCA-9012']);
+    expect(result.findings[0]?.file).toBe('workspace/configs/package.json');
+    expect(result.rulesEvaluated).toBe(1);
+    expect(result.rulesNotEvaluated).toBe(1);
+  });
+
   test('a malformed artifact is not a "no match": it stays unevaluated', () => {
     const result = evaluateScaDeclarations({
       rawRules: [wildcardRule],

@@ -40,8 +40,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  const prefix = error instanceof ConfigError ? 'Configuration error' : 'Fatal startup error';
-  process.stderr.write(`${prefix}: ${message}\n`);
+  // ConfigError issues are constructed from fixed validation messages. Other
+  // startup exceptions may contain paths, source text or credentials.
+  const message = error instanceof ConfigError
+    ? `Configuration error: ${error.message}`
+    : 'Fatal startup error: details withheld.';
+  process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });

@@ -164,6 +164,8 @@ describe('bounded project flow and scan-time facts', () => {
     expect(finding.title).toContain('AST heuristic');
     expect(finding.title).not.toBe(RULE.title);
     expect(finding.description).toContain('not by its exact pattern');
+    expect(finding.description).toContain('argument-vector');
+    expect(finding.description).toContain('does not prove shell execution');
     expect(finding.cwe).toBeUndefined();
   });
 

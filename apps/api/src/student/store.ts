@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
 import {
   STUDENT_LESSON_ID_PATTERN,
   STUDENT_LESSONS_MAX,
@@ -44,8 +43,8 @@ export interface StudentStore {
 function parseLessonEntry(value: unknown, userId: string): StudentLessonProgress | undefined {
   if (!isStudentLessonProgress(value)) return undefined;
   const entry = value as StudentLessonProgress;
-  // Catalog alignment: a persisted entry must reference a shipped lesson.
-  if (findStudentLesson(entry.lessonId) === undefined) return undefined;
+  // Keep historically valid progress even when its external catalog is
+  // temporarily unavailable or changes. Writes are catalog-checked below.
   void userId;
   return entry;
 }
@@ -79,8 +78,9 @@ function readDocument(path: string): StoreDocument {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
-  } catch {
-    return { version: 1, users: [] };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, users: [] };
+    throw new Error(`Student store at ${path} cannot be read — refusing to start.`);
   }
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== 'object' || parsed === null) {
@@ -104,7 +104,10 @@ function readDocument(path: string): StoreDocument {
   return { version: 1, users };
 }
 
-function createStore(initial: StudentRecord[], persistWith: (users: StudentRecord[]) => void): StudentStore {
+export type StudentLessonLookup = (lessonId: string) => Promise<boolean>;
+const embeddedLessonLookup: StudentLessonLookup = async (lessonId) => findStudentLesson(lessonId) !== undefined;
+
+function createStore(initial: StudentRecord[], persistWith: (users: StudentRecord[]) => void, isKnownLesson: StudentLessonLookup): StudentStore {
   let queue: Promise<unknown> = Promise.resolve();
   const runExclusive = <T>(task: () => T | Promise<T>): Promise<Awaited<T>> => {
     const run = queue.then(task, task);
@@ -112,11 +115,15 @@ function createStore(initial: StudentRecord[], persistWith: (users: StudentRecor
     return run as Promise<Awaited<T>>;
   };
   const byUser = new Map(initial.map((record) => [record.userId, record]));
-  const upsert = (userId: string, now: string, lessonId: string, build: (existing: StudentLessonProgress | undefined) => StudentLessonProgress): StudentLessonProgress[] => {
-    if (findStudentLesson(lessonId) === undefined) throw new Error(`Unknown student lesson id: ${lessonId}`);
+  const upsert = async (userId: string, now: string, lessonId: string, build: (existing: StudentLessonProgress | undefined) => StudentLessonProgress): Promise<StudentLessonProgress[]> => {
+    if (!STUDENT_LESSON_ID_PATTERN.test(lessonId) || !await isKnownLesson(lessonId)) throw new Error('Unknown student lesson id.');
+    if (userId.length === 0 || userId.length > 80 || !Number.isFinite(Date.parse(now))) throw new Error('Invalid student progress owner or timestamp.');
     const record = byUser.get(userId) ?? { userId, lessons: [], updatedAt: now };
     const existing = record.lessons.find((entry) => entry.lessonId === lessonId);
     const nextEntry = build(existing);
+    if (!isStudentLessonProgress(nextEntry)) throw new Error('Invalid student progress entry.');
+    if (existing === undefined && record.lessons.length >= STUDENT_LESSONS_MAX) throw new Error('Student lesson progress capacity reached.');
+    if (!byUser.has(userId) && byUser.size >= STUDENT_RECORDS_MAX) throw new Error('Student progress capacity reached.');
     const lessons = existing === undefined
       ? [...record.lessons, nextEntry]
       : record.lessons.map((entry) => (entry.lessonId === nextEntry.lessonId ? nextEntry : entry));
@@ -136,12 +143,12 @@ function createStore(initial: StudentRecord[], persistWith: (users: StudentRecor
       ...(existing?.practice === undefined ? {} : { practice: existing.practice }),
     }))),
 
-    recordQuiz: (userId, lessonId, correct, total, at) => runExclusive(() => {
+    recordQuiz: (userId, lessonId, correct, total, at) => runExclusive(async () => {
       const record = byUser.get(userId);
       const existing = record?.lessons.find((entry) => entry.lessonId === lessonId);
       const attempts = (existing?.quiz?.attempts ?? 0) + 1;
       if (attempts > STUDENT_QUIZ_ATTEMPTS_MAX) return { outcome: 'attempt-limit' as const };
-      const bestCorrect = Math.max(existing?.quiz?.bestCorrect ?? 0, correct);
+      const bestCorrect = existing?.quiz?.total === total ? Math.max(existing.quiz.bestCorrect, correct) : correct;
       const next: StudentLessonProgress = {
         lessonId,
         ...(existing?.readAcknowledgedAt === undefined ? {} : { readAcknowledgedAt: existing.readAcknowledgedAt }),
@@ -150,7 +157,7 @@ function createStore(initial: StudentRecord[], persistWith: (users: StudentRecor
       };
       return {
         outcome: 'recorded' as const,
-        progress: upsert(userId, at, lessonId, () => next),
+        progress: await upsert(userId, at, lessonId, () => next),
       };
     }),
 
@@ -180,22 +187,19 @@ function createStore(initial: StudentRecord[], persistWith: (users: StudentRecor
   };
 }
 
-export function createJsonFileStudentStore(path: string): StudentStore {
+export function createJsonFileStudentStore(path: string, isKnownLesson: StudentLessonLookup = embeddedLessonLookup): StudentStore {
   const document = readDocument(path);
   const persistWith = (users: StudentRecord[]): void => {
     const payload: StoreDocument = { version: 1, users };
     const serialized = `${JSON.stringify(payload, null, 2)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > STUDENT_DOCUMENT_MAX_BYTES) throw new RangeError('Student store capacity has been reached.');
-    mkdirSync(dirname(path), { recursive: true });
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, serialized, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, serialized);
   };
-  return createStore(document.users, persistWith);
+  return createStore(document.users, persistWith, isKnownLesson);
 }
 
-export function createMemoryStudentStore(): StudentStore {
-  return createStore([], () => undefined);
+export function createMemoryStudentStore(isKnownLesson: StudentLessonLookup = embeddedLessonLookup): StudentStore {
+  return createStore([], () => undefined, isKnownLesson);
 }
 
 export { STUDENT_LESSON_ID_PATTERN };

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDatasetService } from '../src/external/service.js';
+import { getMergedSastRules, hasRejectedPackRules } from '../src/external/packIntegration.js';
 
 const dirs: string[] = [];
 const silent = { info: () => {}, warn: () => {}, error: () => {} };
@@ -80,6 +81,25 @@ describe('unified dataset service', () => {
     const status = await createDatasetService({ datasetPath: root, providerId: 'filesystem', logger: silent }).status();
     expect(status.scaPacks.count).toBe(2);
     expect(status.conformance.scaDeclarationScanReachableRules).toBe(1);
+  });
+
+  test('malformed files and unenumerated entries make pack coverage incomplete', async () => {
+    const root = fixtureDataset();
+    const dir = join(root, 'packs', 'sast', 'v1', 'rules');
+    writeFileSync(join(dir, 'broken.json'), '{not json');
+    // A self-referential symlink must not be traversed, even in a test pack.
+    symlinkSync(dir, join(dir, 'loop'));
+    const service = createDatasetService({ datasetPath: root, providerId: 'filesystem', logger: silent });
+    const [status, rules] = await Promise.all([service.status(), getMergedSastRules(service)]);
+    expect(rules).toHaveLength(1);
+    expect(status.conformance.sast).toMatchObject({ filesSeen: 3, accepted: 1, enumerationFailures: 1 });
+    expect(status.conformance.sast.rejected.map((entry) => entry.reason)).toEqual(expect.arrayContaining([
+      expect.stringContaining('malformed JSON'), expect.stringContaining('symbolic link'), expect.stringContaining('unknown field'),
+    ]));
+    expect(await hasRejectedPackRules(service, 'sast')).toBe(true);
+    // An absent pack directory has unknown cardinality, not a fabricated file count.
+    expect(status.conformance.dast).toMatchObject({ filesSeen: 0, accepted: 0, enumerationFailures: 1 });
+    expect(await hasRejectedPackRules(service, 'dast')).toBe(true);
   });
 
   test('configured service deduplicates vuln-intel identity and refuses invalid packs', async () => {

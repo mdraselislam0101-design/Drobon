@@ -29,6 +29,11 @@ are also real engines now (see `docs/SCA.md`, `docs/SECRETS.md`, and
 > chains with limited SQL parameterization handling. It is a SHALLOW
 > structural analyzer, not a full grammar — every family stays `PARTIAL`.
 > Newer limited syntax parsers and project-flow details are in [`AST_ANALYSIS.md`](AST_ANALYSIS.md).
+> Command-category AST findings are review candidates: argument-vector use
+> does not itself prove shell execution, while shell options, a dynamic
+> executable and dangerous arguments may still be unsafe. Severity is
+> inherited from the category reporter, not independently validated. No
+> blanket `execFile` suppression was added; the narrow synthetic FP remains.
 >
 > Loader conformance: every pack rule is closed-field validated, ReDoS-linted
 > and its declared tests are executed before it reaches the engine
@@ -45,23 +50,22 @@ decision below follows from that:
 - **Never executed.** The engine reads files as text and applies
   regular expressions with a hard line cap. There is no `eval`, no
   `new Function`, no `require`/`import` of snapshot content, no shell,
-  no `vm`, no worker that could touch the code. A file containing
-  `exec('touch /tmp/pwned')` is *reported as a finding* (rule
-  DG-SAST-001) — it is never executed. This is verified end-to-end by
-  tests (the marker file does not exist after the scan).
+  no `vm` or execution of snapshot code. Bounded syntax analysis can use an
+  isolated worker to parse the text; it does not import or execute the target.
+  A synthetic dangerous-looking call can be reported when an applicable rule
+  is loaded, but the source is never run (verified by a marker-file test).
 - **Bounded work.** Every dimension is capped: 200 files, 256 KiB per
   file, 1 MiB total, 200 findings, a 10 s processing deadline. Oversize
   files are skipped (counted), over-limit scans fail closed with
   `SAST_FILE_LIMIT_EXCEEDED` / `SAST_TARGET_TOO_LARGE`; a deadline
-  breach or abort fails with `SAST_SCAN_TIMEOUT`. All rules are
-  linear-time — the rule suite pins ReDoS-shaped patterns out and a
-  timing test guards the whole corpus.
-- **No exfiltration channel.** Findings evidence is windowed to
-  ≤ 200 characters, control-character-free, and **credential values are
-  redacted before persistence** (length-neutral: the structure stays,
-  the value does not). Uploaded content is NEVER echoed back: the
-  sources read API returns metadata only (file count, bytes per file,
-  timestamps). Logs carry counts and ids, never content or secrets.
+  breach or abort fails with `SAST_SCAN_TIMEOUT`. Static pattern lint and
+  selected timing tests reject tested ReDoS shapes; they do not prove every
+  accepted regex is linear-time.
+- **Evidence privacy boundary.** New source findings use a fixed withheld
+  evidence marker, not a source snippet; the source read API returns metadata
+  rather than file bodies. Raw source is still persisted, historical data may
+  contain sensitive evidence, and arbitrary filenames, metadata or log text
+  cannot be proven secret-free. Protect stores and review historical data.
 - **Fail closed.** Unknown failure modes, malformed stored snapshots,
   traversal-shaped paths in a stored file list, owner mismatches and
   findings injected into non-terminal records all refuse to start or
@@ -232,10 +236,10 @@ bounded flow reasoning, not parser/AST/dataflow depth.
 
 ### Finding identity (deterministic)
 
-`fingerprint = sha256(ruleId \n file \n line \n sha256(evidence))`; the
-finding id is `fnd_` + the first 24 hex chars. Rescanning the same
-snapshot yields the SAME ids — a re-scan is diffable, not duplicative;
-moving a line changes the fingerprint (it is a new fact). Findings are
+For SAST and Secrets, the v2 fingerprint hashes the scanner, project, rule,
+normalized file and line, not evidence; the finding id is `fnd_` + the first
+24 hex chars. Rescanning the same snapshot yields stable ids, but moving a
+line can change identity. Findings are
 ordered most-severe-first (`CRITICAL → HIGH → MEDIUM → LOW → INFO`),
 then rule id, then location.
 
@@ -271,8 +275,7 @@ then rule id, then location.
 ```
 snapshot (owner-checked) ─→ discovery (path policy, caps, binary skip)
                         ─→ per-file line scan (≤ 10 000 lines, all rules)
-                        ─→ evidence windowing (≤ 200 chars, control-char free)
-                        ─→ credential redaction (length-neutral)
+                        ─→ fixed withheld-source evidence
                         ─→ finding caps + ordering
                         ─→ COMPLETED { resultSummary, findings }
 ```
@@ -310,15 +313,16 @@ metadata, honest empty state, archived projects cannot replace) and
 per-completed-scan **View findings** (lazy; server-side severity/scanner
 filters and bounded pagination), safe per-finding detail, a project
 security overview, and persisted report controls. Evidence renders as
-literal text (React escaping) — an injection payload is displayed, never
-executed, and redacted secrets stay redacted in the UI. SCA advisory
-records remain distinct from the common Finding contract.
+literal text (React escaping); source snippets are withheld in current
+finding projections. Selected synthetic UI tests cover this boundary but do
+not prove every other text field is secret-free. SCA advisory records remain
+distinct from the common Finding contract.
 
 ## What this is NOT
 
 - Not a dataset product: no CVE/NVD/GHSA/OSV/KEV/EPSS data — the
   dataset lock holds (rules are hand-written heuristics, not feeds).
-- Not a sandbox escape risk: analysis-only, bounded, no execution.
+- Not a complete security proof: analysis is bounded and does not execute source, but parser/runtime defects cannot be ruled out.
 - SAST's DG-SAST-005 remains a lexical hardcoded-credential heuristic;
   the separate SECRETS engine is implemented with its own rules and
   mandatory redaction (see `docs/SECRETS.md`).

@@ -1,4 +1,4 @@
-import { isSafeDastUrl } from './dast.js';
+import { hasAmbiguousDastPath, isSafeDastUrl } from './dast.js';
 import { PROJECT_ID_PATTERN } from './projects.js';
 import { ASSESSMENT_ID_PATTERN } from './assessmentIds.js';
 import { SCAN_ID_PATTERN, isScanStatus, isScanType, type FindingSeverity, type ScanStatus, type ScanType } from './scans.js';
@@ -271,10 +271,13 @@ export function engagementAllowsScan(
       const path = options.path;
       // Encoded separators/dots can be decoded or normalised differently by
       // proxies and target frameworks. Do not treat an ambiguous path as in scope.
-      if (/%(?:2f|5c|2e|25)/i.test(path) || path.includes('\\')) {
+      if (hasAmbiguousDastPath(path)) {
         return { allowed: false, reason: 'The target path uses ambiguous encoded separators or traversal.' };
       }
       const inPath = inHost.filter((item) => item.scopePaths.length === 0 || item.scopePaths.some((prefix) => {
+        // Historical engagement records remain readable, but an ambiguous
+        // persisted prefix cannot authorize a new request.
+        if (hasAmbiguousDastPath(prefix)) return false;
         if (prefix === '/') return true;
         const base = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
         return path === base || path.startsWith(`${base}/`);

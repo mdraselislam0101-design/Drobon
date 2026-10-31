@@ -1,6 +1,6 @@
 # SCA Declaration Readers — ৯টি parser, ১,০০০টি rule
 
-> **বর্তমান সংশোধন (2026-10-28):** ৯টি reader-এর নাম নিবন্ধিত হলেও সব document shape সম্পূর্ণ সমর্থিত নয়। আগের “১,০০০ rule scan-reachable” দাবি সঠিক ছিল না: dotfile/source-path সীমা ও bounded parser coverage আছে। Status এখন শুধু parser ও uploadable artifact অনুযায়ী *সম্ভাব্য* eligible rule গোনে; non-JSON reader ব্যবহার করা স্ক্যান `PARTIAL`। আগের round-trip mismatch-এর কিছু ক্ষেত্রে reader ভুল document ফেরত দিতে পারে, সেগুলো সবসময় `NOT_EVALUATED` হয় না।
+> **বর্তমান সংশোধন (2026-10-31):** ৯টি reader-এর নাম নিবন্ধিত হলেও সব document shape সম্পূর্ণ সমর্থিত নয়। আগের “১,০০০ rule scan-reachable” দাবি সঠিক ছিল না: dotfile/source-path সীমা ও bounded parser coverage আছে। Status শুধু parser ও uploadable artifact অনুযায়ী *সম্ভাব্য* eligible rule গোনে; non-JSON reader ব্যবহার করা স্ক্যান `PARTIAL`। `requirements.txt` reader স্পষ্ট খালি pip option (`--option=`) গ্রহণ করে, কিন্তু argument ছাড়া option ও অজানা directive প্রত্যাখ্যান করে। আলাদা inventory parser include, constraint, editable, bare URL বা malformed লাইন বাদ দিলে `PARTIAL` দেখায়; কোনো referenced file নিজে থেকে পড়ে না। সীমিত fixture ফল বাস্তব scanner accuracy নয়।
 
 
 **তারিখ:** 2026-10-26 · **Branch:** `arena/5bb07bd8-drobon` · **Scope:** শুধু মেইন অ্যাপ (`Drobon`)। ডেটাসেট repo / ডেটাবেস / নতুন npm dependency — কিছুই নেই। বিদ্যমান SCA declaration engine-এর উপর **additive**।
@@ -38,7 +38,9 @@
 
 **Dispatch:** `parseDeclarationDocument(parser, artifact, content)` — কিছু artifact parser-নির্বিশেষে বিশেষ reader পায় (`go.mod` → goMod reader, `DESCRIPTION` → properties reader)।
 
-**Design rule:** কোনো reader কোনো shape বুঝতে না পারলে **`undefined`** দেয় — ভুয়া empty document নয়। Scan layer সেই rule-কে `declarationRulesNotEvaluated`-এ গোনে, কখনো "clean" বলে না।
+**Design rule:** অচেনা বা প্রত্যাখ্যাত shape-কে **`undefined`** দেওয়াই লক্ষ্য; subset parser সব অচেনা syntax সবসময় শনাক্ত করতে পারে না। Scan layer প্রত্যাখ্যাত rule-কে `declarationRulesNotEvaluated`-এ গোনে; non-JSON analysis `PARTIAL`, কখনো পূর্ণ grammar coverage নয়।
+
+**XML subset (2026-10-31):** পাঁচটি predefined reference এবং bounded decimal/hex character reference একবার decode হয়; মন্তব্য ও processing instruction উপেক্ষিত হয়। অজানা entity, অবৈধ code point, duplicate attribute, অসমাপ্ত trailing markup, DTD/entity declaration ও CDATA প্রত্যাখ্যাত। External entity expansion, network, file read বা recursive expansion নেই। Namespace এবং XML-এর সব valid construct সমর্থনের দাবি নয়; unsupported valid input-ও `PARTIAL`/not evaluated হতে পারে। Python standard-library XML parser দিয়ে সীমিত স্বাধীন mechanical cross-check হয়েছে। ৮টি NuGet conflicting-alias authored fixture এখনও render করা যায় না; এটি Dataset পরিবর্তন করে ঠিক করা হয়নি।
 
 ---
 

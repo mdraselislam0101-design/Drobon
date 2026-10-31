@@ -26,10 +26,11 @@ import {
  *   security-sensitive field (id, projectId, requestedBy, status,
  *   timestamps, result, plan/role claims) and the prototype-chain keys
  *   are rejected (422);
- * - QUOTA+ATOMICITY: creation consumes quota exactly once, atomically
- *   with the durable append (10-way concurrency, retries, cross-project
- *   and cross-account races; FREE=3/month; PRO exempt; shared device;
- *   UTC month rollover; archived projects rejected);
+ * - QUOTA+CONCURRENCY: creation serializes quota and scan append (10-way
+ *   concurrency, retries, cross-project and cross-account races; FREE=3/month;
+ *   PRO exempt; shared device; UTC rollover; archived projects rejected).
+ *   The separate files are not a crash-atomic transaction; write-failure
+ *   compensation is covered separately in scanQuotaFailure.test.ts;
  * - IDEMPOTENCY: same key+request replays the original scan (no second
  *   consumption); same key+different request → 409; keys are scoped to
  *   the account;
@@ -864,6 +865,34 @@ describe('idempotency keys', () => {
       expect(conflictType.res.status).toBe(409);
       expect(await getUsage(server, owner)).toEqual({ used: 1 });
       expect(await listScans(server, owner, otherProject)).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test('DAST idempotency distinguishes mode and consent, with legacy PASSIVE defaults', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      const passive = await requestScan(server, owner, projectId, { scanType: 'DAST' }, 'dast-passive-key');
+      expect(passive.res.status).toBe(201);
+      const samePassive = await requestScan(server, owner, projectId, { scanType: 'DAST', dastMode: 'PASSIVE' }, 'dast-passive-key');
+      expect(samePassive.res.status).toBe(200);
+      expect(scanOf(samePassive.body).id).toBe(scanOf(passive.body).id);
+      expect((await requestScan(server, owner, projectId, { scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true }, 'dast-passive-key')).res.status).toBe(409);
+      expect((await requestScan(server, owner, projectId, { scanType: 'DAST', dastMode: 'PASSIVE', dastActiveConsent: true }, 'dast-passive-key')).res.status).toBe(409);
+
+      const active = await requestScan(server, owner, projectId, { scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true }, 'dast-active-key');
+      expect(active.res.status).toBe(201);
+      const sameActive = await requestScan(server, owner, projectId, { scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true }, 'dast-active-key');
+      expect(sameActive.res.status).toBe(200);
+      expect(scanOf(sameActive.body).id).toBe(scanOf(active.body).id);
+      expect((await requestScan(server, owner, projectId, { scanType: 'DAST' }, 'dast-active-key')).res.status).toBe(409);
+      expect(await getUsage(server, owner)).toEqual({ used: 2 });
+      expect(await listScans(server, owner, projectId)).toHaveLength(2);
     } finally {
       await server.stop();
     }

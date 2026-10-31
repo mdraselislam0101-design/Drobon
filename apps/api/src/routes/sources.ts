@@ -170,7 +170,7 @@ export function createSourceRoutes(deps: SourceRouteDeps): Route[] {
         };
         const record = await sources.replace(input);
         ctx.logger.info('Source snapshot stored', {
-          requestId: ctx.id,
+          requestId: ctx.logId,
           userId: actor.id,
           projectId: project.id,
           fileCount: files.length,

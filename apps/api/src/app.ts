@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiConfig } from './config.js';
 import {
@@ -8,11 +9,13 @@ import {
   methodNotAllowed,
   notFound,
   unauthorized,
+  unavailable,
 } from './errors.js';
 import { matchRoutePath, type Middleware, type RequestContext, type Route } from './http.js';
 import { createJsonFileUserRepository } from './auth/jsonFileUserRepository.js';
 import { createMemoryUserRepository } from './auth/memoryUserRepository.js';
 import type { UserRepository } from './auth/repositories.js';
+import { createAccountMutationLock } from './auth/accountMutationLock.js';
 import { createSessionStore, type SessionStore } from './auth/sessions.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { createAuthRateLimiter } from './middleware/authRateLimit.js';
@@ -33,7 +36,7 @@ import { createStatusRoutes } from './routes/status.js';
 import { createSubscriptionRoutes } from './routes/subscription.js';
 import { createUsageRoutes } from './routes/usage.js';
 import { createProjectRoutes } from './routes/projects.js';
-import { createUsageService, type UsageService } from './usage/service.js';
+import { createUsageService, recoverScanUsageReservations, type UsageService } from './usage/service.js';
 import { createEntitlementService, type EntitlementService } from './entitlements/service.js';
 import { createJsonFileEntitlementStore, createMemoryEntitlementStore, type EntitlementStore } from './entitlements/store.js';
 import { createMemoryUsageStore, createUsageFileStore } from './usage/store.js';
@@ -57,7 +60,7 @@ import { createScaEngine } from './scans/sca/engine.js';
 import { createSecretsEngine } from './scans/secrets/engine.js';
 import { createNullIntelligenceProvider } from './scans/sca/provider.js';
 import { createFilesystemIntelligenceProvider } from './scans/sca/filesystemProvider.js';
-import { createDatasetService } from './external/service.js';
+import { createDatasetService, type DatasetService } from './external/service.js';
 import { createAdvisoryService, type AdvisoryService } from './external/advisory.js';
 import { createAdvisoryRoutes } from './routes/advisory.js';
 import { createDatasetRoutes } from './external/routes.js';
@@ -170,6 +173,8 @@ export interface AppDeps {
   /** Durable admin PRO entitlement store; tests may inject a local fixture. */
   entitlementStore?: EntitlementStore;
   partnerStore?: PartnerStore;
+  /** Injectable in-memory Dataset service for tests; production uses configured read-only provider. */
+  datasetService?: DatasetService;
   paymentConfigStore?: PaymentConfigStore;
   /** Clock for partner/coupon/commission timestamps (injectable for tests). */
   partnerNow?: () => number;
@@ -222,11 +227,29 @@ export function createApp(deps: AppDeps): App {
   // Account store: durable by default (fail-fast on a corrupt document —
   // createApp throws, the process refuses to start). Tests inject their
   // own repository; `:memory:` is the explicitly-ephemeral dev opt-in.
-  const users: UserRepository =
+  const accountRepository: UserRepository =
     deps.users ??
     (config.authStorePath === ':memory:'
       ? createMemoryUserRepository()
       : createJsonFileUserRepository(config.authStorePath));
+  // A request may already be in flight when partner activation begins. Check
+  // both before and after account reads so a delayed reader cannot observe a
+  // transient cross-store PRO state. Recovery/compensation uses the underlying
+  // repository directly; normal account semantics remain unchanged.
+  let partnerConsistencyBlocked = (): boolean => false;
+  const guardedAccountRead = async <T>(read: () => Promise<T>): Promise<T> => {
+    if (partnerConsistencyBlocked()) throw unavailable('Partner activation requires recovery.');
+    const result = await read();
+    if (partnerConsistencyBlocked()) throw unavailable('Partner activation requires recovery.');
+    return result;
+  };
+  const users: UserRepository = {
+    ...accountRepository,
+    findById: (id) => guardedAccountRead(() => accountRepository.findById(id)),
+    findByEmail: (email) => guardedAccountRead(() => accountRepository.findByEmail(email)),
+    adminPage: (filters, page, size) => guardedAccountRead(() => accountRepository.adminPage(filters, page, size)),
+    adminCounts: () => guardedAccountRead(() => accountRepository.adminCounts()),
+  };
   const sessions: SessionStore =
     deps.sessions ?? createSessionStore({ ttlSeconds: config.authSessionTtlSeconds });
   // Usage/quota store (Pump 5): durable by default (fail-fast on a
@@ -255,9 +278,6 @@ export function createApp(deps: AppDeps): App {
     (config.assessmentStorePath === ':memory:'
       ? createMemoryAssessmentStore()
       : createJsonFileAssessmentStore(config.assessmentStorePath));
-  const studentStore: StudentStore = (config.studentStorePath === ':memory:'
-      ? createMemoryStudentStore()
-      : createJsonFileStudentStore(config.studentStorePath));
   // Source-snapshot store (Pump 8): durable by default (fail-fast on a
   // corrupt document — the process refuses to start). Tests inject
   // their own store; `:memory:` is the ephemeral dev opt-in.
@@ -299,25 +319,27 @@ export function createApp(deps: AppDeps): App {
   const entitlements: EntitlementService = createEntitlementService({
     store: entitlementStore,
     users,
+    hasPaidActivation: (accountId, subscriptionCreatedAt) => paymentStore.hasConfirmedProActivation(accountId, subscriptionCreatedAt),
   });
 
+  const withAccountMutation = createAccountMutationLock();
   const partners: PartnerService = createPartnerService({
+    withAccountMutation,
     store: partnerStore,
-    users,
+    users: accountRepository,
     payments: paymentStore,
     ...(deps.partnerNow === undefined ? {} : { now: deps.partnerNow }),
   });
+  partnerConsistencyBlocked = () => partners.isConsistencyBlocked();
   const payments: PaymentService = createPaymentService({
+    withAccountMutation,
     config,
     store: paymentStore,
-    users,
+    users: accountRepository,
     paymentConfig,
     ...(deps.paymentNow === undefined ? {} : { now: deps.paymentNow }),
     partners,
   });
-  const ready = payments
-    .recoverInterruptedApprovals()
-    .then(() => partners.recoverUnsettledCommissions());
   // One policy instance is shared by configuration preflight, scan
   // preflight and engine execution. The engine re-resolves and pins
   // every request independently, so saved configuration is never
@@ -330,7 +352,19 @@ export function createApp(deps: AppDeps): App {
     config.vulnIntelProvider === 'filesystem' && config.datasetPath !== undefined
       ? createFilesystemIntelligenceProvider({ datasetPath: config.datasetPath, logger })
       : createNullIntelligenceProvider();
-  const datasetService = createDatasetService({ datasetPath: config.datasetPath, providerId: config.vulnIntelProvider, logger });
+  const datasetService = deps.datasetService ?? createDatasetService({ datasetPath: config.datasetPath, providerId: config.vulnIntelProvider, logger });
+  // The Dataset is read-only. Validate new progress against the active
+  // catalog; old syntactically valid progress remains readable offline.
+  const isKnownStudentLesson = async (id: string): Promise<boolean> => {
+    const { findStudentLesson } = await import('./student/lessons.js');
+    if (findStudentLesson(id) !== undefined) return true;
+    if (!datasetService.configured) return false;
+    const { getMergedLessons, findLessonInMerged } = await import('./external/lessonProvider.js');
+    return findLessonInMerged(await getMergedLessons(datasetService), id) !== undefined;
+  };
+  const studentStore: StudentStore = config.studentStorePath === ':memory:'
+    ? createMemoryStudentStore(isKnownStudentLesson)
+    : createJsonFileStudentStore(config.studentStorePath, isKnownStudentLesson);
   // Pump 15: generic, data-driven advisory engine. The pack is operator
   // supplied at runtime (ADVISORY_PATH); no advisory bytes live in this repo.
   const advisoryService = deps.advisory ?? createAdvisoryService({
@@ -348,7 +382,7 @@ export function createApp(deps: AppDeps): App {
       createSecretsEngine({ sources: sourceStore, dataset: datasetService }),
       createDastEngine({
         targetPolicy: dastTargetPolicy,
-        authorize: createAssessmentDastAuthorizer(assessmentStore, clock),
+        authorize: createAssessmentDastAuthorizer(assessmentStore, clock, { requireEngagement: config.dastRequireEngagement === true }),
         dataset: datasetService,
         advisory: advisoryService,
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
@@ -529,23 +563,44 @@ export function createApp(deps: AppDeps): App {
     throw notFound();
   };
 
+  // Begin recovery only after all fallible synchronous construction has
+  // completed. A failed createApp must not leave background writes running.
+  const ready = Promise.resolve()
+    .then(() => recoverScanUsageReservations(usageStore, scanStore, deps.usageNow ?? Date.now))
+    .then(() => partners.recoverInterruptedActivations())
+    .then(() => payments.recoverInterruptedApprovals())
+    .then(() => partners.recoverUnsettledCommissions());
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const ctx: RequestContext = {
       id: '',
+      logId: randomUUID(),
       method: req.method ?? 'GET',
       pathname: '/',
+      logPath: '[unmatched route]',
       ip: clientIp(req),
       startedAtMs: clock(),
       logger,
       params: {},
     };
+    // The public X-Request-Id can be client-chosen and contain an unlabelled
+    // secret. Give operators a separate, server-generated log correlation ID.
+    res.setHeader('x-log-id', ctx.logId);
+    const logMethod = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'].includes(ctx.method) ? ctx.method : '[other]';
     // A dead client socket must never crash the process: a write to an
     // aborted response emits 'error' on the response stream.
     res.once('error', () => {
-      logger.debug('Response stream error', { requestId: ctx.id });
+      logger.debug('Response stream error', { requestId: ctx.logId });
     });
     try {
+      await ready;
+      if (partners.isConsistencyBlocked()) throw unavailable('Partner activation requires restart recovery.');
       ctx.pathname = getPathname(req);
+      // Resolve only against server-owned templates. Never log raw segments,
+      // queries or an unmatched path, even when middleware rejects the request.
+      const routeForLog = routes.find((route) => route.method === ctx.method && matchRoutePath(route.path, ctx.pathname) !== undefined) ??
+        routes.find((route) => matchRoutePath(route.path, ctx.pathname) !== undefined);
+      ctx.logPath = routeForLog?.path ?? '[unmatched route]';
       let index = -1;
       const dispatch = async (position: number): Promise<void> => {
         if (position <= index) {
@@ -563,7 +618,7 @@ export function createApp(deps: AppDeps): App {
     } catch (error) {
       if (res.headersSent) {
         logger.error('Error after response started', {
-          requestId: ctx.id,
+          requestId: ctx.logId,
           err: error,
         });
         res.end();
@@ -572,9 +627,9 @@ export function createApp(deps: AppDeps): App {
         const status = isAppError(error) ? error.statusCode : 500;
         if (status >= 500) {
           logger.error('Request failed', {
-            requestId: ctx.id,
-            method: ctx.method,
-            path: ctx.pathname,
+            requestId: ctx.logId,
+            method: logMethod,
+            path: ctx.logPath,
             status,
             err: error,
           });
@@ -583,33 +638,33 @@ export function createApp(deps: AppDeps): App {
           // rate limiting vs. plan quota exhaustion (Pump 5).
           if (isAppError(error) && error.code === 'QUOTA_EXCEEDED') {
             logger.warn('Scan quota exceeded', {
-              requestId: ctx.id,
-              method: ctx.method,
-              path: ctx.pathname,
+              requestId: ctx.logId,
+              method: logMethod,
+              path: ctx.logPath,
               status,
             });
           } else {
             logger.warn('Request rate limited', {
-              requestId: ctx.id,
-              method: ctx.method,
-              path: ctx.pathname,
+              requestId: ctx.logId,
+              method: logMethod,
+              path: ctx.logPath,
               status,
             });
           }
         } else {
           logger.info('Request rejected', {
-            requestId: ctx.id,
-            method: ctx.method,
-            path: ctx.pathname,
+            requestId: ctx.logId,
+            method: logMethod,
+            path: ctx.logPath,
             status,
           });
         }
       }
     } finally {
       logger.info('Request completed', {
-        requestId: ctx.id,
-        method: ctx.method,
-        path: ctx.pathname,
+        requestId: ctx.logId,
+        method: logMethod,
+        path: ctx.logPath,
         status: res.statusCode,
         durationMs: clock() - ctx.startedAtMs,
       });
@@ -620,7 +675,7 @@ export function createApp(deps: AppDeps): App {
   // (recovery + drain + sweep). Tests disable auto-start for
   // deterministic control (they call scanProcessor.drain() explicitly).
   if (deps.scanProcessorAutoStart !== false) {
-    void scanProcessor.start().catch((error: unknown) => {
+    void ready.then(() => scanProcessor.start()).catch((error: unknown) => {
       logger.error('Scan processor failed to start', { err: error });
     });
   }

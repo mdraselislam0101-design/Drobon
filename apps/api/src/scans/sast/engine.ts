@@ -1,6 +1,5 @@
 import {
   AST_FLOW_KINDS,
-  FINDING_EVIDENCE_MAX_LENGTH,
   MAX_FINDINGS_PER_SCAN,
   isValidSourcePath,
   type AstAnalysisCoverage,
@@ -16,8 +15,8 @@ import type { SourceSnapshotRecord } from '../sources.js';
 import { matchRuleLine, SAST_RULES, type SastRule } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
 import { detectLanguageFamily, isAnalyzedMaturity, supportsBoundedAst } from './languages.js';
-import { analyzeFileFlows, flowRulesForFamily, maskLiterals } from './semantic.js';
-import { findingFingerprint } from '../findingIdentity.js';
+import { analyzeFileFlows, flowRulesForFamily, maskComments, maskLiterals } from './semantic.js';
+import { findingFingerprint, WITHHELD_SOURCE_EVIDENCE } from '../findingIdentity.js';
 import { analyzeAstFile, astReporterRules, type AstReporterMap } from './astAnalyzer.js';
 import { astProfileFor } from './astProfiles.js';
 import { StructuredAstSession, supportsStructuredAst, type ProjectAstFile } from './structuredAstSession.js';
@@ -50,9 +49,9 @@ import { effectiveSastRuleDigest, parserVersions } from './astCoverage.js';
  *   per scan and evidence size are hard-capped; a processing deadline
  *   (well inside the processor's 30s engine timeout) makes the engine
  *   fail closed with SAST_SCAN_TIMEOUT instead of hanging the worker.
- * - EVIDENCE DISCIPLINE: evidence is a bounded, match-centered window
- *   of the matched line; credential-like values are REDACTED by the
- *   matching rule. Evidence renders as text everywhere downstream.
+ * - EVIDENCE DISCIPLINE: source snippets are withheld. Arbitrary source
+ *   may contain sensitive values unrelated to the matched rule; rule and
+ *   location metadata remain available for authorized review.
  * - FINGERPRINT STABILITY: sha256(ruleId | file | line | evidence) —
  *   repeated scans of unchanged source reproduce identical finding
  *   ids/fingerprints; unrelated findings never collapse.
@@ -141,38 +140,10 @@ function isIgnoredDir(path: string): boolean {
   );
 }
 
-/**
- * Bounded, match-centered evidence window (the match is always
- * visible), normalized for the API: tabs and control characters become
- * spaces, so the evidence satisfies the strict finding guard.
- */
-function evidenceFromLine(rule: SastRule, rawLine: string, column: number): string {
-  // eslint-disable-next-line no-control-regex -- source evidence must not persist control characters.
-  const line = rawLine.replace(/\t/g, '  ').replace(/[\x00-\x1f\x7f]/g, ' ');
-  // eslint-disable-next-line no-control-regex -- redaction callbacks cannot reintroduce control characters.
-  const safeEvidence = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, FINDING_EVIDENCE_MAX_LENGTH) || '(empty line)';
-  const windowRadius = 60;
-  // Room for the two ellipsis markers, so the result never exceeds the
-  // evidence bound (the finding guard enforces it).
-  const windowLength = FINDING_EVIDENCE_MAX_LENGTH - 2;
-  let start = Math.max(0, column - 1 - windowRadius);
-  const end = Math.min(line.length, start + windowLength);
-  if (line.length <= FINDING_EVIDENCE_MAX_LENGTH) {
-    // Short lines: no windowing needed.
-    return safeEvidence(rule.redactEvidence === undefined ? line : rule.redactEvidence(line, { column }));
-  }
-  if (end - start < windowLength) {
-    start = Math.max(0, end - windowLength);
-  }
-  let window = line.slice(start, end);
-  // Redact INSIDE the window (redaction regexes work on any substring
-  // containing the literal — the window is match-centered).
-  if (rule.redactEvidence !== undefined) {
-    window = rule.redactEvidence(window, { column: column - start });
-  }
-  const prefix = start > 0 ? '…' : '';
-  const suffix = end < line.length ? '…' : '';
-  return safeEvidence(`${prefix}${window}${suffix}`);
+/** No raw source line is copied into SAST evidence: unknown adjacent
+ * credentials cannot be safely classified by the detection rules. */
+function evidenceFromLine(): string {
+  return WITHHELD_SOURCE_EVIDENCE;
 }
 
 /** Deterministic finding identity — never a random UUID. */
@@ -228,6 +199,10 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits, ruleFamili
 }
 
 const AST_HEURISTIC_DESCRIPTION = 'A bounded AST pass found a possible untrusted data flow. The rule was selected by category, not by its exact pattern; severity is inherited from that rule. Review the source and sink manually.';
+const AST_COMMAND_REVIEW = ' An argument-vector flow does not prove shell execution; executable, options and argument-level risks still require review.';
+function astHeuristicDescription(kind: string): string {
+  return AST_HEURISTIC_DESCRIPTION + (kind === 'command' ? AST_COMMAND_REVIEW : '');
+}
 const AST_HEURISTIC_REMEDIATION = 'Review the flow in context and use appropriate safe APIs, parameterization, validation or output encoding. Verify the result manually.';
 
 const emptySeverityCounts = (): Record<FindingSeverity, number> => ({
@@ -256,13 +231,17 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       let effectiveRules: readonly SastRule[] = options.rules ?? SAST_RULES;
       let ruleSource: AstAnalysisCoverage['rules']['source'] = options.rules === undefined ? 'NONE' : 'EXPLICIT';
       let pack: { packId: string; version: string } | undefined;
+      let datasetRulesIncomplete = false;
       if (options.dataset?.configured) {
         try {
-          const { getMergedSastRules } = await import('../../external/packIntegration.js');
+          const { getMergedSastRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
           effectiveRules = await getMergedSastRules(options.dataset);
           ruleSource = 'DATASET';
-          pack = await options.dataset.packMetadata('sast');
-        } catch { /* fail closed: optional path */ }
+          if (typeof options.dataset.packMetadata === 'function') pack = await options.dataset.packMetadata('sast');
+          datasetRulesIncomplete = await hasRejectedPackRules(options.dataset, 'sast');
+        } catch {
+          datasetRulesIncomplete = true;
+        }
       }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
@@ -357,6 +336,9 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           // CRLF-safe: strip the trailing CR so evidence and matching
           // never see control characters.
           const lines = file.content.split('\n').map((line) => line.replace(/\r$/, ''));
+          // Keep quoted strings intact (many pack rules match literals) but
+          // avoid firing on comments in families with known comment syntax.
+          const lexicalLines = maskComments(file.content, file.family).split('\n').map((line) => line.replace(/\r$/, ''));
           let lexicalRules = lexicalRulesByFamily.get(file.family);
           if (lexicalRules === undefined) {
             lexicalRules = effectiveRules.filter((rule) => rule.languages === undefined || rule.languages.includes(file.family));
@@ -373,13 +355,17 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               };
             }
             const line = lines[index] ?? '';
+            const lexicalLine = lexicalLines[index] ?? '';
             for (const rule of lexicalRules) {
-              const match = matchRuleLine(rule, line);
+              // A credential can leak from comments as well as executable
+              // code; other rule categories use the comment-masked line to
+              // avoid reporting an inactive example as a vulnerability.
+              const match = matchRuleLine(rule, rule.category === 'hardcoded-credential' ? line : lexicalLine);
               if (match === undefined) continue;
               const key = `${rule.id}\n${index + 1}`;
               if (seenRuleLine.has(key)) continue;
               seenRuleLine.add(key);
-              const evidence = evidenceFromLine(rule, line, match.column);
+              const evidence = evidenceFromLine();
               const fingerprint = findingFingerprint({
                 scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
                 location: file.path, line: index + 1, evidence,
@@ -431,12 +417,11 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
             const flowCandidates = analyzeFileFlows(file.family, maskedLines, flowRules, lines);
             for (const candidate of flowCandidates) {
               const rule = rulesById.get(candidate.ruleId);
-              const originalLine = lines[candidate.lineIndex] ?? '';
-              if (rule === undefined) continue;
+                if (rule === undefined) continue;
               const key = `${rule.id}\n${candidate.lineIndex + 1}`;
               if (seenRuleLine.has(key)) continue;
               seenRuleLine.add(key);
-              const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+              const evidence = evidenceFromLine();
               const fingerprint = findingFingerprint({
                 scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
                 location: file.path, line: candidate.lineIndex + 1, evidence,
@@ -504,8 +489,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               const key = `${rule.id}\n${candidate.lineIndex + 1}`;
               if (already.has(key)) continue;
               already.add(key);
-              const originalLine = lines[candidate.lineIndex] ?? '';
-              const evidence = evidenceFromLine(rule, originalLine, candidate.column);
+                const evidence = evidenceFromLine();
               const fingerprint = findingFingerprint({
                 scanner: 'SAST', projectId: record.projectId, ruleId: rule.id,
                 location: file.path, line: candidate.lineIndex + 1, evidence,
@@ -518,7 +502,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
                 projectId: record.projectId,
                 severity: rule.severity,
                 title: `Possible ${candidate.kind} data flow (AST heuristic)`,
-                description: AST_HEURISTIC_DESCRIPTION,
+                description: astHeuristicDescription(candidate.kind),
                 file: file.path,
                 line: candidate.lineIndex + 1,
                 column: candidate.column,
@@ -595,7 +579,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
                 projectId: record.projectId,
                 severity: rule.severity,
                 title: `Possible ${candidate.kind} data flow (AST heuristic)`,
-                description: AST_HEURISTIC_DESCRIPTION,
+                description: astHeuristicDescription(candidate.kind),
                 file: file.path,
                 line,
                 column: candidate.column,
@@ -671,7 +655,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
               location: candidate.path, line: sink.line, evidence });
             findings.push({ id: `fnd_${fingerprint.slice(0, 24)}`, scanId: record.id, ruleId: rule.id, scanner: 'SAST',
               projectId: record.projectId, severity: rule.severity, title: `Possible ${candidate.kind} data flow (AST heuristic)`,
-              description: AST_HEURISTIC_DESCRIPTION, file: candidate.path, line: sink.line, column: sink.column,
+              description: astHeuristicDescription(candidate.kind), file: candidate.path, line: sink.line, column: sink.column,
               evidence, remediation: AST_HEURISTIC_REMEDIATION, astFlow: flow, fingerprint });
             findingsBySeverity[rule.severity] += 1;
             astFlowsFound += 1;
@@ -685,6 +669,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       }
 
       const partialReasons: string[] = [];
+      if (datasetRulesIncomplete) partialReasons.push('Some configured SAST rules were rejected or could not be loaded.');
       if (effectiveRules.length === 0) partialReasons.push('No SAST rules were available.');
       else if (astParser.filesWithoutRules > 0) partialReasons.push('Some parsed files had no applicable AST flow rules.');
       else if (astCoverage.families.some((family) => Object.keys(family.reporters).length < AST_FLOW_KINDS.length)) partialReasons.push('Some AST categories lack rules.');
@@ -701,7 +686,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
         astFlowsFound,
         astParser,
         astCoverage,
-        ...(partialReasons.length === 0 ? {} : { partial: true, partialReason: partialReasons.join(' ') }),
+        ...(partialReasons.length === 0 ? {} : { partial: true, partialReason: partialReasons.join(' ').slice(0, 200) }),
       };
       return {
         kind: 'completed',

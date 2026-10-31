@@ -18,6 +18,14 @@ describe('dataset pack language reachability (GAP-040)', () => {
     expect(detectLanguageFamily('Dockerfile')?.family).toBe('dockerfile');
   });
 
+  test('template rules reach normal template filenames without losing PHP rules for Blade', () => {
+    for (const path of ['view.ejs', 'view.hbs', 'view.jsp', 'view.pug', 'view.tpl', 'view.twig', 'view.jinja', 'view.j2']) {
+      expect(detectLanguageFamily(path)?.family, path).toBe(CONFIG_FAMILY);
+    }
+    expect(detectLanguageFamily('views/home.blade.php')?.family).toBe('php');
+    expect(resolvePackLanguages(['blade'], catalogIds)).toEqual(['php']);
+  });
+
   test('declared aliases restore the two ids the dataset flagged', () => {
     expect(resolvePackLanguages(['shell', 'gha'], catalogIds)).toEqual(['shell-posix', 'github-actions']);
     expect(resolvePackLanguages(['k8s', 'compose', 'istio'], catalogIds)).toEqual(['yaml']);

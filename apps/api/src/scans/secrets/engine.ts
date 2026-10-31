@@ -1,6 +1,6 @@
 import {
-  FINDING_EVIDENCE_MAX_LENGTH,
   MAX_FINDINGS_PER_SCAN,
+  FINDING_TEXT_MAX_LENGTH,
   isValidSourcePath,
   type Finding,
   type FindingSeverity,
@@ -11,7 +11,7 @@ import type { ScanRecord } from '../store.js';
 import type { SourceSnapshotRecord } from '../sources.js';
 import { matchSecretsRuleLine, SECRETS_RULES, type SecretsRule } from './rules.js';
 import type { DatasetService } from '../../external/service.js';
-import { findingFingerprint } from '../findingIdentity.js';
+import { findingFingerprint, WITHHELD_SOURCE_EVIDENCE } from '../findingIdentity.js';
 import { addSecretAstContext } from '../supplementAst.js';
 
 /**
@@ -32,10 +32,9 @@ import { addSecretAstContext } from '../supplementAst.js';
  *   and matches regexes. It NEVER runs project code, never installs,
  *   never opens sockets, and NEVER validates a credential against any
  *   service — DETECTED_SECRET is never reported as a live credential.
- * - REDACTION FIRST: every credential-bearing rule redacts the secret
- *   value out of the evidence BEFORE the finding exists. The raw
- *   secret never enters a finding object, so it cannot reach the API,
- *   UI, logs, stores or exports through it.
+ * - REDACTION FIRST: no source snippet enters finding evidence. The
+ *   detection rules and their denylists do not decide what is safe to
+ *   display; rule and location metadata remain available for review.
  * - RESOURCE LIMITS: file count / per-file bytes / total bytes /
  *   findings cap / processing deadline — every breach is explicit.
  * - PARTIAL HONESTY: files skipped for SIZE (or a findings-cap
@@ -156,137 +155,10 @@ function isIgnoredDir(path: string): boolean {
   );
 }
 
-/**
- * Length-neutral marker (the SAST-005 precedent): the fixed marker
- * for values of at least 10 characters, same-length asterisks for
- * shorter ones — redaction can never push evidence past its bound.
- */
-function markerFor(length: number): string {
-  return length >= 10 ? '<redacted>' : '*'.repeat(length);
-}
-
-/**
- * THE REDACTION STEP (critical, adversarially tested).
- *
- * The rule declares WHERE the secret sits inside the match
- * (`valueSpan`); the engine blanks that span POSITIONALLY — the
- * value's characters are removed by position, not by string search,
- * so a value cut by the evidence window can never leak partially.
- * Rules whose match is already safe text (`matchOnlyEvidence`, the
- * PEM header) return the match alone; nothing else from the line can
- * leak. If a span cannot be resolved, the engine FAILS CLOSED: a
- * bare rule marker instead of the line.
- */
-function evidenceFromLine(
-  rule: SecretsRule,
-  rawLine: string,
-  match: { column: number; text: string },
-  activeRules: readonly SecretsRule[],
-): string {
-  if (rule.matchOnlyEvidence === true) {
-    // Safe by contract: the match text carries no secret material.
-    return match.text;
-  }
-  const span = rule.valueSpan?.(match);
-  if (span === undefined || span.start < 0 || span.end <= span.start) {
-    // Fail closed — never ship an unredacted line on a rule bug.
-    return `[${rule.id}] <redacted>`;
-  }
-  const value = match.text.slice(span.start, span.end);
-  if (value.length === 0) {
-    return `[${rule.id}] <redacted>`;
-  }
-  // Defense in depth (a no-op for lines pre-normalized by execute):
-  // evidence text must never carry control characters.
-  const line = rawLine.replace(/\t/g, '  ').replace(/\r$/, '');
-  // Absolute secret span within the line (match.column is 1-based).
-  const absStart = match.column - 1 + span.start;
-  const absEnd = match.column - 1 + span.end;
-
-  // NEIGHBOUR REDACTION: a line can carry MORE than one secret — other
-  // rules' material, or the same rule's later match. Blank every value
-  // span ANY rule resolved on this line, so the evidence cannot leak
-  // the neighbours either.
-  const spans: Array<{ start: number; end: number }> = [{ start: absStart, end: absEnd }];
-  for (const other of activeRules) {
-    if (other.matchOnlyEvidence === true) {
-      continue; // Header-only rules match safe text, never material.
-    }
-    const otherMatch = matchSecretsRuleLine(other, line);
-    if (otherMatch === undefined) {
-      continue;
-    }
-    const otherSpan = other.valueSpan?.(otherMatch);
-    if (otherSpan === undefined || otherSpan.start < 0 || otherSpan.end <= otherSpan.start) {
-      continue;
-    }
-    spans.push({
-      start: otherMatch.column - 1 + otherSpan.start,
-      end: otherMatch.column - 1 + otherSpan.end,
-    });
-  }
-
-  // The evidence window: the whole line, or (long lines) a window
-  // centered so the fired value's start is visible with context.
-  const windowLength = FINDING_EVIDENCE_MAX_LENGTH - 2;
-  let winStart = 0;
-  let winEnd = line.length;
-  if (line.length > FINDING_EVIDENCE_MAX_LENGTH) {
-    winStart = Math.max(0, absStart - 40);
-    winEnd = Math.min(line.length, winStart + windowLength);
-    if (winEnd - winStart < windowLength) {
-      winStart = Math.max(0, winEnd - windowLength);
-    }
-  }
-  // Blank every span POSITIONALLY inside the window (spans cut by the
-  // window edge shrink to their visible part — never leak a fragment).
-  const window = line.slice(winStart, winEnd);
-  let redacted = '';
-  let pos = 0;
-  const clipped = spans
-    .map((sp) => ({ start: sp.start - winStart, end: sp.end - winStart }))
-    .filter((sp) => sp.end > 0 && sp.start < window.length)
-    .map((sp) => ({ start: Math.max(0, sp.start), end: Math.min(window.length, sp.end) }))
-    .sort((a, b) => a.start - b.start);
-  for (const sp of clipped) {
-    const start = Math.max(sp.start, pos);
-    if (sp.end <= start) {
-      continue;
-    }
-    redacted += window.slice(pos, start) + markerFor(sp.end - start);
-    pos = sp.end;
-  }
-  redacted += window.slice(pos);
-  const prefix = winStart > 0 ? '…' : '';
-  const suffix = winEnd < line.length ? '…' : '';
-  const evidence = `${prefix}${redacted}${suffix}`;
-
-  // DEFENSIVE RE-SCAN (the invariant, checked not assumed): the FINAL
-  // evidence must contain no secret-shaped match of any rule. This
-  // catches a second, DIFFERENT value of the same rule on one line
-  // (its matcher returns the first match only, so the neighbour was
-  // not blanked above) — the whole evidence fails closed.
-  for (const other of activeRules) {
-    if (other.matchOnlyEvidence === true) {
-      continue;
-    }
-    if (matchSecretsRuleLine(other, evidence) !== undefined) {
-      return `[${rule.id}] <redacted>`;
-    }
-  }
-  return defensiveGuard(rule, evidence, value);
-}
-
-/**
- * Last line of defense: if the exact value still appears in the
- * evidence (a rule/engine bug), replace the ENTIRE evidence with a
- * bare marker. A finding must never ship the secret.
- */
-function defensiveGuard(rule: SecretsRule, evidence: string, value: string): string {
-  if (value.length >= 4 && evidence.includes(value)) {
-    return `[${rule.id}] <redacted>`;
-  }
-  return evidence;
+/** Detection and sanitization are independent: arbitrary surrounding
+ * source text is not demonstrably safe, including denylisted neighbors. */
+function evidenceFromLine(): string {
+  return WITHHELD_SOURCE_EVIDENCE;
 }
 
 /**
@@ -367,8 +239,15 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
     scanType: 'SECRETS',
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
       let effectiveRules: readonly SecretsRule[] = options.rules ?? SECRETS_RULES;
+      let datasetRulesIncomplete = false;
       if (options.dataset?.configured) {
-        try { const { getMergedSecretsRules } = await import('../../external/packIntegration.js'); effectiveRules = await getMergedSecretsRules(options.dataset); } catch { /* fail closed: optional path */ }
+        try {
+          const { getMergedSecretsRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
+          effectiveRules = await getMergedSecretsRules(options.dataset);
+          datasetRulesIncomplete = await hasRejectedPackRules(options.dataset, 'secrets');
+        } catch {
+          datasetRulesIncomplete = true;
+        }
       }
       // The deterministic scan target: the project's source snapshot.
       const snapshot = await sources.findByProject(record.projectId);
@@ -459,7 +338,7 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
               continue;
             }
             seenRuleLine.add(dedupeKey);
-            const evidence = evidenceFromLine(rule, line, match, effectiveRules);
+            const evidence = evidenceFromLine();
             const fingerprint = findingFingerprint({
               scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
               location: file.path, line: index + 1, evidence,
@@ -491,26 +370,49 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
         }
       }
 
-      // PARTIAL honesty (§ report integrity): the summary must never
-      // read as "0 secrets" when content went uninspected.
-      const partialReasons: string[] = [];
-      if (effectiveRules.length === 0) partialReasons.push('No secrets rules were available');
-      if (discovery.oversize > 0) {
-        partialReasons.push(
-          `${discovery.oversize} file(s) exceeded the per-file size limit and were not inspected`,
-        );
-      }
-      if (truncated) {
-        partialReasons.push('the findings cap was reached; later matches are not listed');
-      }
-      const partial = partialReasons.length > 0;
-
-      // Context enrichment only applies to files actually reached by the
-      // secrets matcher; do not parse later files after a finding cap.
-      const astSupplement = await addSecretAstContext(discovery.files.slice(0, filesScanned), findings, effectiveRules, ctx.signal, () => deadline - now());
+      // Reuse the bounded literal-context worker for additive static folding.
+      // Reapply the configured rules/denylists; the worker returns coordinates
+      // only. No source text, reconstructed value or credential is persisted.
+      let foldedFindings = 0;
+      const astSupplement = await addSecretAstContext(discovery.files.slice(0, filesScanned), findings, effectiveRules,
+        ctx.signal, () => deadline - now(), truncated ? undefined : ({ file, line, column, rule }) => {
+          const dedupeKey = `${rule.id}\n${file}\n${line}`;
+          if (seenRuleLine.has(dedupeKey)) return 'IGNORED';
+          if (findings.length >= limits.maxFindings) { truncated = true; return 'STOP'; }
+          seenRuleLine.add(dedupeKey);
+          const evidence = evidenceFromLine();
+          const fingerprint = findingFingerprint({ scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
+            location: file, line, evidence });
+          findings.push({ id: `fnd_${fingerprint.slice(0, 24)}`, scanId: record.id, ruleId: rule.id,
+            scanner: 'SECRETS', projectId: record.projectId, severity: rule.severity, title: rule.title,
+            description: `A static literal concatenation matched this rule; credential validity was not checked. ${rule.description}`.slice(0, FINDING_TEXT_MAX_LENGTH),
+            ...(rule.cwe === undefined ? {} : { cwe: rule.cwe }), file, line, column, evidence,
+            remediation: rule.remediation, confidence: rule.confidence, fingerprint, astContext: { kind: 'SECRETS_STRING_LITERAL' } });
+          findingsBySeverity[rule.severity] += 1;
+          foldedFindings += 1;
+          if (findings.length >= limits.maxFindings) { truncated = true; return 'ADDED_AND_STOP'; }
+          return 'ADDED';
+        });
       if (ctx.signal.aborted || now() >= deadline) {
         return { kind: 'failed', failureCode: 'SECRETS_SCAN_TIMEOUT', failureMessage: 'The secrets engine exceeded its processing deadline.' };
       }
+      if (foldedFindings > 0) {
+        const order = new Map(effectiveRules.map((rule, index) => [rule.id, index]));
+        findings.sort((a, b) => comparePaths(a.file ?? '', b.file ?? '') || (a.line ?? 0) - (b.line ?? 0) ||
+          (order.get(a.ruleId) ?? 0) - (order.get(b.ruleId) ?? 0));
+      }
+
+      // Base lexical coverage keeps its existing contract; optional folding
+      // coverage is reported separately by astSupplement, including parser
+      // errors, unsupported files and limits. A findings cap is scan-partial.
+      const partialReasons: string[] = [];
+      if (datasetRulesIncomplete) partialReasons.push('Some configured secrets rules were rejected or could not be loaded');
+      if (effectiveRules.length === 0) partialReasons.push('No secrets rules were available');
+      if (discovery.oversize > 0) {
+        partialReasons.push(`${discovery.oversize} file(s) exceeded the per-file size limit and were not inspected`);
+      }
+      if (truncated) partialReasons.push('the findings cap was reached; later matches are not listed');
+      const partial = partialReasons.length > 0;
       const resultSummary: ScanResultSummary = {
         astSupplement,
         findingsTotal: findings.length,

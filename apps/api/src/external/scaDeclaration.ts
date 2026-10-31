@@ -52,7 +52,8 @@ export const SCA_READABLE_PARSERS: readonly ScaParser[] = [...SCA_PARSERS];
 
 const SEVERITIES: readonly FindingSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 const CWE_PATTERN = /^CWE-[1-9][0-9]{0,5}$/;
-const RULE_ID_PATTERN = /^DPK-SCA-[0-9]{4,}$/;
+// Keep the declaration evaluator aligned with the persisted Finding contract.
+const RULE_ID_PATTERN = /^DPK-SCA-[0-9]{4,6}$/;
 const FIELD_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 
 /** Hard bounds — a document is untrusted input, even though the store caps it. */

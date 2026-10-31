@@ -73,6 +73,87 @@ describe('createRunner', () => {
     }
   });
 
+  test('a timed-out attempt uses a fresh, cancellable backoff signal', async () => {
+    const signals: boolean[] = [];
+    let calls = 0;
+    const runner = createRunner({
+      handlers: { 'test.timeout-once': async () => {
+        calls += 1;
+        if (calls === 1) return new Promise<never>(() => {});
+        return 'recovered';
+      } },
+      retry: { maxAttempts: 2, baseDelayMs: 30, maxDelayMs: 30 },
+      sleep: async (_ms, signal) => { signals.push(signal?.aborted ?? false); },
+    });
+    runner.start();
+    try {
+      runner.submit('test.timeout-once', null, { id: 'job-timeout-retry', maxAttempts: 2, timeoutMs: 20 });
+      const result = await runner.waitFor('job-timeout-retry', { timeoutMs: 1000 });
+      expect(result.status).toBe('succeeded');
+      expect(result.attempts).toBe(2);
+      expect(signals).toEqual([false]);
+    } finally { await runner.stop(); }
+  });
+
+  test('attempt timeout does not cut short a longer error backoff', async () => {
+    let calls = 0;
+    let interrupted = false;
+    const runner = createRunner({
+      handlers: { 'test.fail-once': async () => { if (++calls === 1) throw new Error('synthetic'); return 'ok'; } },
+      retry: { maxAttempts: 2, baseDelayMs: 40, maxDelayMs: 40 },
+      sleep: async (_ms, signal) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        interrupted = signal?.aborted ?? false;
+      },
+    });
+    runner.start();
+    try {
+      runner.submit('test.fail-once', null, { id: 'job-long-backoff', maxAttempts: 2, timeoutMs: 20 });
+      const result = await runner.waitFor('job-long-backoff', { timeoutMs: 1000 });
+      expect(result.status).toBe('succeeded');
+      expect(interrupted).toBe(false);
+    } finally { await runner.stop(); }
+  });
+
+  test('cancellation during retry backoff settles the job without another attempt', async () => {
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    let calls = 0;
+    const runner = createRunner({
+      handlers: { 'test.cancel-backoff': async () => { calls += 1; throw new Error('synthetic'); } },
+      retry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 100 },
+      sleep: (_ms, signal) => new Promise<void>((resolve) => {
+        entered();
+        if (signal?.aborted) resolve();
+        else signal?.addEventListener('abort', () => resolve(), { once: true });
+      }),
+    });
+    runner.start();
+    try {
+      runner.submit('test.cancel-backoff', null, { id: 'job-cancel-backoff', maxAttempts: 2 });
+      await waiting;
+      expect(runner.cancel('job-cancel-backoff')).toBe(true);
+      const result = await runner.waitFor('job-cancel-backoff', { timeoutMs: 1000 });
+      expect(result.status).toBe('cancelled');
+      expect(calls).toBe(1);
+    } finally { await runner.stop(); }
+  });
+
+  test('a failing injected backoff finalizes instead of leaving a running job', async () => {
+    const runner = createRunner({
+      handlers: { 'test.bad-sleep': async () => { throw new Error('handler error'); } },
+      retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1 },
+      sleep: async () => { throw new Error('sleep failed'); },
+    });
+    runner.start();
+    try {
+      runner.submit('test.bad-sleep', null, { id: 'job-bad-sleep', maxAttempts: 2 });
+      const result = await runner.waitFor('job-bad-sleep', { timeoutMs: 1000 });
+      expect(result.status).toBe('failed');
+      expect(result.error?.message).toContain('sleep failed');
+    } finally { await runner.stop(); }
+  });
+
   test('marks jobs failed after the attempt budget is exhausted', async () => {
     const runner = createRunner({
       handlers: {

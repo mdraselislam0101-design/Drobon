@@ -1,3 +1,4 @@
+import { sourceFindingIdentity } from '../scans/findingIdentity.js';
 import type { ServerResponse } from 'node:http';
 import {
   ASSESSMENT_ID_PATTERN,
@@ -40,14 +41,12 @@ import type { ScanProcessor } from '../scans/processor.js';
 import type { UserRepository } from '../auth/repositories.js';
 import type { UsageService } from '../usage/service.js';
 import { sendSuccess } from '../respond.js';
-import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '../scans/dast/target.js';
+import { createDastTargetPolicy, DastTargetError, normalizeDastTarget, type DastTargetPolicy } from '../scans/dast/target.js';
 
 /**
- * Scan-job API (Pump 7) — the secure orchestration boundary future
- * scanner engines plug into. NOT a scanner: no engine exists yet, so
- * every scan deterministically FAILS with SCAN_ENGINE_NOT_IMPLEMENTED
- * (never a fabricated result; no vulnerability datasets — the dataset
- * lock holds).
+ * Scan-job API — the authenticated orchestration boundary for the
+ * configured scanner engines. Results and limitations are reported by
+ * each engine; missing rules or data are not evidence of safety.
  *
  * Surface (all behind `requireAuth`; ownership from the session ONLY):
  * - `POST /api/v1/projects/:projectId/scans`        request a scan
@@ -57,7 +56,7 @@ import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '
  * There is deliberately NO scan mutation endpoint: status, timestamps,
  * results and failures are set ONLY by the server-side processor.
  *
- * Security rules (tested exhaustively):
+ * Security rules (covered by targeted tests, not an exhaustive proof):
  * - PROJECT access follows the Pump 6 uniform policy: unknown, foreign
  *   and malformed project ids answer the SAME 403 — no existence
  *   oracle. (A distinct PROJECT_ARCHIVED 409 is safe: it is only
@@ -66,15 +65,16 @@ import { createDastTargetPolicy, DastTargetError, type DastTargetPolicy } from '
  *   unknown/malformed/foreign scan id answers a uniform 404 there —
  *   cross-account probing cannot distinguish "exists elsewhere" from
  *   "does not exist", because it never leaves the caller's scope.
- * - the request body may carry ONLY `{ scanType }`; `id`, `projectId`,
+ * - the body accepts `scanType` and optional assessment/DAST mode and
+ *   consent fields; `id`, `projectId`,
  *   `requestedBy`, `status`, timestamps, `result`, plan/role claims
  *   are UNKNOWN properties → 422 (strict validation — see the Pump 6
  *   own-property fix; the prototype-chain keys can never smuggle
  *   fields through).
- * - quota is consumed exactly once per created scan, atomically with
- *   job creation (the store's serialized section) via the Pump 5
- *   UsageService — the single quota authority. FREE = 3/month (account
- *   or shared device, whichever is stricter); PRO+ACTIVE exempt.
+ * - a durable quota reservation and job append are separate writes,
+ *   serialized in-process and reconciled on restart (not a transaction).
+ *   FREE = 3/month (account or shared device, whichever is stricter);
+ *   active PRO does not consume the shared device quota.
  *   Denied → uniform 429 QUOTA_EXCEEDED + Retry-After.
  * - an optional `Idempotency-Key` header (8–64 URL-safe chars) makes
  *   network retries safe: the same key + same request replays the
@@ -226,14 +226,11 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             throw conflict('Configure a DAST target on this project before requesting a scan.');
           }
           try {
-            // Revalidate DNS before quota consumption. Execution repeats
-            // this immediately before every request and pins the result.
-            targetUrl = (await dastTargetPolicy.prepare(project.dastTargetUrl)).url;
-          } catch (error) {
-            const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
-              ? 'The configured DAST target cannot currently be resolved safely.'
-              : 'The configured DAST target no longer passes the public-address safety policy.';
-            throw conflict(message);
+            // Only syntax normalization here: an assessment's scope and
+            // engagement must be checked before contacting any DNS resolver.
+            targetUrl = normalizeDastTarget(project.dastTargetUrl).url;
+          } catch {
+            throw conflict('The configured DAST target no longer passes the public-address safety policy.');
           }
           if (assessmentId !== undefined) {
             const linked = await assessments.findByProjectAndId(actor.id, project.id, assessmentId);
@@ -256,6 +253,12 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             );
           }
         }
+        // Optional strict mode rejects legacy unlinked/undeclared DAST
+        // before DNS and quota. The default retains compatibility.
+        if (scanType === 'DAST' && config.dastRequireEngagement === true &&
+            (linkedAssessment?.engagements?.length ?? 0) === 0) {
+          throw conflict('DAST requires a linked active assessment with an active scoped engagement.');
+        }
         // Pump 17 — AUTHORIZATION GATE (before quota consumption).
         // With no engagement record the legacy UNVERIFIED path is kept:
         // existing workspace behaviour is unchanged. Once an engagement is
@@ -277,10 +280,22 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           }
         }
         const idempotencyKey = idempotencyKeyFrom(req.headers);
-        // Quota decision + creation are ONE atomic operation (the
-        // store's serialized section calls the UsageService — the
-        // single quota authority — and persists the job only on
-        // grant). The device hash is server-derived (opaque cookie →
+        if (targetUrl !== undefined) {
+          try {
+            // After scope/engagement authorization but still before quota.
+            // Execution rechecks authorization and DNS before each request.
+            const prepared = await dastTargetPolicy.prepare(targetUrl);
+            if (prepared.url !== targetUrl) throw new DastTargetError('DAST_TARGET_INVALID');
+          } catch (error) {
+            const message = error instanceof DastTargetError && error.code === 'DAST_DNS_FAILED'
+              ? 'The configured DAST target cannot currently be resolved safely.'
+              : 'The configured DAST target no longer passes the public-address safety policy.';
+            throw conflict(message);
+          }
+        }
+        // Quota reservation and creation are serialized within this
+        // process but persisted in separate documents; startup recovery
+        // reconciles interrupted reservations. The device hash is server-derived (opaque cookie →
         // SHA-256); the account record is re-loaded live so the plan
         // verdict is never stale.
         const deviceHash = ctx.deviceHash;
@@ -301,7 +316,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           ...(dastMode === undefined ? {} : { dastMode }),
           ...(dastActiveConsent === undefined ? {} : { dastActiveConsent }),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-          consume: () => usage.consumeScan(record, deviceHash),
+          consume: (scanId) => usage.reserveScan(record, deviceHash, project.id, scanId),
         });
         let outcome: Awaited<ReturnType<typeof scans.createScanWithQuota>>;
         if (assessmentId === undefined) {
@@ -311,6 +326,9 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
             // Re-evaluate while holding the assessment store's serialization
             // lock so a concurrent withdrawal cannot race scan creation.
             const target = targetUrl === undefined ? undefined : new URL(targetUrl);
+            if (scanType === 'DAST' && config.dastRequireEngagement === true && (current.engagements?.length ?? 0) === 0) {
+              throw conflict('DAST requires a linked active assessment with an active scoped engagement.');
+            }
             const gate = engagementAllowsScan(current.engagements, {
               scanType,
               nowIso: at(),
@@ -330,7 +348,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           // Uniform 429 QUOTA_EXCEEDED + Retry-After (next UTC month).
           // Nothing was appended; no hint which limit tripped.
           ctx.logger.info('Scan quota denied', {
-            requestId: ctx.id,
+            requestId: ctx.logId,
             userId: record.id,
             projectId: project.id,
           });
@@ -344,15 +362,18 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (outcome.outcome === 'replayed') {
           // A safe retry: the ORIGINAL scan, no second consumption.
           ctx.logger.info('Scan request replayed', {
-            requestId: ctx.id,
+            requestId: ctx.logId,
             userId: record.id,
             scanId: outcome.scan.id,
           });
           sendScan(res, ctx, outcome.scan);
           return;
         }
+        if (outcome.quotaCommitPending === true) {
+          ctx.logger.error('Scan quota reservation requires startup reconciliation', { scanId: outcome.scan.id, projectId: project.id });
+        }
         ctx.logger.info('Scan created', {
-          requestId: ctx.id,
+          requestId: ctx.logId,
           userId: record.id,
           projectId: project.id,
           scanId: outcome.scan.id,
@@ -446,34 +467,46 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         if (current.scanType !== baseline.scanType) {
           throw conflict('Only scans of the same type can be compared.');
         }
-        const baselineByFingerprint = new Map((baseline.findings ?? []).map((finding) => [finding.fingerprint, finding]));
-        const currentByFingerprint = new Map((current.findings ?? []).map((finding) => [finding.fingerprint, finding]));
-        const fingerprints = [...new Set([...baselineByFingerprint.keys(), ...currentByFingerprint.keys()])];
+        const baselineFindings = baseline.findings ?? [];
+        const currentFindings = current.findings ?? [];
+        const usedBaseline = new Set<string>();
+        const pairs: Array<{ baseline?: (typeof baselineFindings)[number]; current?: (typeof currentFindings)[number] }> = [];
+        for (const finding of currentFindings) {
+          let prior = baselineFindings.find((item) => item.fingerprint === finding.fingerprint && !usedBaseline.has(item.fingerprint));
+          const identity = sourceFindingIdentity(finding, project.id);
+          if (prior === undefined && identity !== undefined) {
+            const candidates = baselineFindings.filter((item) => !usedBaseline.has(item.fingerprint) && sourceFindingIdentity(item, project.id) === identity);
+            const currentMatches = currentFindings.filter((item) => sourceFindingIdentity(item, project.id) === identity);
+            if (candidates.length > 0 && (candidates.length !== 1 || currentMatches.length !== 1)) {
+              throw conflict('Finding comparison is ambiguous for a legacy source location; review the scans manually.');
+            }
+            prior = candidates[0];
+          }
+          if (prior !== undefined) usedBaseline.add(prior.fingerprint);
+          pairs.push({ ...(prior === undefined ? {} : { baseline: prior }), current: finding });
+        }
+        for (const prior of baselineFindings) if (!usedBaseline.has(prior.fingerprint)) pairs.push({ baseline: prior });
         const entries: ScanComparisonEntry[] = [];
-        for (const fingerprint of fingerprints) {
-          const inBaseline = baselineByFingerprint.get(fingerprint);
-          const inCurrent = currentByFingerprint.get(fingerprint);
+        for (const pair of pairs) {
+          const inBaseline = pair.baseline;
+          const inCurrent = pair.current;
           const reference = inCurrent ?? inBaseline;
-          if (reference === undefined) continue; // Unreachable by construction.
+          if (reference === undefined) continue;
+          const fingerprint = reference.fingerprint;
           let state: ScanComparisonEntryState;
           if (inBaseline === undefined) {
             state = 'NEW';
           } else if (inCurrent === undefined) {
-            // Absence in the comparison scan — retest evidence, never
-            // proof of repair (same honesty as NOT_OBSERVED_IN_LATEST_SCAN).
+            // Absence is comparison evidence, not proof of repair.
             state = 'RESOLVED';
           } else {
-            const workflow = await scans.getFindingWorkflow(project.id, fingerprint);
-            if (workflow?.state === 'REOPENED') {
-              state = 'REOPENED';
-            } else {
-              state = inBaseline.severity === inCurrent.severity ? 'UNCHANGED' : 'CHANGED';
-            }
+            const workflow = await scans.getFindingWorkflow(project.id, fingerprint) ??
+              (inBaseline.fingerprint === fingerprint ? undefined : await scans.getFindingWorkflow(project.id, inBaseline.fingerprint));
+            if (workflow?.state === 'REOPENED') state = 'REOPENED';
+            else state = inBaseline.severity === inCurrent.severity ? 'UNCHANGED' : 'CHANGED';
           }
           entries.push({
-            fingerprint,
-            findingId: reference.id,
-            ruleId: reference.ruleId,
+            fingerprint, findingId: reference.id, ruleId: reference.ruleId,
             location: reference.scanner === 'DAST' ? reference.endpoint : reference.file,
             state,
             ...(inBaseline === undefined ? {} : { baselineSeverity: inBaseline.severity }),

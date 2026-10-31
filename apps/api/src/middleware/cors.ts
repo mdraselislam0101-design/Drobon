@@ -41,6 +41,9 @@ export function corsMiddleware(options: CorsOptions): Middleware {
     }
     res.setHeader('access-control-allow-origin', origin);
     res.setHeader('access-control-allow-credentials', 'true');
+    // Both are response-only correlation headers; the log ID is generated
+    // by this server and never reflects a caller-supplied value.
+    res.setHeader('access-control-expose-headers', 'X-Request-Id, X-Log-Id');
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'access-control-allow-origin': origin,

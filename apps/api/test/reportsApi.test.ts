@@ -278,7 +278,8 @@ describe('findings and reports production API', () => {
       const markdown = await downloadMarkdown.text();
       expect(downloadMarkdown.status).toBe(200);
       expect(downloadMarkdown.headers.get('content-type')).toContain('text/markdown');
-      expect(markdown).toContain('&lt;img');
+      expect(markdown).toContain('source snippet withheld');
+      expect(markdown).not.toContain('&lt;img');
       expect(markdown).not.toContain('<img');
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=markdown&filename=../../evil`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(400);
       expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans/${sast.id}/report/download?format=../../evil`, { headers: { cookie: cookieHeader(pro) } })).status).toBe(422);

@@ -302,7 +302,7 @@ describe('requirements.txt parsing', () => {
       ].join('\n'),
       'requirements.txt',
     );
-    expect(parsed.status).toBe('ANALYZED');
+    expect(parsed.status).toBe('PARTIAL'); // Includes, directives and a bare URL were not analyzed.
     const byName = new Map(parsed.dependencies.map((dep) => [dep.name, dep]));
     expect(byName.get('flask')).toMatchObject({
       declaredVersion: '==2.3.2',
@@ -320,6 +320,16 @@ describe('requirements.txt parsing', () => {
     // Options and URLs are skipped (counted, noted, never parsed).
     expect(parsed.note).toContain('option/directive line(s) skipped');
     expect(parsed.dependencies).toHaveLength(5);
+  });
+
+  test.each([
+    '-r other-requirements.txt', '--constraint=constraints.txt', '-e ./local-package',
+    'https://example.test/pkg.whl', '$$$junk===',
+  ])('keeps known dependencies but marks omitted requirement input as PARTIAL: %s', (omitted) => {
+    const parsed = parseRequirementsTxt(`flask==2.3.2\n${omitted}\n`, 'requirements.txt');
+    expect(parsed.dependencies.map((entry) => entry.name)).toEqual(['flask']);
+    expect(parsed.status).toBe('PARTIAL');
+    expect(parsed.note).toBeTruthy();
   });
 
   test('invalid requirement lines are dropped, never guessed', () => {

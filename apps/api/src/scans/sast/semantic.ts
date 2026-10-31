@@ -143,6 +143,9 @@ function literalStyleFor(family: string): LiteralStyle {
     case 'shell-posix':
     case 'ruby':
     case 'perl':
+      // Command substitutions can contain # characters that are not
+      // comments (for example Ruby's `#{expression}` interpolation).
+      return { ...HASH_LIKE, quotes: ["'", '"', '`'] };
     case 'r':
     case 'julia':
     case 'elixir':
@@ -162,7 +165,7 @@ function literalStyleFor(family: string): LiteralStyle {
  * preserved exactly. Tolerant of malformed input by construction — the
  * state machine cannot throw on any byte sequence.
  */
-export function maskLiterals(content: string, family: string): string {
+function maskSource(content: string, family: string, keepStrings: boolean): string {
   const style = literalStyleFor(family);
   const out = content.split('');
   const n = content.length;
@@ -203,26 +206,25 @@ export function maskLiterals(content: string, family: string): string {
     if (stringQuote !== undefined) {
       // Triple-quoted strings close on their delimiter.
       if (stringTriple !== undefined && content.startsWith(stringTriple, i)) {
-        for (let k = 0; k < stringTriple.length; k += 1) out[i + k] = ' ';
+        if (!keepStrings) for (let k = 0; k < stringTriple.length; k += 1) out[i + k] = ' ';
         i += stringTriple.length - 1;
         stringQuote = undefined;
         stringTriple = undefined;
         continue;
       }
       if (ch === '\\' && i + 1 < n) {
-        out[i] = ' ';
-        out[i + 1] = ' ';
+        if (!keepStrings) { out[i] = ' '; out[i + 1] = ' '; }
         i += 1;
         continue;
       }
       if (ch === stringQuote) {
         // Single-quoted strings close on the first bare quote (triple-
         // quoted strings are handled above by the delimiter check).
-        out[i] = ' ';
+        if (!keepStrings) out[i] = ' ';
         stringQuote = undefined;
         continue;
       }
-      out[i] = ' ';
+      if (!keepStrings) out[i] = ' ';
       continue;
     }
     // Normal state: try the openers, longest first (triples before quotes,
@@ -231,7 +233,7 @@ export function maskLiterals(content: string, family: string): string {
       let matched = false;
       for (const triple of style.tripleQuotes) {
         if (content.startsWith(triple, i)) {
-          for (let k = 0; k < triple.length; k += 1) out[i + k] = ' ';
+          if (!keepStrings) for (let k = 0; k < triple.length; k += 1) out[i + k] = ' ';
           i += triple.length - 1;
           stringQuote = triple[0] as string;
           stringTriple = triple;
@@ -264,7 +266,7 @@ export function maskLiterals(content: string, family: string): string {
     if (matched) continue;
     for (const quote of style.quotes) {
       if (ch === quote) {
-        out[i] = ' ';
+        if (!keepStrings) out[i] = ' ';
         stringQuote = quote;
         stringTriple = undefined;
         matched = true;
@@ -275,6 +277,24 @@ export function maskLiterals(content: string, family: string): string {
     // Plain code character — copied verbatim.
   }
   return out.join('');
+}
+
+/** Mask comments and string literals for the bounded flow analyzer. */
+export function maskLiterals(content: string, family: string): string {
+  return maskSource(content, family, false);
+}
+
+// Only families whose comment syntax the small lexer explicitly models.
+// Unknown/config formats stay unchanged rather than guessing their grammar.
+const LEXICAL_COMMENT_FAMILIES: ReadonlySet<string> = new Set([
+  'javascript', 'typescript', 'jsx', 'tsx', 'java', 'kotlin', 'scala', 'groovy',
+  'c', 'cpp', 'objc', 'objcpp', 'csharp', 'go', 'rust', 'php', 'swift', 'dart', 'solidity',
+  'python', 'shell-posix', 'bash', 'ruby', 'perl', 'r', 'julia', 'elixir', 'lua', 'powershell', 'sql',
+]);
+
+/** Preserve strings and offsets while masking recognized comments for lexical rules. */
+export function maskComments(content: string, family: string): string {
+  return LEXICAL_COMMENT_FAMILIES.has(family) ? maskSource(content, family, true) : content;
 }
 
 // ---------------------------------------------------------------------------

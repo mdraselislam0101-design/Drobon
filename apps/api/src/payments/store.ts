@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
 import type { PaymentAuditAction, PaymentAuditEvent, PaymentMethod, PaymentStatus } from '@drobon/shared';
 import { isPaymentAuditAction, isPaymentMethod, isPaymentStatus } from '@drobon/shared';
 
@@ -69,6 +68,8 @@ export interface PaymentStore {
   findByIdempotency(accountId: string, idempotencyKey: string): PaymentRecord | undefined;
   listForAccount(accountId: string): PaymentRecord[];
   listAll(): PaymentRecord[];
+  /** True only when an approved payment audit and subscription timestamp support paid activation. */
+  hasConfirmedProActivation(accountId: string, subscriptionCreatedAt: string | null): boolean;
   adminPage(filters: PaymentAdminFilters, page: number, pageSize: number): { payments: PaymentRecord[]; total: number };
   adminCounts(): PaymentAdminCounts;
   accountStats(accountIds: readonly string[]): ReadonlyMap<string, { requestCount: number; latestPaymentStatus: PaymentStatus | null }>;
@@ -201,6 +202,31 @@ function loadDocument(path: string): StoreDocument {
 function createStore(initial: StoreDocument, persist: (document: StoreDocument) => void): PaymentStore {
   let payments = new Map(initial.payments.map((p) => [p.paymentId, { ...p }]));
   let auditEvents = initial.auditEvents.map((e) => ({ ...e }));
+  // An APPROVED payment alone is not proof that it activated this PRO:
+  // partner grants or legacy PRO may already have existed. The approval
+  // audit records ALREADY_ACTIVE explicitly; only a successful activation
+  // with a matching subscription timestamp supports a paid-source claim.
+  const buildPaidActivationIndex = (records: Map<string, PaymentRecord>, events: PaymentAuditEvent[]): Map<string, Array<{ from: number; to: number }>> => {
+    const activations = new Map<string, string>();
+    for (const event of events) {
+      if (event.action === 'PAYMENT_APPROVED' && event.previousStatus === 'APPROVING' &&
+          event.newStatus === 'APPROVED' && event.reason === null) {
+        activations.set(event.paymentId, event.accountId);
+      }
+    }
+    const result = new Map<string, Array<{ from: number; to: number }>>();
+    for (const payment of records.values()) {
+      if (payment.status !== 'APPROVED' || payment.approvedAt === null || activations.get(payment.paymentId) !== payment.accountId) continue;
+      const from = Date.parse(payment.submittedAt);
+      const to = Date.parse(payment.approvedAt);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) continue;
+      const ranges = result.get(payment.accountId) ?? [];
+      ranges.push({ from, to });
+      result.set(payment.accountId, ranges);
+    }
+    return result;
+  };
+  let paidActivations = buildPaidActivationIndex(payments, auditEvents);
   let queue: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(task: () => T): Promise<T> => {
     const run = queue.then(task, task);
@@ -215,6 +241,7 @@ function createStore(initial: StoreDocument, persist: (document: StoreDocument) 
     persist(doc);
     payments = nextPayments;
     auditEvents = nextEvents;
+    paidActivations = buildPaidActivationIndex(payments, auditEvents);
   };
   const eventsFor = (paymentId: string): PaymentAuditEvent[] => auditEvents.filter((e) => e.paymentId === paymentId).map((e) => ({ ...e }));
   return {
@@ -238,6 +265,11 @@ function createStore(initial: StoreDocument, persist: (document: StoreDocument) 
     },
     listForAccount: (accountId) => [...payments.values()].filter((p) => p.accountId === accountId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.paymentId.localeCompare(b.paymentId)).map((p) => ({ ...p })),
     listAll: () => [...payments.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.paymentId.localeCompare(b.paymentId)).map((p) => ({ ...p })),
+    hasConfirmedProActivation: (accountId, subscriptionCreatedAt) => {
+      if (subscriptionCreatedAt === null) return false;
+      const created = Date.parse(subscriptionCreatedAt);
+      return Number.isFinite(created) && (paidActivations.get(accountId)?.some(({ from, to }) => from <= created && created <= to) ?? false);
+    },
     adminPage: (filters, page, pageSize) => {
       const offset = (page - 1) * pageSize;
       const retain = offset + pageSize;
@@ -357,10 +389,7 @@ function createStore(initial: StoreDocument, persist: (document: StoreDocument) 
 /** Durable JSON-backed, atomic, single-process/single-writer payment + audit store. */
 export function createJsonFilePaymentStore(path: string): PaymentStore {
   const persist = (document: StoreDocument): void => {
-    mkdirSync(dirname(path), { recursive: true });
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(document, null, 2)}\n`);
   };
   return createStore(loadDocument(path), persist);
 }

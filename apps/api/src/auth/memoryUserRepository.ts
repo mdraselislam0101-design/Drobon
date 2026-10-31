@@ -47,6 +47,19 @@ export function createMemoryUserRepository(): UserRepository {
       byEmail.set(updated.email, updated);
       return 'ACTIVATED' as const;
     }),
+    restorePartnerSubscription: (id, activationAt, prior) => runExclusive(() => {
+      const current = byId.get(id);
+      if (current === undefined) return 'NOT_FOUND' as const;
+      const subscription = current.subscription;
+      if (subscription?.plan !== 'PRO' || subscription.status !== 'ACTIVE' ||
+          subscription.createdAt !== activationAt || subscription.updatedAt !== activationAt) return 'CHANGED' as const;
+      const updated: UserRecord = { ...current };
+      if (prior === null) delete updated.subscription;
+      else updated.subscription = { ...prior };
+      byId.set(id, updated);
+      byEmail.set(updated.email, updated);
+      return 'RESTORED' as const;
+    }),
     setUserType: (id, userType) => runExclusive(() => {
       const current = byId.get(id);
       if (current === undefined) return undefined;

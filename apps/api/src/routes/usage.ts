@@ -112,10 +112,10 @@ export function createUsageRoutes(deps: UsageRouteDeps): Route[] {
         if (!outcome.ok) {
           // Uniform 429 QUOTA_EXCEEDED + Retry-After (next UTC month).
           // Nothing was incremented; no hint which limit tripped.
-          ctx.logger.info('Scan quota denied', { requestId: ctx.id, userId: record.id });
+          ctx.logger.info('Scan quota denied', { requestId: ctx.logId, userId: record.id });
           throw quotaExceeded(outcome.retryAfterSec);
         }
-        ctx.logger.info('Scan consumed', { requestId: ctx.id, userId: record.id });
+        ctx.logger.info('Scan consumed', { requestId: ctx.logId, userId: record.id });
         const body: UsageResponse = outcome.usage;
         sendSuccess(res, ctx, body);
       },

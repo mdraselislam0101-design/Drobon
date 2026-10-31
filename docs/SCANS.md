@@ -27,16 +27,17 @@ contract is unchanged:
   REDACTED evidence, remediation) — analysis only, no execution, no
   credential verification, no network. Raw secret values never leave
   the engine (see `docs/SECRETS.md`).
-- `DAST` scans (Pump 11) perform bounded, GET-only passive checks against
-  one owner-configured project URL. DNS is revalidated and the socket is
-  pinned to a public address; redirects are independently checked and
-  restricted to the same host. Results include only observed,
-  allowlisted response metadata and deterministic findings. The engine
-  does not use a browser, execute content, authenticate, crawl, fuzz,
-  inject, or exploit (see `docs/DAST.md`).
-- **No vulnerability datasets.** No CVE/NVD/GHSA/OSV/KEV/EPSS data is
-  imported, bundled or referenced — the dataset lock holds; real
-  dataset integration is a separate later workstream.
+- `DAST` scans default to bounded, GET-only passive checks against one
+  owner-configured project URL. DNS is revalidated and the socket is pinned
+  to a public address; redirects are independently checked and restricted to
+  the same host. Opt-in, consented `ACTIVE_SAFE` adds bounded same-host
+  crawling and path-marker probes, not a general crawler or exploit test.
+  Even GET can have side effects. See `docs/DAST.md` for scope, authorization,
+  request limits and the current query limitation.
+- Dataset rules and optional advisory intelligence may be loaded from a
+  separately configured Dataset; unavailable intelligence remains explicitly
+  NOT ASSESSED. The Main App does not establish real-world accuracy from
+  Dataset conformance alone.
 - Everything below is covered by executable tests (see
   `docs/TESTING.md`).
 
@@ -71,9 +72,9 @@ answer the SAME uniform 403 (no existence oracle). `AccountRole` and
 
 | Method | Path | Behavior |
 | ------ | ---- | -------- |
-| `PUT` | `/api/v1/projects/:projectId/dast-target` | Set one project-owned target with exactly `{ targetUrl }`. Owner-only; validates URL and current public DNS answers before persistence. |
+| `PUT` | `/api/v1/projects/:projectId/dast-target` | Set one project-owned target with exactly `{ targetUrl }`. Owner-only. Compatibility mode validates public DNS before persistence; strict engagement mode validates syntax and literal IPs locally and defers DNS until authorized scan preflight. |
 | `DELETE` | `/api/v1/projects/:projectId/dast-target` | Remove the project-owned target; owner-only. |
-| `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body `{ scanType, assessmentId? }`; the optional assessment ID is an owner/project-bound link, not authority. DAST target comes only from the project record. Project must be the caller's own AND `ACTIVE` (archived → `409 PROJECT_ARCHIVED`). A linked assessment must be `ACTIVE`; linked DAST additionally requires its exact target hostname in scope. Consumes the ordinary plan/quota atomically with creation. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
+| `POST` | `/api/v1/projects/:projectId/scans` | Request a scan. Body `{ scanType, assessmentId? }`; DAST target comes only from the owner’s ACTIVE project. A linked assessment must be ACTIVE and contain the exact target hostname; applicable engagements gate path and scan type. With `DAST_REQUIRE_ENGAGEMENT=true`, an active matching engagement is mandatory. The in-process reservation and creation flow is serialized and restart-reconciled, **not a cross-file atomic transaction**. Returns `201` + the QUEUED scan, or a replayed scan (`200`). |
 | `GET` | `/api/v1/projects/:projectId/scans` | The project's scans, server-ordered `createdAt` DESC then `id` ASC. |
 | `GET` | `/api/v1/projects/:projectId/scans/:scanId` | One scan of the caller's own project **plus its engine payload** (SAST/SECRETS findings; SCA summary, inventory, manifests, SBOM and advisory assessment; DAST bounded observations and findings). This is the only engine-payload read surface. Unknown/malformed/foreign scan ids answer a uniform `404` there — scan lookup never leaves the caller's scope, so cross-account probing cannot distinguish "exists elsewhere" from "does not exist". |
 
@@ -248,8 +249,8 @@ above, not HTTP codes.
 
 ## NOT_IMPLEMENTED (later roadmap, do not assume)
 
-Browser/full DAST, active testing, vulnerability datasets and matching,
-project-wide/multi-scan reports, PDF/signatures, full audit-history export,
+Browser/full DAST and unrestricted active testing, project-wide/multi-scan reports,
+report signatures, full audit-history export,
 scan cancellation (deliberately absent — a half-implemented cancel
 would be worse than none), scan scheduling/recurring scans,
 out-of-process engine workers, project-level usage analytics,

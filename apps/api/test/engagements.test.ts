@@ -14,6 +14,7 @@ import {
   type ScanType,
 } from '@drobon/shared';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore } from '../src/assessments/store.js';
+import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import { readJson, sessionCookieFrom, startTestServer, type TestServer } from './helpers.js';
 
 /**
@@ -187,8 +188,8 @@ describe('assessment store: append-only engagement history', () => {
 });
 
 describe('engagement HTTP API + scan authorization gate', () => {
-  async function setup(): Promise<{ server: TestServer; cookies: Cookies; projectId: string; assessmentId: string }> {
-    const server = await startTestServer();
+  async function setup(resolve?: (host: string) => Promise<readonly string[]>, strict = false): Promise<{ server: TestServer; cookies: Cookies; projectId: string; assessmentId: string }> {
+    const server = await startTestServer({ dastRequireEngagement: strict, ...(resolve === undefined ? {} : { dastTargetPolicy: createDastTargetPolicy({ resolve }) }) });
     SERVERS.push(server);
     const registered = await fetch(`${server.baseUrl}/api/v1/auth/register`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -239,6 +240,62 @@ describe('engagement HTTP API + scan authorization gate', () => {
       ...overrides,
     };
   }
+
+  test('opt-in strict DAST blocks legacy paths before DNS/quota and rechecks withdrawal at execution', async () => {
+    const resolvedHosts: string[] = [];
+    const { server, cookies, projectId, assessmentId } = await setup(async (host) => { resolvedHosts.push(host); return ['93.184.216.34']; }, true);
+    const headers = { 'content-type': 'application/json', cookie: cookieHeader(cookies) };
+    const scanUrl = `${server.baseUrl}/api/v1/projects/${projectId}/scans`;
+    const request = (bodyValue: Record<string, unknown>) => fetch(scanUrl, { method: 'POST', headers, body: JSON.stringify(bodyValue) });
+    resolvedHosts.length = 0;
+    expect((await request({ scanType: 'DAST' })).status).toBe(409);
+    expect((await request({ scanType: 'DAST', assessmentId })).status).toBe(409);
+    expect(resolvedHosts).toEqual([]);
+    const usageBefore = (await readJson(await fetch(`${server.baseUrl}/api/v1/usage`, { headers }))) as { data: { used: number } };
+    expect(usageBefore.data.used).toBe(0);
+    const engagementRoute = `${server.baseUrl}/api/v1/projects/${projectId}/assessments/${assessmentId}/engagements`;
+    const declaration = await fetch(engagementRoute, { method: 'POST', headers,
+      body: JSON.stringify(body({ scopePaths: ['/'], allowedScanTypes: ['DAST'] })) });
+    expect(declaration.status).toBe(200);
+    const engagement = ((await readJson(declaration)) as { data: { engagement: { id: string } } }).data.engagement;
+    const created = await request({ scanType: 'DAST', assessmentId });
+    expect(created.status).toBe(201);
+    const scanId = ((await readJson(created)) as { data: { scan: { id: string } } }).data.scan.id;
+    expect(resolvedHosts).toContain('fixture.example.org');
+    expect((await fetch(`${engagementRoute}/${engagement.id}/withdraw`, { method: 'POST', headers, body: JSON.stringify({ confirm: true }) })).status).toBe(200);
+    resolvedHosts.length = 0;
+    await server.scanProcessor.drain();
+    const scan = await server.scans.findByProjectAndId(projectId, scanId);
+    expect(scan?.status).toBe('FAILED');
+    expect(scan?.failureCode).toBe('DAST_TARGET_BLOCKED');
+    expect(resolvedHosts).toEqual([]);
+    expect((await request({ scanType: 'DAST', assessmentId })).status).toBe(409);
+  });
+
+  test('a denied linked DAST request does not resolve DNS or consume quota', async () => {
+    const resolvedHosts: string[] = [];
+    const { server, cookies, projectId, assessmentId } = await setup(async (host) => { resolvedHosts.push(host); return ['93.184.216.34']; });
+    const headers = { 'content-type': 'application/json', cookie: cookieHeader(cookies) };
+    const route = `${server.baseUrl}/api/v1/projects/${projectId}/assessments/${assessmentId}/engagements`;
+    expect((await fetch(route, { method: 'POST', headers, body: JSON.stringify(body()) })).status).toBe(200);
+    // Target configuration has its own DNS safety check. Measure only the
+    // subsequent scan request's denied preflight.
+    resolvedHosts.length = 0;
+    const requestScan = () => fetch(`${server.baseUrl}/api/v1/projects/${projectId}/scans`, {
+      method: 'POST', headers, body: JSON.stringify({ scanType: 'DAST', assessmentId }),
+    });
+    expect((await requestScan()).status).toBe(409); // engagement allows only SAST
+    expect(resolvedHosts).toEqual([]);
+    const usage = (await readJson(await fetch(`${server.baseUrl}/api/v1/usage`, { headers }))) as { data: { used: number } };
+    expect(usage.data.used).toBe(0);
+
+    expect((await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/dast-target`, {
+      method: 'PUT', headers, body: JSON.stringify({ targetUrl: 'https://other.example.org/' }),
+    })).status).toBe(200);
+    resolvedHosts.length = 0;
+    expect((await requestScan()).status).toBe(409); // target host not in assessment scope
+    expect(resolvedHosts).toEqual([]);
+  });
 
   test('declare, list, gate by scan type, withdraw and then block — all before quota', async () => {
     const { server, cookies, projectId, assessmentId } = await setup();

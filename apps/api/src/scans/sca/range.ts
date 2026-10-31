@@ -22,7 +22,7 @@
 const NPM_OP_PATTERN = /^(>=|<=|>|<|=)?(.*)$/;
 const NPM_VERSION_PATTERN =
   /^v?(\d+|x|X|\*)(?:\.(\d+|x|X|\*))?(?:\.(\d+|x|X|\*))?(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
-const NPM_EXACT_VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const NPM_EXACT_VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
 const PYPI_SPEC_PATTERN = /^(===|==|~=|!=|<=|>=|<|>)\s*(.+)$/;
 const PYPI_LOCAL_FORBIDDEN_OPERATORS = new Set(['~=', '<=', '>=', '<', '>']);
 const PYPI_VERSION_PATTERN =
@@ -85,6 +85,8 @@ function validateNpmGroup(group) {
     if (!isNpmVersionToken(low) || !isNpmVersionToken(high)) {
       return `bad hyphen range "${group}"`;
     }
+    parseNpmRangeVersion(low);
+    parseNpmRangeVersion(high);
     return null;
   }
   const tokens = attached.split(/[\s,]+/).filter((token) => token !== '');
@@ -100,6 +102,9 @@ function validateNpmGroup(group) {
     if (version === '' || !isNpmVersionToken(version)) {
       return `bad comparator "${token}"`;
     }
+    // Validate every branch before evaluation; short-circuiting must not
+    // turn malformed or imprecise comparators into a clean result.
+    parseNpmRangeVersion(version);
   }
   return null;
 }
@@ -144,7 +149,8 @@ function validatePypiRange(range) {
         return `"${spec}": local version identifiers are not permitted with ${operator}`;
       }
       if (operator === '~=') {
-        const release = version.split(/[a-zA-Z+!]/)[0].split('.');
+        const withoutEpoch = version.includes('!') ? version.slice(version.indexOf('!') + 1) : version;
+        const release = withoutEpoch.split(/[a-zA-Z+]/)[0].split('.');
         if (release.length < 2) {
           return `"${spec}": ~= needs at least two release segments`;
         }
@@ -162,12 +168,38 @@ function compareNumbers(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+function npmNumericPart(part) {
+  if (!/^\d+$/.test(part) || (part.length > 1 && part.startsWith('0'))) {
+    throw new Error('invalid npm numeric version identifier');
+  }
+  const value = Number(part);
+  if (!Number.isSafeInteger(value)) throw new Error('npm numeric version identifier exceeds safe precision');
+  return value;
+}
+
+function validateNpmPrerelease(pre) {
+  if (pre === null) return;
+  for (const part of pre.split('.')) {
+    if (!part || !/^[0-9A-Za-z-]+$/.test(part)) throw new Error('invalid npm prerelease identifier');
+    if (/^\d+$/.test(part)) npmNumericPart(part);
+  }
+}
+
+function validateNpmBuild(build) {
+  if (build !== undefined && build.split('.').some((part) => !part || !/^[0-9A-Za-z-]+$/.test(part))) {
+    throw new Error('invalid npm build identifier');
+  }
+}
+
 function parseNpmExact(version) {
   const match = version.trim().match(NPM_EXACT_VERSION);
   if (!match) {
     throw new Error(`cannot evaluate npm version "${version}" (need full x.y.z)`);
   }
-  return { nums: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] ?? null };
+  const pre = match[4] ?? null;
+  validateNpmPrerelease(pre);
+  validateNpmBuild(match[5]);
+  return { nums: [npmNumericPart(match[1]), npmNumericPart(match[2]), npmNumericPart(match[3])], pre };
 }
 
 function compareSemverPre(a, b) {
@@ -229,9 +261,16 @@ function parseNpmRangeVersion(token) {
     throw new Error(`cannot evaluate npm range version "${token}"`);
   }
   const parts = [match[1], match[2], match[3]].map((part) =>
-    part === undefined || part === 'x' || part === 'X' || part === '*' ? null : Number(part),
+    part === undefined || part === 'x' || part === 'X' || part === '*' ? null : npmNumericPart(part),
   );
-  return { parts, pre: match[4] ?? null };
+  const firstWildcard = parts.indexOf(null);
+  if (firstWildcard !== -1 && parts.slice(firstWildcard).some((part) => part !== null)) {
+    throw new Error('numeric npm component after wildcard');
+  }
+  const pre = match[4] ?? null;
+  validateNpmPrerelease(pre);
+  validateNpmBuild(match[5]);
+  return { parts, pre };
 }
 
 function npmDesugarEquality(rangeVersion) {
@@ -298,26 +337,42 @@ function evalNpmComparator(parsed, operator, token) {
 function evalNpmGroup(parsed, group) {
   const attached = attachNpmOperators(group);
   const hyphen = attached.split(/\s+-\s+/);
-  if (hyphen.length === 2) {
-    return (
-      evalNpmComparator(parsed, '>=', hyphen[0].trim()) &&
-      evalNpmComparator(parsed, '<=', hyphen[1].trim())
-    );
+  const comparators = hyphen.length === 2
+    ? [{ operator: '>=', version: hyphen[0].trim() }, { operator: '<=', version: hyphen[1].trim() }]
+    : attached.split(/[\s,]+/).filter((token) => token !== '').map((token) => {
+        const match = token.match(NPM_OP_PATTERN);
+        return { operator: match?.[1] ?? '', version: (match?.[2] ?? '').trim() };
+      });
+  // Evaluate every comparator: an unsupported one must not be hidden by
+  // an earlier false comparison.
+  let matched = true;
+  for (const comparator of comparators) {
+    if (!evalNpmComparator(parsed, comparator.operator, comparator.version)) matched = false;
   }
-  const tokens = attached.split(/[\s,]+/).filter((token) => token !== '');
-  return tokens.every((token) => {
-    const match = token.match(NPM_OP_PATTERN);
-    const operator = match?.[1] ?? '';
-    const version = (match?.[2] ?? '').trim();
-    return evalNpmComparator(parsed, operator, version);
+  if (!matched || parsed.pre === null) return matched;
+  // npm's default range semantics allow prereleases only when this AND
+  // branch explicitly mentions a prerelease of the same major/minor/patch.
+  // For advisory data an excluded prerelease might still be vulnerable, so
+  // report it as unknown rather than a confident non-match or false match.
+  const optedIn = comparators.some(({ version }) => {
+    const bound = parseNpmRangeVersion(version);
+    return bound.pre !== null && bound.parts.every((part, index) => part === parsed.nums[index]);
   });
+  if (!optedIn) throw new Error('npm prerelease is not explicitly covered by this advisory range');
+  return true;
 }
 
 function evalNpm(parsed, range) {
-  return range
-    .split('||')
-    .map((group) => group.trim())
-    .some((group) => evalNpmGroup(parsed, group));
+  let unknown;
+  for (const group of range.split('||').map((entry) => entry.trim())) {
+    try {
+      if (evalNpmGroup(parsed, group)) return true;
+    } catch (error) {
+      unknown ??= error;
+    }
+  }
+  if (unknown !== undefined) throw unknown;
+  return false;
 }
 
 // --- PEP 440 ---
@@ -337,24 +392,31 @@ function normalizePypiLocal(label) {
     .join('.');
 }
 
+function pypiNumber(part) {
+  const value = Number(part);
+  if (!Number.isSafeInteger(value)) throw new Error('pypi version exceeds safe precision');
+  return value;
+}
+
 function parsePypiVersion(version) {
   const trimmed = version.trim();
+  if (!PYPI_VERSION_PATTERN.test(trimmed)) throw new Error(`cannot evaluate pypi version "${version}"`);
   const match = trimmed.match(/^(\d+!)?(.+?)(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$/);
   if (!match) {
     throw new Error(`cannot evaluate pypi version "${version}"`);
   }
-  const epoch = match[1] ? Number(match[1].slice(0, -1)) : 0;
+  const epoch = match[1] ? pypiNumber(match[1].slice(0, -1)) : 0;
   let rest = match[2];
   let dev = null;
   const devMatch = rest.match(/^(.*)\.?(dev)(\d*)$/i);
   if (devMatch && /(\d|[a-zA-Z])/.test(devMatch[1])) {
-    dev = devMatch[3] === '' ? 0 : Number(devMatch[3]);
+    dev = devMatch[3] === '' ? 0 : pypiNumber(devMatch[3]);
     rest = devMatch[1].replace(/\.$/, '');
   }
   let post = null;
   const postMatch = rest.match(/^(.*)\.?(post|rev|r)(\d*)$/i);
   if (postMatch && /^\d/.test(postMatch[1].replace(/\.$/, ''))) {
-    post = postMatch[3] === '' ? 0 : Number(postMatch[3]);
+    post = postMatch[3] === '' ? 0 : pypiNumber(postMatch[3]);
     rest = postMatch[1].replace(/\.$/, '');
   }
   let pre = null;
@@ -362,7 +424,7 @@ function parsePypiVersion(version) {
   if (preMatch) {
     pre = {
       order: PYPI_PRE_ORDER[preMatch[2].toLowerCase()],
-      num: preMatch[3] === '' ? 0 : Number(preMatch[3]),
+      num: preMatch[3] === '' ? 0 : pypiNumber(preMatch[3]),
     };
     rest = preMatch[1];
   }
@@ -373,7 +435,7 @@ function parsePypiVersion(version) {
       if (!/^\d+$/.test(part)) {
         throw new Error(`cannot evaluate pypi version "${version}"`);
       }
-      return Number(part);
+      return pypiNumber(part);
     });
   return { epoch, release, pre, post, dev, local: match[3] ? normalizePypiLocal(match[3].slice(1)) : null };
 }
@@ -390,8 +452,10 @@ function comparePypi(a, b) {
       return order;
     }
   }
-  const aPre = a.pre === null ? [3, 0] : [a.pre.order, a.pre.num];
-  const bPre = b.pre === null ? [3, 0] : [b.pre.order, b.pre.num];
+  // PEP 440: a development release with no pre/post segment sorts
+  // BEFORE alpha releases, not just before the final release.
+  const aPre = a.pre === null ? (a.post === null && a.dev !== null ? [-1, 0] : [3, 0]) : [a.pre.order, a.pre.num];
+  const bPre = b.pre === null ? (b.post === null && b.dev !== null ? [-1, 0] : [3, 0]) : [b.pre.order, b.pre.num];
   order = compareNumbers(aPre[0], bPre[0]) || compareNumbers(aPre[1], bPre[1]);
   if (order !== 0) {
     return order;
@@ -420,26 +484,17 @@ function sameEpochRelease(a, b) {
   return true;
 }
 
-// '>V' MUST NOT allow a post-release of V unless V is itself a post-release.
-// A post-release of V has V's epoch, release and pre-release segment, plus a post segment.
+// '>V' MUST NOT allow a post-release of the same base release unless V
+// itself is a post-release, even if V is a prerelease of that base.
 function isPostReleaseOfExclusiveBound(candidate, bound) {
-  if (bound.post !== null || candidate.post === null) {
-    return false;
-  }
-  const samePre =
-    candidate.pre === null
-      ? bound.pre === null
-      : bound.pre !== null &&
-        candidate.pre.order === bound.pre.order &&
-        candidate.pre.num === bound.pre.num;
-  return samePre && sameEpochRelease(candidate, bound);
+  return bound.post === null && candidate.post !== null && sameEpochRelease(candidate, bound);
 }
 
-// '<V' MUST NOT allow a pre-release of V unless V is itself a pre-release.
-// Developmental releases are pre-releases too. Only a final V is checked here; a V with a pre, post
-// or dev segment is left to ordering, because this pump does not decide those forms.
+// '<V' MUST NOT allow a prerelease of the same base release unless V is
+// itself a prerelease. A development release is a prerelease, including a
+// development release of a post-release; an ordinary post-release is not.
 function isPreReleaseOfFinalBound(candidate, bound) {
-  if (bound.pre !== null || bound.post !== null || bound.dev !== null) {
+  if (bound.pre !== null || bound.dev !== null) {
     return false;
   }
   if (candidate.pre === null && candidate.dev === null) {
@@ -455,14 +510,22 @@ function evalPypiSpecifier(parsed, spec) {
   }
   const [, operator, version] = match;
   if (operator === '===') {
-    return parsed.raw === version;
+    if (parsed.raw.toLowerCase() === version.toLowerCase()) return true;
+    // Arbitrary equality interacts with normalized version spellings; do
+    // not claim a non-match when we cannot establish that normalization.
+    throw new Error('pypi arbitrary equality cannot be evaluated exactly');
   }
   if (version.endsWith('.*')) {
-    const prefix = version
-      .slice(0, -2)
-      .split('.')
-      .map(Number);
-    const hit = prefix.every((num, index) => (parsed.release[index] ?? 0) === num);
+    const rawPrefix = version.slice(0, -2);
+    // Epoch/prerelease prefixes need PEP 440 prefix semantics that this
+    // evaluator does not implement; never turn NaN into a clean verdict.
+    if (!/^\d+(?:\.\d+)*$/.test(rawPrefix)) throw new Error('unsupported pypi wildcard prefix');
+    const prefix = rawPrefix.split('.').map((part) => {
+      const value = Number(part);
+      if (!Number.isSafeInteger(value)) throw new Error('pypi version exceeds safe precision');
+      return value;
+    });
+    const hit = parsed.epoch === 0 && prefix.every((num, index) => (parsed.release[index] ?? 0) === num);
     if (operator === '==') {
       return hit;
     }
@@ -481,7 +544,10 @@ function evalPypiSpecifier(parsed, spec) {
     return operator === '==' ? hit : !hit;
   }
   // PEP 440 exclusive ordered comparison (MUST NOT). Only '<' and '>' are affected.
-  if (operator === '>' && isPostReleaseOfExclusiveBound(parsed, other)) {
+  if (operator === '>' && (
+    isPostReleaseOfExclusiveBound(parsed, other) ||
+    (parsed.local !== null && sameEpochRelease(parsed, other))
+  )) {
     return false;
   }
   if (operator === '<' && isPreReleaseOfFinalBound(parsed, other)) {
@@ -505,7 +571,7 @@ function evalPypiSpecifier(parsed, spec) {
         return false;
       }
       const prefix = other.release.slice(0, -1);
-      return prefix.every((num, index) => (parsed.release[index] ?? 0) === num);
+      return parsed.epoch === other.epoch && prefix.every((num, index) => (parsed.release[index] ?? 0) === num);
     }
     default:
       throw new Error(`unknown pypi operator "${operator}"`);
@@ -513,10 +579,31 @@ function evalPypiSpecifier(parsed, spec) {
 }
 
 function evalPypi(parsed, range) {
-  return range
-    .split(',')
-    .map((spec) => spec.trim())
-    .every((spec) => evalPypiSpecifier(parsed, spec));
+  const specs = range.split(',').map((spec) => spec.trim());
+  let matched = true;
+  for (const spec of specs) {
+    // Evaluate all specifiers so unsupported syntax cannot be hidden by
+    // an earlier non-match and then presented as a complete assessment.
+    if (!evalPypiSpecifier(parsed, spec)) matched = false;
+  }
+  if (!matched || (parsed.pre === null && parsed.dev === null)) return matched;
+  const optedIn = specs.some((spec) => {
+    const match = spec.match(PYPI_SPEC_PATTERN);
+    // Unlike an installer's default candidate filtering, an advisory bound
+    // that explicitly names a prerelease includes prerelease comparisons for
+    // both exclusive and inclusive operators. Otherwise a range such as
+    // <1.0rc2 would hide the vulnerable 1.0rc1.
+    if (!match || !['===', '==', '~=', '>=', '<=', '>', '<'].includes(match[1])) return false;
+    const version = match[2].endsWith('.*') ? match[2].slice(0, -2) : match[2];
+    try {
+      const bound = parsePypiVersion(version);
+      return bound.pre !== null || bound.dev !== null;
+    } catch {
+      return false;
+    }
+  });
+  if (!optedIn) throw new Error('pypi prerelease is not explicitly covered by this advisory range');
+  return true;
 }
 
 /**

@@ -1,0 +1,380 @@
+{
+  "schemaVersion": "drobon.synthetic-oracle/v2",
+  "fixtureManifestSha256": "8ae13962b8889b7f92018216868c2b1483556ae08c1dfc12d5e730890d6911e6",
+  "independentHumanReview": false,
+  "independentMechanicalChecks": "Node fake sinks and loopback HTTP; Python standard-library XML/Python AST; authored alongside fixtures",
+  "observations": [
+    {
+      "id": "SAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-05",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-06",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SAST-07",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SAST-08",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SECRET-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SECRET-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SECRET-03",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SECRET-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SCA-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SCA-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "SCA-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "SCA-04",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "DAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-03",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "DAST-04",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "DAST-05",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-04",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-05",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-06",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-07",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-08",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-09",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-10",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-11",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-12",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SAST-13",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-02",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-05",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-06",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-07",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-08",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-09",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-10",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "AX-SEC-11",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-03",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-04",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-05",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-06",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-07",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-08",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-09",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-10",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "AX-SCA-11",
+      "expected": null,
+      "observed": null,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-01",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-02",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-03",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-04",
+      "expected": true,
+      "observed": true,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-05",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    },
+    {
+      "id": "AX-DAST-06",
+      "expected": false,
+      "observed": false,
+      "matches": true
+    }
+  ]
+}

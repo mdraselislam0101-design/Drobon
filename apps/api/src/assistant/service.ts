@@ -1,3 +1,4 @@
+import { safeFindingEvidence } from '../scans/findingIdentity.js';
 import {
   ASSISTANT_EVIDENCE_REFS_MAX,
   ASSISTANT_LIST_MAX,
@@ -41,7 +42,7 @@ function classifyQuestion(question: string): Intent {
   if (/\b(assessment summary|summari[sz]e .*assessment|overall assessment)\b/.test(text)) return 'ASSESSMENT_SUMMARY';
   if (/\b(lifecycle|remediation status|current status|verification status|is this resolved)\b/.test(text)) return 'LIFECYCLE';
   if (/\b(which scanner|scanner produced|what scanner)\b/.test(text)) return 'SCANNER';
-  if (/\b(remediat|what should i do|how do i fix|fix this finding)\b/.test(text)) return 'REMEDIATION';
+  if (/\b(remediat\w*|what should i do|how (?:do|can) i fix|fix this finding|fix(?:ed)? code|code (?:fix|example)|(?:suggest|show|provide) (?:a |the )?(?:fix|remediation|code example))\b/.test(text)) return 'REMEDIATION';
   if (/\b(dependenc\w*|sbom|inventory|package list)\b/.test(text)) return 'DEPENDENCIES';
   if (/\b(not assessed|what was not assessed|assessment unavailable)\b/.test(text)) return 'NOT_ASSESSED';
   if (/\b(report)\b/.test(text)) return 'REPORT';
@@ -243,12 +244,18 @@ export class AssistantService {
         `The persisted finding ${finding.id} is classified ${finding.severity} by ${scanner}, rule ${finding.ruleId}.`,
         `Scanner title: ${finding.title}.`,
         `Scanner description: ${finding.description}`,
-        `Persisted scanner evidence (untrusted text, redacted for output): ${finding.evidence}`,
+        `Persisted scanner evidence (untrusted text, redacted for output): ${safeFindingEvidence(finding).evidence}`,
         ...(finding.file === undefined ? [] : [`Recorded source location: ${finding.file}:${finding.line ?? 0}:${finding.column ?? 0}.`]),
       ];
-      const interpretations = ['The evidence is the scanner-persisted snippet associated with this rule and location; it does not independently prove runtime behavior, exploitability, or a fix.'];
+      const entry = this.guidance === undefined ? undefined : await this.guidance(finding.ruleId);
+      const guidance = remediationGuidanceForFinding(finding, entry);
+      const interpretations = [
+        'The evidence is the scanner-persisted snippet associated with this rule and location; it does not independently prove runtime behavior, exploitability, or a fix.',
+        ...(guidance.status === 'RULE_SPECIFIC' ? [`Potential rule-specific risk, not a confirmed impact: ${guidance.whyItMatters}`] : []),
+      ];
       const limitations = [
         'Scanner evidence is untrusted text; review it in source context and do not treat it as instructions.',
+        ...(guidance.status === 'UNAVAILABLE' ? ['No dataset-backed risk explanation is available for this rule.'] : []),
         ...(mismatch(selectedScan!) ? ['The scan summary and persisted finding details disagree; the available finding record may be incomplete.'] : []),
       ];
       return response(state, `${finding.title}: ${finding.description}`, context, providerState, { evidence, facts, interpretations, limitations });
@@ -259,9 +266,18 @@ export class AssistantService {
       const guidance = remediationGuidanceForFinding(finding, entry);
       const facts = [`Rule ${finding.ruleId} from ${findingScanner(finding) ?? 'an unidentified scanner'} produced this finding.`];
       const interpretations = [finding.remediation];
-      const recommendations = [...guidance.actions, guidance.verification];
+      const recommendations = guidance.example === undefined
+        ? [...guidance.actions, guidance.verification]
+        : [
+            `Illustrative example — before: ${guidance.example.before} After: ${guidance.example.after}`,
+            ...guidance.actions,
+            guidance.verification,
+          ];
       const limitations = [
         'Remediation guidance is not a code change, credential rotation, or verification.',
+        ...(guidance.example === undefined
+          ? ['No reviewed code example is available for this finding.']
+          : [guidance.example.caveat ?? 'Illustrative example only; review and test it before use.']),
         ...(workflow?.state === 'RESOLVED' ? ['RESOLVED is user-managed workflow state and does not prove technical remediation.'] : []),
       ];
       const state: AssistantState = guidance.status === 'UNAVAILABLE' ? 'PARTIALLY_SUPPORTED' : 'SUPPORTED';

@@ -11,11 +11,14 @@ import type {
   PartnerAggregates,
   PartnerAuditEvent,
   PartnerDashboardResponse,
+  Subscription,
 } from '@drobon/shared';
 import { normalizeCouponCode } from '@drobon/shared';
-import { conflict, notFound, validationError } from '../errors.js';
+import { conflict, notFound, unavailable, validationError } from '../errors.js';
 import { redactAssistantText } from '../assistant/redaction.js';
 import type { UserRepository } from '../auth/repositories.js';
+import { resolveSubscription } from '../auth/subscriptions.js';
+import { createAccountMutationLock, type AccountMutationLock } from '../auth/accountMutationLock.js';
 import type { PaymentRecord } from '../payments/store.js';
 import type { CommissionRecord, PartnerListFilters, CommissionListFilters, PartnerRecord, PartnerStore } from './store.js';
 
@@ -56,6 +59,10 @@ export interface PartnerService {
   dashboard(userId: string): PartnerDashboardResponse;
   /** Idempotent commission settlement for an APPROVED payment with coupon attribution. */
   settleCommissionForPayment(payment: PaymentRecord, actorId: string): Promise<void>;
+  /** Stop serving traffic if an uncertain cross-store write cannot be compensated. */
+  isConsistencyBlocked(): boolean;
+  /** Quarantine historical partial activations before serving traffic. */
+  recoverInterruptedActivations(): Promise<void>;
   /** Startup recovery: settle commissions for any APPROVED attributed payment that lacks one. */
   recoverUnsettledCommissions(): Promise<void>;
 }
@@ -108,15 +115,107 @@ export function createPartnerService(options: {
   users: UserRepository;
   payments: PaymentReadModel;
   now?: () => number;
+  withAccountMutation?: AccountMutationLock;
 }): PartnerService {
   const { store, users, payments } = options;
   const now = options.now ?? Date.now;
   const timestamp = (): string => new Date(now()).toISOString();
 
+  const withAccountMutation = options.withAccountMutation ?? createAccountMutationLock();
+  // Legacy records do not prove whether the old second write succeeded.
+  // Quarantine suspect records in memory, without rewriting historical data.
+  const quarantined = new Set<string>();
+  let consistencyBlocked = false;
+  let activeMutations = 0;
+  const hidden = (record: PartnerRecord): boolean =>
+    record.activationPending !== undefined || record.activationRecovery === 'INCOMPLETE' || quarantined.has(record.partnerId);
+
+  const compensate = async (userId: string, at: string, previous: Subscription | null): Promise<void> => {
+    try {
+      const restored = await users.restorePartnerSubscription?.(userId, at, previous);
+      if (restored !== 'RESTORED') throw new Error('Conditional account compensation did not apply.');
+    } catch {
+      // The app refuses subsequent traffic. Restart recovery must reconcile
+      // the durable intent before any request can observe an uncertain state.
+      consistencyBlocked = true;
+      throw unavailable('Partner activation requires recovery before requests can continue.');
+    }
+  };
+
+  const finishPending = async (record: PartnerRecord, actorId: string): Promise<PartnerRecord> => {
+    const user = await users.findById(record.userId);
+    if (user === undefined) throw validationError([{ path: 'userId', message: 'The selected account does not exist.' }]);
+    const prior = user.subscription === undefined ? null : { ...user.subscription };
+    const alreadyPro = prior?.plan === 'PRO' && prior.status === 'ACTIVE';
+    if (!alreadyPro && users.restorePartnerSubscription === undefined) {
+      throw unavailable('The account repository cannot safely recover partner activation.');
+    }
+    const at = timestamp();
+    const intent = await store.refreshPendingActivation(record.partnerId, at, prior);
+    if (intent === undefined) throw conflict('Partner activation changed; retry the request.');
+    // Hold the application traffic gate while the two stores can disagree.
+    activeMutations += 1;
+    try {
+      let activation: 'ACTIVATED' | 'ALREADY_ACTIVE' | 'NOT_FOUND';
+      try {
+        activation = await users.activatePro(record.userId, at);
+      } catch (error) {
+        // A repository may throw after a write; verify before deciding whether
+        // the account must be restored. Failure to inspect is unsafe.
+        if (!alreadyPro) {
+          try {
+            const after = await users.findById(record.userId);
+            if (after === undefined) { consistencyBlocked = true; }
+            else if (after.subscription?.plan === 'PRO' && after.subscription.status === 'ACTIVE' &&
+                     after.subscription.createdAt === at && after.subscription.updatedAt === at) {
+              await compensate(record.userId, at, prior);
+            } else if (JSON.stringify(after.subscription ?? null) !== JSON.stringify(prior)) {
+              consistencyBlocked = true;
+            }
+          } catch { consistencyBlocked = true; }
+        }
+        if (consistencyBlocked) throw unavailable('Partner activation requires recovery before requests can continue.');
+        throw error;
+      }
+      if (activation === 'NOT_FOUND') throw new Error('Partner activation references a missing account.');
+      try {
+        const finished = await store.finishActivation(record.partnerId, at,
+          auditEvent('PARTNER_ACTIVATED', actorId, at, `Partner activated with coupon ${record.coupon.couponCode}.`));
+        if (finished === undefined) throw new Error('Partner activation state changed.');
+        quarantined.delete(record.partnerId);
+        return finished;
+      } catch (error) {
+        // A collaborator can throw after successfully committing; in that case
+        // the durable active partner and account PRO are already consistent.
+        let observed: PartnerRecord | undefined;
+        try {
+          observed = store.getPartnerById(record.partnerId);
+        } catch {
+          // We cannot safely compensate if the final partner write might
+          // already have committed. Keep the gate closed for restart recovery.
+          consistencyBlocked = true;
+          throw unavailable('Partner activation requires recovery before requests can continue.');
+        }
+        if (observed === undefined || (observed.status !== 'ACTIVE' && observed.activationPending === undefined)) {
+          consistencyBlocked = true;
+          throw unavailable('Partner activation requires recovery before requests can continue.');
+        }
+        if (observed.status === 'ACTIVE' && observed.activationPending === undefined) {
+          quarantined.delete(record.partnerId);
+          return observed;
+        }
+        if (activation === 'ACTIVATED') await compensate(record.userId, at, prior);
+        throw error;
+      }
+    } finally {
+      activeMutations -= 1;
+    }
+  };
+
   const resolveCoupon = (rawCode: string): CouponDecision => {
     const couponCode = normalizeCouponCode(rawCode);
     const partner = store.getPartnerByCoupon(couponCode);
-    if (partner === undefined || partner.status !== 'ACTIVE' || partner.coupon.status !== 'ACTIVE') {
+    if (partner === undefined || hidden(partner) || partner.status !== 'ACTIVE' || partner.coupon.status !== 'ACTIVE') {
       return { ok: false, couponCode };
     }
     if (partner.coupon.expiresAt !== null && Date.parse(partner.coupon.expiresAt) <= now()) {
@@ -157,7 +256,7 @@ export function createPartnerService(options: {
 
   const service: PartnerService = {
     resolveCoupon,
-    activatePartner: async (adminId, input) => {
+    activatePartner: (adminId, input) => withAccountMutation(input.userId, async () => {
       const user = await users.findById(input.userId);
       if (user === undefined) throw validationError([{ path: 'userId', message: 'The selected account does not exist.' }]);
       if (!percentInt(input.discountPercent) || input.discountPercent > 90) {
@@ -167,38 +266,61 @@ export function createPartnerService(options: {
         throw validationError([{ path: 'commissionPercent', message: 'Commission must be an integer percent between 0 and 50.' }]);
       }
       const couponCode = normalizeCouponCode(input.couponCode);
+      const sameInput = (partner: PartnerRecord): boolean => partner.coupon.couponCode === couponCode &&
+        partner.coupon.discountPercent === input.discountPercent && partner.coupon.commissionPercent === input.commissionPercent;
+      let existing = store.getPartnerByUserId(user.id);
+      if (existing !== undefined) {
+        if (!sameInput(existing)) throw conflict('This account already has a partner identity.');
+        if (existing.activationPending !== undefined) return { partner: toAdminPartnerSummary(await finishPending(existing, adminId)) };
+        if (existing.activationRecovery === 'INCOMPLETE' || quarantined.has(existing.partnerId)) {
+          const at = timestamp();
+          existing = await store.prepareLegacyActivation(existing.partnerId, at, user.subscription ?? null,
+            auditEvent('PARTNER_DEACTIVATED', adminId, at, 'Historical incomplete activation explicitly retried.'));
+          if (existing === undefined) throw conflict('Partner activation changed; retry the request.');
+          return { partner: toAdminPartnerSummary(await finishPending(existing, adminId)) };
+        }
+        if (existing.status === 'ACTIVE') return { partner: toAdminPartnerSummary(existing) };
+        throw conflict('This account already has a partner identity.');
+      }
+      if (users.restorePartnerSubscription === undefined && !(resolveSubscription(user).plan === 'PRO' && resolveSubscription(user).status === 'ACTIVE')) {
+        throw unavailable('The account repository cannot safely recover partner activation.');
+      }
       const at = timestamp();
       const record: PartnerRecord = {
         partnerId: `ptr_${randomUUID()}`,
         userId: user.id,
         email: user.email,
-        status: 'ACTIVE',
+        status: 'DEACTIVATED',
         coupon: { couponCode, status: 'ACTIVE', discountPercent: input.discountPercent, commissionPercent: input.commissionPercent, expiresAt: null, createdAt: at, updatedAt: at },
+        // This timestamp is not exposed until the pending intent is finalized.
         complimentaryProGrantedAt: at,
+        activationPending: { initiatedAt: at, previousSubscription: user.subscription === undefined ? null : { ...user.subscription } },
         createdAt: at,
         updatedAt: at,
-        deactivatedAt: null,
-        audit: [auditEvent('PARTNER_ACTIVATED', adminId, at, `Partner activated with coupon ${couponCode}.`)],
+        deactivatedAt: at,
+        audit: [],
       };
       const stored = await store.createPartner(record);
-      if (stored.kind === 'USER_EXISTS') throw conflict('This account already has a partner identity.');
       if (stored.kind === 'COUPON_EXISTS') throw conflict('This coupon code is already assigned to another partner.');
-      // Complimentary PRO: entitlement only — never a payment, revenue or commission event.
-      const activation = await users.activatePro(user.id, at);
-      if (activation === 'NOT_FOUND') {
-        // Compensation for the impossible-account case: do not leave a silent half-state.
-        await store.updatePartnerStatus(record.partnerId, 'DEACTIVATED', timestamp(), auditEvent('PARTNER_DEACTIVATED', adminId, timestamp(), 'Activation reversed: account missing.'));
-        throw new Error('Partner activation references a missing account.');
+      if (stored.kind === 'USER_EXISTS') {
+        const prior = store.getPartnerByUserId(user.id);
+        if (prior !== undefined && sameInput(prior) && prior.activationPending !== undefined) {
+          return { partner: toAdminPartnerSummary(await finishPending(prior, adminId)) };
+        }
+        throw conflict('This account already has a partner identity.');
       }
-      return { partner: toAdminPartnerSummary(record) };
-    },
+      if (!('partner' in stored)) throw new Error('Partner activation failed.');
+      return { partner: toAdminPartnerSummary(await finishPending(stored.partner, adminId)) };
+    }),
     listPartners: (filters, page, pageSize) => {
-      const result = store.listPartners(filters, page, pageSize);
-      return { partners: result.partners.map(toAdminPartnerSummary), page, pageSize, total: result.total };
+      const all = store.listAllPartners().filter((record) => !hidden(record) && (filters.status === undefined || record.status === filters.status))
+        .sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : a.partnerId.localeCompare(b.partnerId)));
+      const offset = (page - 1) * pageSize;
+      return { partners: all.slice(offset, offset + pageSize).map(toAdminPartnerSummary), page, pageSize, total: all.length };
     },
     getPartnerDetail: (partnerId) => {
       const record = store.getPartnerById(partnerId);
-      if (record === undefined) throw notFound();
+      if (record === undefined || hidden(record)) throw notFound();
       return {
         partner: toAdminPartnerSummary(record),
         aggregates: aggregatesFor(record),
@@ -208,6 +330,7 @@ export function createPartnerService(options: {
     setPartnerStatus: async (partnerId, status, adminId) => {
       const current = store.getPartnerById(partnerId);
       if (current === undefined) throw notFound();
+      if (hidden(current)) throw conflict('Incomplete activation requires an explicit matching activation retry.');
       const at = timestamp();
       const event = auditEvent(status === 'DEACTIVATED' ? 'PARTNER_DEACTIVATED' : 'PARTNER_REACTIVATED', adminId, at, `Partner ${status === 'DEACTIVATED' ? 'deactivated' : 'reactivated'}.`);
       const result = await store.updatePartnerStatus(partnerId, status, at, event);
@@ -217,6 +340,7 @@ export function createPartnerService(options: {
     updateCoupon: async (partnerId, patch, adminId) => {
       const current = store.getPartnerById(partnerId);
       if (current === undefined) throw notFound();
+      if (hidden(current)) throw conflict('Incomplete activation requires an explicit matching activation retry.');
       const issues: Array<{ path: string; message: string }> = [];
       if (patch.discountPercent !== undefined && (!percentInt(patch.discountPercent) || patch.discountPercent > 90)) {
         issues.push({ path: 'discountPercent', message: 'Discount must be an integer percent between 0 and 90.' });
@@ -244,7 +368,7 @@ export function createPartnerService(options: {
     },
     listPartnerPayments: (partnerId, page, pageSize) => {
       const record = store.getPartnerById(partnerId);
-      if (record === undefined) throw notFound();
+      if (record === undefined || hidden(record)) throw notFound();
       const all = payments.listAll()
         .filter((payment) => payment.attribution?.partnerId === partnerId)
         .sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : a.paymentId.localeCompare(b.paymentId)));
@@ -282,7 +406,7 @@ export function createPartnerService(options: {
     },
     dashboard: (userId) => {
       const record = store.getPartnerByUserId(userId);
-      if (record === undefined) throw notFound();
+      if (record === undefined || hidden(record)) throw notFound();
       return {
         partner: {
           partnerId: record.partnerId,
@@ -323,6 +447,53 @@ export function createPartnerService(options: {
       const created = await store.createCommission(record);
       if (created.kind === 'CREATED') {
         await store.appendAudit(partner.partnerId, auditEvent('COMMISSION_CREATED', actorId, at, `Commission ${record.commissionId} created for payment ${payment.paymentId}.`));
+      }
+    },
+    isConsistencyBlocked: () => consistencyBlocked || activeMutations > 0,
+    recoverInterruptedActivations: async () => {
+      // A timestamp is not a transaction identifier. If an approval for the
+      // same account might have made it PRO, never infer that a pending
+      // partner grant succeeded, even when the timestamps are identical.
+      // APPROVING matters too: payment recovery runs after partner recovery.
+      const possiblyPaidAccounts = new Set(payments.listAll()
+        .filter((payment) => payment.plan === 'PRO' && (payment.status === 'APPROVING' || payment.status === 'APPROVED'))
+        .map((payment) => payment.accountId));
+      for (const record of store.listAllPartners()) {
+        const user = await users.findById(record.userId);
+        const subscription = user === undefined ? undefined : resolveSubscription(user);
+        if (record.grantModel === 'PARTNER_STORE_V1') {
+          // Compatibility for any record created by the interrupted earlier
+          // implementation: migrate its real grant back to the account before traffic.
+          if (user === undefined) throw new Error('Partner grant references a missing account.');
+          const at = timestamp();
+          if (await users.activatePro(record.userId, at) === 'NOT_FOUND') throw new Error('Partner grant account disappeared.');
+          await store.migrateAtomicGrant(record.partnerId, at,
+            auditEvent('PARTNER_ACTIVATED', 'system:partner-recovery', at, 'Existing complimentary grant restored to the account subscription.'));
+        } else if (record.activationPending !== undefined) {
+          const pending = record.activationPending;
+          const previous = pending.previousSubscription;
+          const wasAlreadyPro = previous?.plan === 'PRO' && previous.status === 'ACTIVE';
+          // Do not treat an unrelated later payment's PRO grant as proof that
+          // this partner attempt succeeded. Timestamps are only a conservative
+          // same-process signal, not a unique or cross-process transaction ID.
+          const matchesAccount = subscription?.plan === 'PRO' && subscription.status === 'ACTIVE' &&
+            (wasAlreadyPro
+              ? subscription.createdAt === previous.createdAt && subscription.updatedAt === previous.updatedAt
+              : !possiblyPaidAccounts.has(record.userId) && subscription.createdAt === pending.initiatedAt && subscription.updatedAt === pending.initiatedAt);
+          if (matchesAccount) {
+            const at = timestamp();
+            const completed = await store.finishActivation(record.partnerId, at,
+              auditEvent('PARTNER_ACTIVATED', 'system:partner-recovery', at, 'Interrupted activation completed after account verification.'));
+            if (completed === undefined) throw new Error('Interrupted partner activation could not be recovered.');
+          } else {
+            // Keep both historical files intact; an explicit matching retry
+            // can finish the intent without modifying an existing paid grant.
+            quarantined.add(record.partnerId);
+          }
+        } else if (record.activationRecovery === 'INCOMPLETE' ||
+                   (record.status === 'ACTIVE' && !(subscription?.plan === 'PRO' && subscription.status === 'ACTIVE'))) {
+          quarantined.add(record.partnerId);
+        }
       }
     },
     recoverUnsettledCommissions: async () => {

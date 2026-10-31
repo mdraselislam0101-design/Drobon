@@ -3,6 +3,7 @@
  * Extracts same-host URLs from static HTML only; every candidate is
  * re-validated by the DastTargetPolicy before any request.
  */
+import { hasAmbiguousDastReference } from './reference.js';
 
 const HREF_ATTRS = /(?:href|src|action)\s*=\s*(?:"([^"]{1,2048})"|'([^']{1,2048})'|([^\s"'`>]{1,2048}))/gi;
 const MAX_CRAWL_CANDIDATES = 20;
@@ -29,6 +30,8 @@ export function extractCrawlCandidates(html: string, baseUrl: string, maxLinks =
     const raw = match[1] ?? match[2] ?? match[3];
     if (raw === undefined || raw.length === 0) continue;
     const trimmed = raw.trim();
+    // Check before URL construction: it would erase encoded dot segments.
+    if (hasAmbiguousDastReference(trimmed)) continue;
     // Reject dangerous schemes, data URIs, javascript:, mailto:, tel:, etc.
     if (/^(?:javascript|data|mailto|tel|ftp|ws|wss):/i.test(trimmed)) continue;
     if (trimmed.startsWith('#') || trimmed.startsWith('mailto:')) continue;

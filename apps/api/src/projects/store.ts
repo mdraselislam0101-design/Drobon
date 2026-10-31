@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import {
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_ID_PATTERN,
@@ -350,11 +350,8 @@ function createProjectStoreFrom(internals: StoreInternals): ProjectStore {
 export function createJsonFileProjectStore(path: string): ProjectStore {
   const document = loadDocument(path);
   const persistWith = (projects: ProjectRecord[]): void => {
-    mkdirSync(dirname(path), { recursive: true });
     const payload: StoreDocument = { version: 1, projects };
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(payload, null, 2)}\n`);
   };
   return createProjectStoreFrom({ projects: document.projects, persistWith });
 }

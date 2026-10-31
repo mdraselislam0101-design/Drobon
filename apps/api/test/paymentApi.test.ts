@@ -314,9 +314,12 @@ describe('Pump 15 durable restart and interrupted approval recovery', () => {
       expect(server.payments.listAudit(afterActivation.paymentId).find((event) => event.action === 'PAYMENT_APPROVED')?.actorId).toBe('usr_recovery_reviewer');
       for (const email of ['recovery-user@example.test', 'recovery-after-activation@example.test']) {
         const after = sessionCookieFrom((await login(server, email, PW)).res);
-        const subscription = await jsonData<{ subscription: { plan: string }; entitlements: string[] }>(await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: after } }));
+        const subscription = await jsonData<{ subscription: { plan: string }; entitlements: string[]; proEntitlementSource?: string }>(await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: after } }));
         expect(subscription.subscription.plan).toBe('PRO');
         expect(subscription.entitlements).toContain('feature:pro');
+        // Recovery after an earlier activation cannot prove which workflow
+        // originally activated PRO, so it must not claim paid provenance.
+        expect(subscription.proEntitlementSource).toBe(email === 'recovery-user@example.test' ? 'PAID' : undefined);
       }
     } finally {
       if (server !== undefined) {
@@ -347,9 +350,10 @@ describe('Pump 15 durable restart and interrupted approval recovery', () => {
     const reviewerAfterRestart = sessionCookieFrom((await login(server, 'usr_durable_reviewer@example.test', PW)).res);
     const history = await jsonData<{ payments: Array<{ paymentId: string; status: string }> }>(await fetch(`${server.baseUrl}/api/v1/payments`, { headers: { cookie: userAfterRestart } }));
     expect(history.payments).toContainEqual(expect.objectContaining({ paymentId: made.payment.paymentId, status: 'APPROVED' }));
-    const subscription = await jsonData<{ subscription: { plan: string }; entitlements: string[] }>(await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: userAfterRestart } }));
+    const subscription = await jsonData<{ subscription: { plan: string }; entitlements: string[]; proEntitlementSource?: string }>(await fetch(`${server.baseUrl}/api/v1/subscription`, { headers: { cookie: userAfterRestart } }));
     expect(subscription.subscription.plan).toBe('PRO');
     expect(subscription.entitlements).toContain('feature:pro');
+    expect(subscription.proEntitlementSource).toBe('PAID');
     const audit = await jsonData<{ events: unknown[] }>(await fetch(`${server.baseUrl}/api/v1/admin/payments/${made.payment.paymentId}/audit`, { headers: { cookie: reviewerAfterRestart } }));
     expect(audit.events.length).toBeGreaterThanOrEqual(4);
     expect((await server.users.findById(userId))?.subscription?.plan).toBe('PRO');

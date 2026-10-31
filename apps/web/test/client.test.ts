@@ -193,6 +193,29 @@ describe('createApiClient', () => {
     expect(new Headers(init.headers).get('x-request-id')).toBe('download-test');
   });
 
+  test('opts into labelled guidance downloads without changing default URLs or filename checks', async () => {
+    const projectId = 'prj_00000000-0000-4000-8000-0000000000aa';
+    const responses = [
+      new Response('{"bundleVersion":"1.0"}', { headers: { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="drobon-rpt_0123456789abcdef01234567-guidance.json"' } }),
+      new Response('%PDF-1.3', { headers: { 'content-type': 'application/pdf', 'content-disposition': `attachment; filename="drobon-project-${projectId}-guidance.pdf"` } }),
+      new Response('{}', { headers: { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="drobon-rpt_0123456789abcdef01234567-guidance.json"' } }),
+    ];
+    const fetchImpl: FetchImpl = vi.fn(async () => {
+      const response = responses.shift();
+      if (response === undefined) throw new Error('unexpected request');
+      return response;
+    });
+    const client = createApiClient({ baseUrl: '', fetchImpl });
+    expect((await client.downloadReport(projectId, 'scan_id', 'json', undefined, true)).filename).toContain('-guidance.json');
+    expect((await client.downloadProjectReport(projectId, undefined, true)).filename).toContain('-guidance.pdf');
+    await expect(client.downloadReport(projectId, 'scan_id', 'json')).rejects.toMatchObject({ kind: 'invalid-response' });
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toContain('/report/download?format=json&guidance=1');
+    expect(calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/reports/portfolio/download?guidance=1`);
+    expect(calls[2]?.[0]).toContain('/report/download?format=json');
+    expect(calls[2]?.[0]).not.toContain('guidance=');
+  });
+
   test('downloads project and scan PDFs only with valid headers and PDF signature', async () => {
     const projectId = 'prj_00000000-0000-4000-8000-0000000000aa';
     const responses = [

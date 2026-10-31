@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { writePrivateJson } from '../lib/writePrivateJson.js';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import type { PaymentMethod } from '@drobon/shared';
 
 /**
@@ -367,9 +367,6 @@ export function createJsonFilePaymentConfigStore(path: string, seedPriceMinorUni
 
   const internals = load();
   return createStore(internals, (document) => {
-    mkdirSync(dirname(path), { recursive: true });
-    const tempPath = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tempPath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tempPath, path);
+    writePrivateJson(path, `${JSON.stringify(document, null, 2)}\n`);
   });
 }

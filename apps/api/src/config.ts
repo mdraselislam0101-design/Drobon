@@ -80,6 +80,8 @@ export interface ApiConfig {
   scanStorePath: string;
   /** Durable project-scoped Security Professional assessment records. */
   assessmentStorePath: string;
+  /** Opt in to requiring an active, scoped owner-attested engagement for DAST. */
+  dastRequireEngagement?: boolean;
   studentStorePath: string;
   /**
    * Durable source-snapshot store path (Pump 8 — the SAST scan
@@ -236,9 +238,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
     const normalized = normalizeOrigin(piece);
     if (normalized === undefined) {
-      issues.push(
-        `CORS_ALLOWED_ORIGINS entry "${piece.trim()}" must be an exact http(s) origin without credentials, path, query or fragment`,
-      );
+      // Do not echo an invalid origin: it may contain credentials or other
+      // sensitive input and the ConfigError is reported during startup.
+      issues.push('CORS_ALLOWED_ORIGINS entries must be exact http(s) origins without credentials, path, query or fragment');
     } else if (!corsAllowedOrigins.includes(normalized)) {
       corsAllowedOrigins.push(normalized);
     }
@@ -482,6 +484,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('ADMIN_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
   }
 
+  // Compatibility default retains legacy UNVERIFIED scans. Operators can
+  // opt in to a stricter gate; an invalid value must never silently turn it off.
+  const rawDastEngagement = env['DAST_REQUIRE_ENGAGEMENT'] ?? 'false';
+  if (rawDastEngagement !== 'true' && rawDastEngagement !== 'false') {
+    issues.push('DAST_REQUIRE_ENGAGEMENT must be true or false');
+  }
+  const dastRequireEngagement = rawDastEngagement === 'true';
+
   if (issues.length > 0) {
     throw new ConfigError(issues);
   }
@@ -508,6 +518,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     projectStorePath,
     scanStorePath,
     assessmentStorePath,
+    dastRequireEngagement,
     studentStorePath,
     sourceStorePath,
     vulnIntelProvider,

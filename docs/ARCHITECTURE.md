@@ -12,6 +12,23 @@ strict mode everywhere (`strict`, `exactOptionalPropertyTypes`,
 `noUncheckedIndexedAccess`, `verbatimModuleSyntax` — see
 `tsconfig.base.json`).
 
+## JSON persistence and local writer guard
+
+The JSON stores cache whole documents and remain **single-writer**. On Linux,
+`startServer` now acquires per-default-store abstract Unix-socket leases before
+loading files or running recovery, and waits for HTTP requests and owned scan
+processor writes before releasing them. The kernel releases them on process
+exit; partial acquisition and failed startup release their leases. Identical
+configured default paths are rejected. No store format or API payload changes.
+
+This is not a distributed lock: it covers cooperating `startServer` runtimes
+in the same Linux network namespace, using the same canonical parent path.
+Separate container namespaces/hosts, bind mounts/hard links, injected stores,
+`createApp`/direct repository callers, hostile path replacement and non-Linux
+platforms are not covered. Non-Linux logs a warning; operators must still
+ensure one writer externally everywhere. Power-loss/fsync durability, atomic
+multi-file commits and engines that ignore abort are not established.
+
 ## Components
 
 ### `@drobon/shared` — contracts (`packages/shared`)
@@ -121,8 +138,10 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   listing all issues (fail fast). Rejects `AUTH_STORE_PATH=:memory:` and
   `USAGE_STORE_PATH=:memory:` and `PAYMENT_STORE_PATH=:memory:` in production. Payment price, manual instructions/methods, reviewer ID allowlist and mutation limits are validated here. Derives `cookieSecure` and `usageConsumeRoutes` (dev/test probe gating) from the environment.
 - `logger.ts` — structured JSON-lines logger with level filtering and
-  deep secret redaction (sensitive keys, bearer-like values, credentialed
-  URLs, cycles). Error stacks are logged in dev/test only.
+  heuristic redaction (sensitive keys, bearer-like values, credentialed
+  URLs, cycles). Error messages and stacks are withheld in every environment.
+  Access logs use route templates and a server-generated `X-Log-Id`, not raw
+  path parameters or caller-supplied `X-Request-Id` values.
 - `errors.ts` + `respond.ts` — central error contract: `AppError`
   (code/status/expose) mapped by `toErrorResponse()` so 5xx internals can
   never leak; every response uses the shared envelope. Pump 2 helpers:
@@ -183,7 +202,7 @@ request → requestId → securityHeaders → cors → rateLimit(global)
   bounded-engine contract, see docs/SCA.md); `sources.ts` is the
   project-scoped
   source-snapshot store (path policy at rest, fail-fast load);
-  `dast/` implements Pump 11's one-target passive HTTP engine (strict URL/IP policy, DNS pinning, bounded transport, redirect validation, evidence-safe rules; see `docs/DAST.md`); `processor.ts` is the durable worker loop (claim → engine → finish, 30s engine bound, startup recovery + periodic sweep). See docs/SCANS.md.
+  `dast/` implements bounded passive and opt-in active HTTP analysis (strict URL/IP policy, DNS pinning, bounded transport, redirect validation; see `docs/DAST.md`); `processor.ts` is the durable worker loop (claim → engine → finish, startup recovery + periodic sweep). Concurrent drain requests coalesce into one process-local drain. The 30s timeout is cooperative: an engine that ignores abort can continue in the background. See docs/SCANS.md.
 - `projects/` — the Projects foundation store (Pump 6):
   `store.ts` is the minimum persistence boundary (one JSON document,
   serialized mutation queue, atomic temp+rename writes, fail-fast load
@@ -383,8 +402,8 @@ NOT_IMPLEMENTED).
    `sendSuccess()` / throw `AppError`; ownership-sensitive handlers add
    `assertCanReadUser`.
 7. Central catch maps to the error envelope (4xx exposed, 5xx generic),
-   logs appropriately (5xx → error with stack server-side only), and every
-   request ends with one structured access-log line.
+   withholds exception messages and stacks from logs, and ends each request
+   with a structured access-log line using the server-generated log ID.
 
 ## Dependency rules
 

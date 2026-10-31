@@ -27,7 +27,11 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
         if (ctx.user === undefined) throw unauthorized();
         const url = new URL(req.url ?? '/', 'http://localhost');
         if ([...url.searchParams.keys()].length > 0) throw new Error('Unsupported query parameter.');
-        const status = await dataset.status();
+        const status = { ...await dataset.status() };
+        // The configured filesystem path is operator-only and may itself
+        // contain sensitive text. Keep the optional internal property for
+        // existing server-side callers, but never return it over HTTP.
+        delete status.datasetPath;
         sendSuccess(res, ctx, { dataset: status });
       },
     },
@@ -57,8 +61,14 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
       handler: async (_req, res, ctx) => {
         if (ctx.user === undefined) throw unauthorized();
         const lessons = await dataset.lessons();
-        const list = (lessons as any[]).slice(0, 20).map((l: any) => ({ id: l.id, title: l.title }));
-        sendSuccess(res, ctx, { count: (lessons as any[]).length, lessons: list });
+        // Preserve the raw count while refusing malformed entries that would
+        // otherwise throw and hide every subsequent lesson from the endpoint.
+        const list = lessons.slice(0, 20).flatMap((lesson) => {
+          if (typeof lesson !== 'object' || lesson === null || Array.isArray(lesson)) return [];
+          const item = lesson as Record<string, unknown>;
+          return [{ id: item['id'], title: item['title'] }];
+        });
+        sendSuccess(res, ctx, { count: lessons.length, lessons: list });
       },
     },
   ];

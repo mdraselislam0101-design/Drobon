@@ -97,8 +97,7 @@ production functionality (tested).
 
 - Denials use one shared message (`AUTHZ_DENIED_MESSAGE`) — nothing to
   enumerate about roles or accounts.
-- Denial logs carry request id/path/status only: no role names, emails,
-  tokens or permission names (asserted by scanning captured logs).
+- Denial logs carry a server-generated log ID, a static route template and status, not the caller-supplied request ID or raw path. No role names, emails, tokens or permission names are intentionally logged (tested examples do not prove universal secret detection).
 - 403 responses keep the full security-header set (CSP, nosniff, DENY,
   request id, rate-limit headers, exact-origin CORS) — regression-tested.
 
@@ -119,6 +118,10 @@ not independent proof of third-party authorization. A target-specific
 `USER_DECLARED` statement is timestamped owner metadata and stays unverified;
 ordinary resource access and DAST scan creation continue to use the existing
 role, project ownership, plan, quota, rate-limit and target-safety checks.
+For deployments opting in to `DAST_REQUIRE_ENGAGEMENT=true`, the built-in
+DAST path additionally requires a current assessment-linked, scoped engagement
+at creation and execution. This remains an owner attestation, not independent
+proof of permission; without the flag legacy unlinked DAST remains unverified.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

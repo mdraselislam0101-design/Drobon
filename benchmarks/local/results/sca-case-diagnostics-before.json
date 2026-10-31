@@ -1,0 +1,2136 @@
+{
+  "parsed": true,
+  "bounds": true,
+  "allAccepted": true,
+  "evaluatorAccountingComplete": true,
+  "readerCoverage": "PARTIAL",
+  "blockedDiagnosticAccountingComplete": true,
+  "selectedFiles": 8234,
+  "selectedBytes": 11016280,
+  "largestFile": 15892,
+  "invalid": 0,
+  "summary": {
+    "assessmentTemplates": {
+      "files": 3,
+      "bytes": 2349,
+      "rejected": 0
+    },
+    "engagementTemplates": {
+      "files": 2,
+      "bytes": 2582,
+      "rejected": 0
+    },
+    "interop": {
+      "files": 3,
+      "bytes": 34881,
+      "rejected": 0
+    },
+    "cwe": {
+      "files": 102,
+      "bytes": 44708,
+      "rejected": 0
+    },
+    "remediation": {
+      "files": 4007,
+      "bytes": 2270428,
+      "rejected": 0
+    },
+    "lessons": {
+      "files": 6,
+      "bytes": 19491,
+      "rejected": 0
+    },
+    "dast": {
+      "files": 1008,
+      "bytes": 3428206,
+      "rejected": 0
+    },
+    "sast": {
+      "files": 1001,
+      "bytes": 1217977,
+      "rejected": 0
+    },
+    "sca": {
+      "files": 1001,
+      "bytes": 2316130,
+      "rejected": 0
+    },
+    "secrets": {
+      "files": 1001,
+      "bytes": 1613748,
+      "rejected": 0
+    },
+    "vulnIntel": {
+      "files": 100,
+      "bytes": 65780,
+      "rejected": 0
+    }
+  },
+  "conformance": {
+    "sast": {
+      "files": 1000,
+      "accepted": 1000,
+      "declaredTests": 4043,
+      "executedTests": 4043,
+      "skippedTests": 0,
+      "failedTests": 0
+    },
+    "secrets": {
+      "files": 1000,
+      "accepted": 1000,
+      "declaredTests": 4660,
+      "executedTests": 4660,
+      "skippedTests": 0,
+      "failedTests": 0
+    },
+    "dast": {
+      "files": 1007,
+      "accepted": 1007,
+      "declaredTests": 3673,
+      "executedTests": 3673,
+      "skippedTests": 0,
+      "failedTests": 0
+    },
+    "sca": {
+      "files": 1000,
+      "accepted": 1000,
+      "declaredTests": 4001,
+      "executedTests": 4001,
+      "skippedTests": 0,
+      "failedTests": 0
+    }
+  },
+  "reader": {
+    "evaluatorCases": 4001,
+    "evaluatorMismatches": 0,
+    "correct": 3829,
+    "falsePositive": 0,
+    "falseNegative": 0,
+    "pathBlocked": 164,
+    "unrenderable": 8,
+    "parseFailures": 0,
+    "scanNotEvaluated": 0,
+    "unsupported": 0,
+    "compileFailures": 0,
+    "blockedByRule": {
+      "DPK-SCA-0073": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0074": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0075": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0076": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0077": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0078": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0079": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0080": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0081": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0082": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0083": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0084": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0085": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0086": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0087": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0088": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0089": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0090": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0091": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0092": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0093": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0094": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0107": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0142": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0143": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0651": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0691": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0760": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0777": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0778": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0779": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0788": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0789": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0790": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0791": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0793": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0794": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0795": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0796": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0797": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "DPK-SCA-0978": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    "otherGaps": [
+      {
+        "ruleId": "DPK-SCA-0679",
+        "testIndex": 1,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": true,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 0
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0679",
+        "testIndex": 3,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": false,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 0
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0689",
+        "testIndex": 0,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": true,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 1
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0689",
+        "testIndex": 1,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": true,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 1
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0689",
+        "testIndex": 3,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": false,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 1
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0753",
+        "testIndex": 0,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": true,
+        "category": "unrenderable",
+        "reason": {
+          "code": "DERIVED_SOURCES_WITHOUT_ADD",
+          "sourcesCount": 1,
+          "addPresent": false,
+          "addCount": null
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0753",
+        "testIndex": 1,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": true,
+        "category": "unrenderable",
+        "reason": {
+          "code": "DERIVED_SOURCES_WITHOUT_ADD",
+          "sourcesCount": 1,
+          "addPresent": false,
+          "addCount": null
+        }
+      },
+      {
+        "ruleId": "DPK-SCA-0753",
+        "testIndex": 3,
+        "artifact": "nuget.config",
+        "parser": "xml",
+        "expected": false,
+        "category": "unrenderable",
+        "reason": {
+          "code": "CONFLICTING_SOURCE_ALIASES",
+          "sourcesCount": 1,
+          "addPresent": true,
+          "addCount": 1
+        }
+      }
+    ],
+    "accounted": 4001,
+    "blockedRules": 41
+  },
+  "blockedReaderDiagnostic": {
+    "matches": 164,
+    "false-positive": 0,
+    "false-negative": 0,
+    "unrenderable": 0,
+    "parse-failure": 0,
+    "compile-failure": 0,
+    "cases": [
+      {
+        "ruleId": "DPK-SCA-0073",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0073",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0073",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0073",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0074",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0074",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0074",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0074",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0075",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0075",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0075",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0075",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0076",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0076",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0076",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0076",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0077",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0077",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0077",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0077",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0078",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0078",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0078",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0078",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0079",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0079",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0079",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0079",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0080",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0080",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0080",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0080",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0081",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0081",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0081",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0081",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0082",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0082",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0082",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0082",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0083",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0083",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0083",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0083",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0084",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0084",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0084",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0084",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0085",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0085",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0085",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0085",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0086",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0086",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0086",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0086",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0087",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0087",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0087",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0087",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0088",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0088",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0088",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0088",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0089",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0089",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0089",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0089",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0090",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0090",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0090",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0090",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0091",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0091",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0091",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0091",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0092",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0092",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0092",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0092",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0093",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0093",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0093",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0093",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0094",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0094",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0094",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0094",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0107",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0107",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0107",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0107",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0142",
+        "testIndex": 0,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0142",
+        "testIndex": 1,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0142",
+        "testIndex": 2,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0142",
+        "testIndex": 3,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0143",
+        "testIndex": 0,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0143",
+        "testIndex": 1,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0143",
+        "testIndex": 2,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0143",
+        "testIndex": 3,
+        "artifact": ".pypirc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0651",
+        "testIndex": 0,
+        "artifact": ".yarnrc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0651",
+        "testIndex": 1,
+        "artifact": ".yarnrc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0651",
+        "testIndex": 2,
+        "artifact": ".yarnrc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0651",
+        "testIndex": 3,
+        "artifact": ".yarnrc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0691",
+        "testIndex": 0,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0691",
+        "testIndex": 1,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0691",
+        "testIndex": 2,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0691",
+        "testIndex": 3,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0760",
+        "testIndex": 0,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0760",
+        "testIndex": 1,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0760",
+        "testIndex": 2,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0760",
+        "testIndex": 3,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0777",
+        "testIndex": 0,
+        "artifact": ".Rprofile",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0777",
+        "testIndex": 1,
+        "artifact": ".Rprofile",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0777",
+        "testIndex": 2,
+        "artifact": ".Rprofile",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0777",
+        "testIndex": 3,
+        "artifact": ".Rprofile",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0778",
+        "testIndex": 0,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0778",
+        "testIndex": 1,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0778",
+        "testIndex": 2,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0778",
+        "testIndex": 3,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0779",
+        "testIndex": 0,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0779",
+        "testIndex": 1,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0779",
+        "testIndex": 2,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0779",
+        "testIndex": 3,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0788",
+        "testIndex": 0,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0788",
+        "testIndex": 1,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0788",
+        "testIndex": 2,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0788",
+        "testIndex": 3,
+        "artifact": ".cargo/config.toml",
+        "parser": "toml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0789",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0789",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0789",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0789",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0790",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0790",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0790",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0790",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0791",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0791",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0791",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0791",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0793",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0793",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0793",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0793",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0794",
+        "testIndex": 0,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0794",
+        "testIndex": 1,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0794",
+        "testIndex": 2,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0794",
+        "testIndex": 3,
+        "artifact": ".npmrc",
+        "parser": "ini",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0795",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0795",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0795",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0795",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0796",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0796",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0796",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0796",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0797",
+        "testIndex": 0,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0797",
+        "testIndex": 1,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0797",
+        "testIndex": 2,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0797",
+        "testIndex": 3,
+        "artifact": ".yarnrc.yml",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0978",
+        "testIndex": 0,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0978",
+        "testIndex": 1,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": true,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0978",
+        "testIndex": 2,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      },
+      {
+        "ruleId": "DPK-SCA-0978",
+        "testIndex": 3,
+        "artifact": ".condarc",
+        "parser": "yaml",
+        "expected": false,
+        "pathReason": "HIDDEN_PATH_SEGMENT",
+        "productionStatus": "PATH_BLOCKED",
+        "category": "matches"
+      }
+    ]
+  },
+  "limitations": [
+    "RAM-only archive verification; no mounted Dataset filesystem test",
+    "Reader fixtures are synthetic, not real-world accuracy",
+    "Blocked-reader diagnostics do not bypass the real source path policy",
+    "Blocked and unrenderable cases are not scan passes"
+  ]
+}

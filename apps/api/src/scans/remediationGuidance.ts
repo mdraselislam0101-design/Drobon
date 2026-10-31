@@ -1,24 +1,59 @@
-import type { Finding, FindingRemediationGuidance, ScaResult } from '@drobon/shared';
+import { createHash } from 'node:crypto';
+import type { Finding, FindingRemediationExample, FindingRemediationGuidance, ScaResult } from '@drobon/shared';
+import { redactAssistantText } from '../assistant/redaction.js';
 import type { RemediationEntry } from '../external/knowledge.js';
 
 /**
  * Remediation framework — resolver only, no embedded guidance content.
  *
- * Guidance is DATA: with a configured Drobon-Dataset checkout, the 4,007
- * `knowledge/remediation/*.json` entries are resolved by rule id and surfaced
- * as RULE_SPECIFIC guidance. Without a dataset the resolver returns an honest
- * UNAVAILABLE fallback: it never invents rule-specific security advice, never
- * repeats scanner evidence, and never claims a fix was verified.
+ * Guidance is DATA: configured dataset entries are resolved by rule id.
+ * A small set of separately reviewed, exact-match illustrative examples may
+ * be shown for compatible source languages. They are not project patches or
+ * verified fixes. Without an entry the resolver returns an honest fallback.
  */
 
-/** Bounded, safe copy of a dataset entry into the shared API contract. */
+/** Bounded, redacted, NFC-normalized copy into the shared API contract. */
 function text(value: string, max: number): string {
+  const redacted = redactAssistantText(value);
+  if (!redacted.safeForProvider) return '';
   let clean = '';
-  for (const character of value) {
+  for (const character of redacted.text) {
     const code = character.codePointAt(0) ?? 0;
-    clean += code < 32 || code === 127 ? ' ' : character;
+    clean += code < 32 || code === 127 || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069) ? ' ' : character;
   }
-  return clean.trim().slice(0, max);
+  const bounded = clean.normalize('NFC').trim().slice(0, max);
+  // Avoid leaving half of a surrogate pair at the API length boundary.
+  const last = bounded.charCodeAt(bounded.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? bounded.slice(0, -1) : bounded;
+}
+
+/**
+ * Only these exact examples from the inspected dataset were reviewed for
+ * illustrative use. The hashes cover rule id and every example field; a
+ * changed or new dataset example fails closed until separately reviewed.
+ * This is NOT a scanner rule, proof of exploitability, or a code patch.
+ */
+const REVIEWED_EXAMPLES: Readonly<Record<string, { hash: string; extensions: RegExp }>> = {
+  'DPK-SAST-002': { hash: 'c4aac2b690d5db77383e0a76ddffdb5cae748fdfabd510dcc8a309adeaa8a4f1', extensions: /\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts)$/i },
+  'DPK-SAST-005': { hash: 'de7f1e6633ed6ff924282b69fb785f3be56cb389390157db257c1ca81ba8821e', extensions: /\.py$/i },
+  'DPK-SAST-008': { hash: 'fb5aac4c1b40fb4cc86b250582e8a3cb1f6e26cb457053289e40bcb2eb171da1', extensions: /\.(?:js|ts|mjs|cjs|mts|cts)$/i },
+};
+
+function reviewedExample(finding: Finding, value: unknown): FindingRemediationExample | undefined {
+  const reviewed = REVIEWED_EXAMPLES[finding.ruleId];
+  if (reviewed === undefined || finding.scanner !== 'SAST' || finding.file === undefined ||
+      !reviewed.extensions.test(finding.file) || finding.astFlow !== undefined ||
+      typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const { before, after, caveat } = candidate;
+  if (typeof before !== 'string' || typeof after !== 'string' || typeof caveat !== 'string') return undefined;
+  const hash = createHash('sha256').update(JSON.stringify([finding.ruleId, before, after, caveat])).digest('hex');
+  if (hash !== reviewed.hash) return undefined;
+  const safeBefore = text(before, 250);
+  const safeAfter = text(after, 250);
+  const safeCaveat = text(`${caveat} Illustrative only; review and test in context. Drobon does not apply or verify fixes.`, 250);
+  if (!safeBefore || !safeAfter || !safeCaveat) return undefined;
+  return { before: safeBefore, after: safeAfter, caveat: safeCaveat };
 }
 
 function scannerFallback(finding: Finding): { why: string; actions: string[]; verification: string } {
@@ -29,7 +64,7 @@ function scannerFallback(finding: Finding): { why: string; actions: string[]; ve
   switch (finding.scanner) {
     case 'DAST':
       return {
-        why: 'No dataset-backed explanation is loaded for this passive observation. A header or body observation does not by itself prove exploitability.',
+        why: 'No dataset-backed explanation is loaded for this dynamic observation. A header or body observation does not by itself prove exploitability.',
         actions: [
           ...shared,
           'Confirm the observation on the configured target and review the server configuration that produced it.',
@@ -74,21 +109,23 @@ function unavailable(finding: Finding): FindingRemediationGuidance {
  * ignored — fail closed to the honest fallback instead of shipping bad data.
  */
 export function remediationGuidanceForFinding(finding: Finding, entry?: RemediationEntry): FindingRemediationGuidance {
-  if (entry === undefined || entry.ruleId !== finding.ruleId) return unavailable(finding);
+  if (entry === undefined || entry === null || typeof entry !== 'object' || entry.ruleId !== finding.ruleId) return unavailable(finding);
   if (typeof entry.whyItMatters !== 'string' || typeof entry.verification !== 'string' || !Array.isArray(entry.actions)) {
     return unavailable(finding);
   }
-  const actions = entry.actions.filter((a): a is string => typeof a === 'string').map((a) => text(a, 500)).slice(0, 8);
-  if (entry.whyItMatters.trim().length === 0 || entry.verification.trim().length === 0 || actions.length === 0) {
-    return unavailable(finding);
-  }
+  const whyItMatters = text(entry.whyItMatters, 400);
+  const verification = text(entry.verification, 400);
+  const actions = entry.actions.filter((a): a is string => typeof a === 'string').map((a) => text(a, 300)).filter(Boolean).slice(0, 8);
+  if (!whyItMatters || !verification || actions.length === 0) return unavailable(finding);
+  const example = reviewedExample(finding, entry.example);
   return {
     ruleId: finding.ruleId,
     status: 'RULE_SPECIFIC',
-    whyItMatters: text(entry.whyItMatters, 1000),
+    whyItMatters,
     actions,
-    verification: text(entry.verification, 1000),
-    ...(typeof entry.standardId === 'string' && /^CWE-\d+$/.test(entry.standardId) ? { standardId: entry.standardId } : {}),
+    verification,
+    ...(typeof entry.standardId === 'string' && /^CWE-\d{1,5}$/.test(entry.standardId) ? { standardId: entry.standardId } : {}),
+    ...(example === undefined ? {} : { example }),
   };
 }
 

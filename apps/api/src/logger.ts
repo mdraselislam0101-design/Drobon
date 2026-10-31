@@ -1,3 +1,4 @@
+import { redactAssistantText } from './assistant/redaction.js';
 import type { EnvironmentName, LogLevel } from '@drobon/shared';
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -29,6 +30,9 @@ const SENSITIVE_KEY_PARTS = [
   'credential',
   'sessionid',
   'sessionkey',
+  'evidence',
+  'sourcecontent',
+  'rawline',
 ] as const;
 
 /** Keys whose string values may embed `user:pass@` credentials in URLs. */
@@ -47,6 +51,10 @@ function isSensitiveKey(key: string): boolean {
 }
 
 function redactScalar(value: string, key: string | undefined): string {
+  // These are server-generated, non-secret identifiers needed for audit correlation.
+  // Do not exempt arbitrary text or values merely because they end in "id".
+  if (key !== undefined && /^(scanid|projectid)$/.test(normalizeKey(key)) &&
+      /^(?:scan|prj)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return value;
   if (BEARER_LIKE.test(value)) {
     return REDACTED;
   }
@@ -57,13 +65,14 @@ function redactScalar(value: string, key: string | undefined): string {
   ) {
     return REDACTED;
   }
-  return value;
+  const safe = redactAssistantText(value);
+  return safe.safeForProvider ? safe.text : REDACTED;
 }
 
 /**
  * Deep-copy a value, redacting anything sensitive. Handles cycles and
- * pathological depth. `Error` instances are reduced to name/message here —
- * stack traces are attached separately (development only).
+ * pathological depth. Error messages and stacks are withheld in every
+ * environment; only a closed set of exception names is retained.
  */
 export function redactValue(value: unknown, seen?: Set<object>, depth?: number): unknown {
   const visited = seen ?? new Set<object>();
@@ -78,7 +87,7 @@ export function redactValue(value: unknown, seen?: Set<object>, depth?: number):
     return value;
   }
   if (value instanceof Error) {
-    return { name: value.name, message: value.message };
+    return { name: safeErrorName(value), message: REDACTED };
   }
   if (visited.has(value)) {
     return CIRCULAR;
@@ -102,18 +111,22 @@ export function redactValue(value: unknown, seen?: Set<object>, depth?: number):
   return out;
 }
 
-function serializeError(error: unknown, includeStack: boolean): unknown {
+const SAFE_ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError', 'AggregateError']);
+
+function safeErrorName(error: Error): string {
+  // Error.name, message and stack are all writable and may contain arbitrary
+  // source text, even a very short secret that no pattern can recognize.
+  return SAFE_ERROR_NAMES.has(error.name) ? error.name : 'Error';
+}
+
+function serializeError(error: unknown): unknown {
   if (error instanceof Error) {
-    const serialized: { name: string; message: string; stack?: string } = {
-      name: error.name,
-      message: error.message,
-    };
-    if (includeStack && typeof error.stack === 'string') {
-      serialized.stack = error.stack;
-    }
-    return serialized;
+    // Do not emit messages or stacks in any environment. Pattern-based
+    // scrubbing cannot prove an arbitrary exception payload is secret-free.
+    return { name: safeErrorName(error), message: REDACTED };
   }
-  return redactValue(error);
+  // Thrown strings and non-Error values are just as untrusted.
+  return REDACTED;
 }
 
 export type LogFields = Record<string, unknown>;
@@ -149,10 +162,8 @@ function defaultOut(line: string, level: LogLevel): void {
 export function createLogger(options: LoggerOptions = {}): Logger {
   const level = options.level ?? 'info';
   const service = options.service ?? 'drobon-aegis-api';
-  const env = options.env ?? 'development';
   const now = options.now ?? ((): string => new Date().toISOString());
   const out = options.out ?? defaultOut;
-  const includeStack = env !== 'production';
 
   const emit = (entryLevel: LogLevel, message: string, fields: LogFields): void => {
     if (LEVEL_ORDER[entryLevel] < LEVEL_ORDER[level]) {
@@ -163,7 +174,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       time: now(),
       level: entryLevel,
       service,
-      msg: message,
+      msg: redactScalar(message, undefined),
       ...redacted,
     });
     out(line, entryLevel);
@@ -174,7 +185,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       return fields ?? {};
     }
     const { err, ...rest } = fields;
-    return { ...rest, err: serializeError(err, includeStack) };
+    return { ...rest, err: serializeError(err) };
   };
 
   const make = (bindings: LogFields): Logger => ({

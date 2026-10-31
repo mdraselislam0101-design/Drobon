@@ -26,10 +26,12 @@ evaluators, validators, resolvers) lives here — that split is the product desi
 | Assessment templates | `assessments/templates/*.json` | dataset status surface | 3 | `AVAILABLE` |
 | Engagement templates | `engagements/*.json` | dataset status surface | 2 | `AVAILABLE` |
 
-**There is no built-in fallback.** `SAST_RULES`, `SECRETS_RULES`, the old DAST
-checks and the embedded lesson/remediation catalogs are empty by design. With
-`VULN_INTEL_PROVIDER=none` the app starts — loudly — with 0 scanner rules, 0
-lessons, `UNAVAILABLE` guidance and SCA `NOT_ASSESSED`. Startup log:
+**There is no built-in pack fallback.** `SAST_RULES`, `SECRETS_RULES`, the
+passive DAST pack and the embedded lesson/remediation catalogs are empty by
+design. With `VULN_INTEL_PROVIDER=none` those rule sets and lessons are empty,
+guidance is `UNAVAILABLE` and SCA is `NOT_ASSESSED`. Active DAST separately has
+bounded built-in probes, subject to its authorization and policy limits; they
+are not a substitute for the missing passive packs. Startup log:
 
 ```
 [dataset] STARTUP: VULN_INTEL_PROVIDER=none — no external Drobon-Dataset.
@@ -66,9 +68,13 @@ Drobon-Dataset/                           (external, never committed here)
 Status endpoint: `GET /api/v1/dataset/status` (auth required) returns every
 category plus `vulnIntelCounts` (files / identity items / advisory ids), `packs`
 (packId + version per family) and `conformance` (accepted, declared/executed/
-skipped/failed tests, rejected rules). Inspection:
-`GET /api/v1/dataset/packs/:kind` (`sast|secrets|dast|sca`) and
-`GET /api/v1/dataset/lessons`.
+skipped/failed tests, rejected rules). The optional `datasetPath` is now
+withheld from this HTTP response because an operator's filesystem path can
+contain sensitive text; server-internal status callers retain it. Rejected
+counts and valid rule IDs remain visible, but arbitrary invalid names/keys
+are withheld. Dataset/advisory loader logs omit paths, filenames and raw
+exception messages. Inspection: `GET /api/v1/dataset/packs/:kind`
+(`sast|secrets|dast|sca`) and `GET /api/v1/dataset/lessons`.
 
 ## Loader contract (fail closed)
 

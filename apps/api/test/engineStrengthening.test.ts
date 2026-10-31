@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { isDastResult, isFinding, isScanResultSummary, isScaResult } from '@drobon/shared';
 import { createDastEngine } from '../src/scans/dast/engine.js';
+import { createActiveDastEngine } from '../src/scans/dast/activeEngine.js';
 import { createDastTargetPolicy } from '../src/scans/dast/target.js';
 import type { AdvisoryMatch, AdvisoryService } from '../src/external/advisory.js';
+import type { DatasetService } from '../src/external/service.js';
 import type { DastTransport } from '../src/scans/dast/http.js';
 import { createSastEngine } from '../src/scans/sast/engine.js';
 import { createScaEngine } from '../src/scans/sca/engine.js';
@@ -33,6 +35,40 @@ function snapshot(files: Array<{ path: string; content: string }>): SourceSnapsh
 }
 const sources = (files: Array<{ path: string; content: string }>) => ({ findByProject: async () => snapshot(files) });
 const json = (value: unknown) => JSON.stringify(value);
+
+describe('dataset pack coverage propagation', () => {
+  test('all four engines disclose rejected rules while retaining accepted findings', async () => {
+    const base = { title: 'Fixture rule', description: 'Fixture only.', severity: 'MEDIUM', category: 'fixture',
+      remediation: 'Review.', limitation: 'Fixture only.' };
+    const sast = { ...base, schemaVersion: 'drobon.pack.sast/v1', id: 'DPK-SAST-900', languages: ['javascript'], patterns: [{ source: 'eval\\s*\\(' }] };
+    const secrets = { ...base, schemaVersion: 'drobon.pack.secrets/v1', id: 'DPK-SEC-900', confidence: 'MEDIUM', redact: true,
+      patterns: [{ source: 'VALUE-[0-9]+' }], denylist: ['placeholder'] };
+    const dast = { ...base, schemaVersion: 'drobon.pack.dast/v1', id: 'DPK-DAST-900',
+      check: { type: 'missing-response-header', header: 'content-security-policy' } };
+    const sca = { ...base, schemaVersion: 'drobon.pack.sca/v1', id: 'DPK-SCA-9001', ecosystems: ['npm'], artifact: 'package.json', parser: 'json',
+      check: { type: 'sca-field-matches', path: 'dependencies.*', valuePattern: '^\\*$' } };
+    const report = { filesSeen: 2, accepted: 1, enumerationFailures: 0 };
+    const dataset = { configured: true, sastPacks: async () => [sast], secretsPacks: async () => [secrets],
+      dastPacks: async () => [dast], scaPacks: async () => [sca], packMetadata: async () => undefined,
+      conformance: async () => ({ sast: report, secrets: report, dast: report, sca: report }) } as unknown as DatasetService;
+    const transport: DastTransport = { probe: async () => ({ status: 200, headers: {}, body: '', bodyTruncated: false, elapsedMs: 1 }) };
+    const cases = [
+      { id: 'DPK-SAST-900', engine: createSastEngine({ dataset, sources: sources([{ path: 'main.js', content: 'eval(input);' }]) }), record: rec('SAST') },
+      { id: 'DPK-SEC-900', engine: createSecretsEngine({ dataset, sources: sources([{ path: 'main.js', content: 'VALUE-12345' }]) }), record: rec('SECRETS') },
+      { id: 'DPK-SCA-9001', engine: createScaEngine({ dataset, sources: sources([{ path: 'package.json', content: json({ dependencies: { x: '*' } }) }]) }), record: rec('SCA') },
+      { id: 'DPK-DAST-900', engine: createDastEngine({ dataset, transport, targetPolicy: createDastTargetPolicy({ resolve: async () => ['93.184.216.34'] }) }),
+        record: { ...rec('DAST'), dastTargetUrl: 'https://app.example.org/' } },
+    ];
+    for (const item of cases) {
+      const outcome = await item.engine.execute(item.record, ctx);
+      if (outcome.kind !== 'completed') throw new Error(`missing ${item.id} result`);
+      expect(outcome.resultSummary.partial, item.id).toBe(true);
+      expect(outcome.resultSummary.partialReason, item.id).toContain('rules');
+      expect(outcome.findings?.some((finding) => finding.ruleId === item.id), item.id).toBe(true);
+      expect(isScanResultSummary(outcome.resultSummary), item.id).toBe(true);
+    }
+  });
+});
 
 describe('SCA evidence and partial-coverage regressions', () => {
   test.each([1, 2, 3])('npm v%i keeps an older nested version distinct and transitive', (lockfileVersion) => {
@@ -299,6 +335,41 @@ describe('DAST coverage and persisted active findings', () => {
     const persisted = await store.completeScan(running.id, outcome.resultSummary, outcome.findings, undefined, outcome.dast);
     expect(persisted?.status).toBe('COMPLETED');
     expect(persisted?.findings?.some((item) => item.ruleId === 'DG-DAST-990001')).toBe(true);
+  });
+
+  test('active request limit counts failed transport attempts, not only responses', async () => {
+    let attempts = 0;
+    const transport: DastTransport = { probe: async () => {
+      attempts += 1;
+      if (attempts > 1) throw new Error('synthetic failure');
+      return response(Array.from({ length: 10 }, (_, i) => `<a href="/api/${i}">x</a>`).join(''));
+    } };
+    const outcome = await createActiveDastEngine({ targetPolicy: policy(), transport, throttleMs: 0, maxRequests: 3 })
+      .execute({ ...rec('DAST'), dastTargetUrl: target, dastMode: 'ACTIVE_SAFE', dastActiveConsent: true }, ctx);
+    if (outcome.kind !== 'completed' || outcome.dast === undefined) throw new Error('missing DAST result');
+    expect(attempts).toBe(3);
+    expect(outcome.dast.requestCount).toBe(3);
+    expect(outcome.dast.observations).toHaveLength(1);
+    expect(outcome.dast.partial).toBe(true);
+    expect(isDastResult(outcome.dast)).toBe(true);
+  });
+
+  test('active findings use the bounded response and require a changed baseline', async () => {
+    for (const unchanged of [true, false]) {
+      let calls = 0;
+      const transport: DastTransport = { probe: async () => {
+        calls += 1;
+        if (unchanged) return response('drobon-xss-1337');
+        return response(calls === 1 ? 'ordinary' : `${'x'.repeat(32)}drobon-xss-1337`);
+      } };
+      const outcome = await createActiveDastEngine({ targetPolicy: policy(), transport, throttleMs: 0, maxResponseBytes: 32 })
+        .execute({ ...rec('DAST'), dastTargetUrl: target, dastMode: 'ACTIVE_SAFE', dastActiveConsent: true }, ctx);
+      if (outcome.kind !== 'completed' || outcome.dast === undefined) throw new Error('missing DAST result');
+      expect(calls).toBeGreaterThan(1);
+      expect(outcome.findings?.some((finding) => finding.ruleId === 'DG-DAST-990001') ?? false).toBe(false);
+      expect(outcome.dast.observations.every((item) => item.bodyBytes <= 32)).toBe(true);
+      if (!unchanged) expect(outcome.dast.partial).toBe(true);
+    }
   });
 
   test('an active request failing after the baseline is disclosed as incomplete', async () => {

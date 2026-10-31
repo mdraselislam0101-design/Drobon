@@ -74,7 +74,7 @@ export function createAssistantRoutes(deps: AssistantRouteDeps): Route[] {
         };
         const result = await service.answer(project, request);
         ctx.logger.info('Assistant request processed', {
-          requestId: ctx.id,
+          requestId: ctx.logId,
           userId: actor.id,
           projectId: project.id,
           state: result.state,

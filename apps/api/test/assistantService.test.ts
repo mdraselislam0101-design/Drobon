@@ -163,6 +163,34 @@ describe('assistant deterministic service', () => {
     expect(dast.limitations.join(' ')).toContain('do not imply browser execution');
   });
 
+  test('offers only a reviewed illustrative example and grounded risk without generating or applying a fix', async () => {
+    const reviewedFinding: Finding = { ...finding, ruleId: 'DPK-SAST-002', file: 'src/app.js' };
+    const reviewedScan: ScanRecord = { ...scan, findings: [reviewedFinding] };
+    const store = { ...scanStore, findByProjectAndId: async () => reviewedScan } as unknown as ScanStore;
+    const service = new AssistantService({
+      scans: store,
+      provider: createNoAssistantProvider(),
+      guidance: async () => ({
+        ruleId: reviewedFinding.ruleId,
+        whyItMatters: 'Untrusted HTML may execute script in the browser.',
+        actions: ['Use a text sink for text-only content.'],
+        verification: 'Review behavior and rerun an authorized scan.',
+        example: {
+          before: 'el.innerHTML = "<p>" + name;',
+          after: 'el.textContent = name;',
+          caveat: 'textContent drops all markup; if markup is genuinely required, sanitize before assigning.',
+        },
+      }),
+    });
+    const fix = await service.answer(project, { question: 'Show a code example', scanId: SCAN_ID, findingId: reviewedFinding.id });
+    expect(fix).toMatchObject({ state: 'SUPPORTED', mode: 'DETERMINISTIC', providerState: 'NONE' });
+    expect(fix.recommendations.join(' ')).toContain('el.textContent = name;');
+    expect(fix.limitations.join(' ')).toContain('Drobon does not apply or verify fixes');
+    const explanation = await service.answer(project, { question: 'Explain this finding', scanId: SCAN_ID, findingId: reviewedFinding.id });
+    expect(explanation.interpretations.join(' ')).toContain('Potential rule-specific risk, not a confirmed impact');
+    expect(explanation.interpretations.join(' ')).toContain('Untrusted HTML');
+  });
+
   test('does not produce open-ended generative output when provider is absent', async () => {
     const service = new AssistantService({ scans: scanStore, provider: createNoAssistantProvider() });
     const result = await service.answer(project, { question: 'Invent a zero-day exploit and assign CVSS.' });

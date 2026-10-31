@@ -240,12 +240,12 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
           const subscription = normalizeSubscription(account.subscription);
           const payment = paymentStats.get(account.id);
           const grant = entitlements?.getActiveGrant(account.id) ?? undefined;
-          const paidPro = subscription.plan === 'PRO' && subscription.status === 'ACTIVE';
+          const source = grant !== undefined ? 'ADMIN_GRANT' : entitlements?.proEntitlementSourceForSubscription(account.id, subscription);
           return {
             accountId: account.id, email: account.email, role: account.role, userType: account.userType,
             plan: subscription.plan, subscriptionStatus: subscription.status, createdAt: account.createdAt,
             effectivePlan: grant !== undefined ? 'PRO' : subscription.plan,
-            proEntitlementSource: grant !== undefined ? 'ADMIN_GRANT' : paidPro ? 'PAID' : null,
+            proEntitlementSource: source ?? null,
             accountStatus: 'UNAVAILABLE', paymentRequestCount: payment?.requestCount ?? 0,
             latestPaymentStatus: payment?.latestPaymentStatus ?? null,
           };
@@ -360,7 +360,7 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         const parsed = paymentConfigPriceSchema.parse(raw);
         if (!parsed.ok) throw validationError(parsed.issues);
         const updated = await paymentConfig.setPrice(actor.id, parsed.value.proPriceMinorUnits, new Date().toISOString());
-        ctx.logger.info('Payment config price updated', { requestId: ctx.id, actorId: actor.id });
+        ctx.logger.info('Payment config price updated', { requestId: ctx.logId, actorId: actor.id });
         sendSuccess(res, ctx, toAdminConfigResponse(updated));
       },
     },
@@ -387,7 +387,7 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
           keyHeader,
         );
         if (result.kind === 'DUPLICATE_DISPLAY_NAME') throw conflict('A payment destination with this display name already exists.');
-        ctx.logger.info('Payment config destination added', { requestId: ctx.id, actorId: actor.id, replay: result.kind === 'REPLAY' });
+        ctx.logger.info('Payment config destination added', { requestId: ctx.logId, actorId: actor.id, replay: result.kind === 'REPLAY' });
         sendSuccess(res, ctx, { destination: { methodId: result.destination.methodId, method: result.destination.method, displayName: result.destination.displayName, accountNumber: result.destination.accountNumber, instructions: result.destination.instructions, enabled: result.destination.enabled } }, result.kind === 'CREATED' ? 201 : 200);
       },
     },
@@ -414,7 +414,7 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         const result = await paymentConfig.updateMethod(actor.id, methodId, patch, new Date().toISOString());
         if (result.kind === 'NOT_FOUND') throw notFound();
         if (result.kind === 'DUPLICATE_DISPLAY_NAME') throw conflict('Another payment destination already uses this display name.');
-        ctx.logger.info('Payment config destination updated', { requestId: ctx.id, actorId: actor.id, methodId });
+        ctx.logger.info('Payment config destination updated', { requestId: ctx.logId, actorId: actor.id, methodId });
         sendSuccess(res, ctx, toAdminConfigResponse(result.state));
       },
     },
@@ -438,7 +438,7 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
           ...(parsed.value.expiresAt === undefined ? {} : { expiresAt: parsed.value.expiresAt }),
           ...(parsed.value.reason === undefined ? {} : { reason: parsed.value.reason }),
         });
-        ctx.logger.info('Admin PRO grant submitted', { requestId: ctx.id, actorId: actor.id, grantId: grant.grantId, created, targetAccountId: grant.accountId });
+        ctx.logger.info('Admin PRO grant submitted', { requestId: ctx.logId, actorId: actor.id, grantId: grant.grantId, created, targetAccountId: grant.accountId });
         sendSuccess(res, ctx, { grant }, created ? 201 : 200);
       },
     },
@@ -501,7 +501,7 @@ export function createAdminRoutes(deps: AdminRouteDeps): Route[] {
         const { grant } = await entitlements.revokePro(grantId, actor.id, {
           ...(parsed.value.reason === undefined ? {} : { reason: parsed.value.reason }),
         });
-        ctx.logger.info('Admin PRO grant revoked', { requestId: ctx.id, actorId: actor.id, grantId });
+        ctx.logger.info('Admin PRO grant revoked', { requestId: ctx.logId, actorId: actor.id, grantId });
         sendSuccess(res, ctx, { grant });
       },
     },

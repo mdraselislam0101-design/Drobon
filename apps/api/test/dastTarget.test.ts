@@ -36,6 +36,11 @@ describe('DAST target normalization and SSRF policy', () => {
     'https://app.example.org:8443/',
     'https://app.example.org/%2e%2e/admin',
     'https://app.example.org/%252e%252e/admin',
+    'https://app.example.org/api/%252e%252e%252foutside',
+    'https://app.example.org/api/a%252fb',
+    'https://app.example.org/api/a%25252fb',
+    'https://app.example.org/api/a%2525252fb',
+    'https://app.example.org/api/a%2520b', // double encoding is ambiguous even when benign
     'https://app.example.org/a%2fb',
     'https://app.example.org/a%5cb',
     ' https://app.example.org/',
@@ -108,18 +113,45 @@ describe('DAST target normalization and SSRF policy', () => {
     await expectTargetError(policy.resolveNormalized(configured.url), 'DAST_TARGET_BLOCKED');
   });
 
-  test('redirects are independently normalized and restricted to the original host and secure scheme', async () => {
-    const policy = createDastTargetPolicy({ resolve: async () => [PUBLIC_FIXTURE_IP] });
+  test('redirects are independently normalized and restricted to the original host and secure scheme before DNS', async () => {
+    const resolvedHosts: string[] = [];
+    const policy = createDastTargetPolicy({ resolve: async (host) => { resolvedHosts.push(host); return [PUBLIC_FIXTURE_IP]; } });
     const current = await policy.prepare('https://app.example.org/start');
     const relative = await policy.resolveRedirect(current, '/next', current.hostname);
     expect(relative.url).toBe('https://app.example.org/next');
+    const beforeDenied = resolvedHosts.length;
     await expectTargetError(policy.resolveRedirect(current, 'https://elsewhere.example.org/', current.hostname), 'DAST_TARGET_BLOCKED');
     await expectTargetError(policy.resolveRedirect(current, 'http://app.example.org/downgrade', current.hostname), 'DAST_TARGET_BLOCKED');
     await expectTargetError(policy.resolveRedirect(current, 'http://127.0.0.1/', current.hostname), 'DAST_TARGET_BLOCKED');
     await expectTargetError(policy.resolveRedirect(current, 'https://app.example.org/?credential=value', current.hostname), 'DAST_TARGET_INVALID');
+    expect(resolvedHosts).toHaveLength(beforeDenied);
+    expect(resolvedHosts).toEqual(['app.example.org', 'app.example.org']);
+  });
+
+  test.each([
+    '/api/%2e%2e/admin',
+    '/api/%2e%2e%2fadmin',
+    '/api/%252e%252e%252fadmin',
+    'https://app.example.org/api/%2e%2e/admin',
+    '//app.example.org/api/%2e./admin',
+    './%2e%2e/admin',
+    '/api/a%5cb',
+  ])('rejects the raw redirect reference before URL dot-segment normalization: %s', async (location) => {
+    const resolve = vi.fn(async () => [PUBLIC_FIXTURE_IP]);
+    const policy = createDastTargetPolicy({ resolve });
+    const current = await policy.prepare('https://app.example.org/api/');
+    await expectTargetError(policy.resolveRedirect(current, location, current.hostname), 'DAST_TARGET_INVALID');
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves supported ordinary relative redirects and single-encoded spaces', async () => {
+    const policy = createDastTargetPolicy({ resolve: async () => [PUBLIC_FIXTURE_IP] });
+    const current = await policy.prepare('https://app.example.org/api/v1/');
+    expect((await policy.resolveRedirect(current, '../health%20check', current.hostname)).url).toBe('https://app.example.org/api/health%20check');
   });
 
   test('normalization returns only the canonical safe URL, not userinfo/query/fragment data', () => {
     expect(normalizeDastTarget('https://APP.example.org/a').url).toBe('https://app.example.org/a');
+    expect(normalizeDastTarget('https://app.example.org/a%20b').url).toBe('https://app.example.org/a%20b');
   });
 });

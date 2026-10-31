@@ -25,6 +25,16 @@ describe('DAST pack evaluator parity with Drobon-Dataset', () => {
     expect(evaluatePackDastCheck(check, obs({ 'Content-Security-Policy': ['', "default-src 'self'"] }))).toBe(false);
   });
 
+  test('case-variant header keys are combined as separate values instead of overwriting', () => {
+    const headers = { 'X-Frame-Options': 'DENY', 'x-frame-options': '' };
+    expect(evaluatePackDastCheck({ type: 'missing-response-header', header: 'x-frame-options' }, obs(headers))).toBe(false);
+    expect(evaluatePackDastCheck({ type: 'response-header-matches', header: 'x-frame-options', valuePattern: '^DENY$' }, obs(headers))).toBe(true);
+    expect(evaluatePackDastCheck({ type: 'response-header-matches', header: 'server', valuePattern: 'nginx/1\\.0' },
+      obs({ Server: 'nginx', server: '1.0' }))).toBe(false);
+    expect(evaluatePackDastCheck({ type: 'cookie-missing-flag', flag: 'Secure' },
+      obs({ 'Set-Cookie': 'a=1', 'set-cookie': 'b=2; Secure' }))).toBe(true);
+  });
+
   test('a pattern never matches across a repeated-header value boundary', () => {
     const check = { type: 'response-header-matches', header: 'server', valuePattern: 'nginx/1\\.0' };
     // Joining with ', ' would create a cross-boundary substring; per-value

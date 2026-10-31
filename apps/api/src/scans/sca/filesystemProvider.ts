@@ -19,10 +19,11 @@
  * - Server-side only, no client influence, read-only, bounded
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, opendir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FINDING_SEVERITIES, type ScaEcosystem } from '@drobon/shared';
 import { satisfiesRange } from './range.js';
+import { createJsonByteBudget, readBoundedJsonFile } from '../../external/boundedJson.js';
 import type {
   DependencyCoordinate,
   VulnerabilityAssessment,
@@ -43,33 +44,73 @@ interface DatasetRecord {
   provenance: { source: string; sourceUrl?: string; retrievedAt?: string };
 }
 
+const DEFAULT_INTEL_LIMITS = {
+  maxEntries: 20_000,
+  maxFiles: 10_000,
+  maxDepth: 12,
+  maxFileBytes: 512 * 1024,
+  maxTotalBytes: 32 * 1024 * 1024,
+} as const;
+
+type IntelLimits = { [K in keyof typeof DEFAULT_INTEL_LIMITS]: number };
+
 interface FilesystemProviderOptions {
   datasetPath: string;
   logger?: Pick<Console, 'info' | 'warn' | 'error'>;
+  /** Internal test seam can lower limits, never raise production ceilings. */
+  limits?: Partial<IntelLimits>;
 }
 
-async function collectJsonFiles(dir: string, out: string[] = []): Promise<string[]> {
-  let entries: string[];
+function limitsFor(overrides: Partial<IntelLimits> | undefined): IntelLimits {
+  const limit = (key: keyof IntelLimits): number => {
+    const value = overrides?.[key];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      ? Math.min(value, DEFAULT_INTEL_LIMITS[key])
+      : DEFAULT_INTEL_LIMITS[key];
+  };
+  return { maxEntries: limit('maxEntries'), maxFiles: limit('maxFiles'), maxDepth: limit('maxDepth'),
+    maxFileBytes: limit('maxFileBytes'), maxTotalBytes: limit('maxTotalBytes') };
+}
+
+interface EnumerationState {
+  files: string[];
+  entries: number;
+  incomplete: boolean;
+  halted: boolean;
+}
+
+async function collectJsonFiles(dir: string, limits: IntelLimits, state: EnumerationState, depth = 0): Promise<void> {
+  if (state.halted) return;
   try {
-    entries = await readdir(dir);
+    const info = await lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory()) { state.incomplete = true; return; }
+  } catch (error) {
+    // Missing optional ecosystem directories simply provide no records.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || depth > 0) state.incomplete = true;
+    return;
+  }
+  try {
+    const entries = await opendir(dir);
+    for await (const entry of entries) {
+      if (state.halted) break;
+      state.entries += 1;
+      if (state.entries > limits.maxEntries) { state.incomplete = true; state.halted = true; break; }
+      if (entry.name === 'samples') continue;
+      const full = join(dir, entry.name);
+      let info;
+      try { info = await lstat(full); } catch { state.incomplete = true; continue; }
+      if (info.isSymbolicLink()) { state.incomplete = true; continue; }
+      if (info.isDirectory()) {
+        if (depth >= limits.maxDepth) state.incomplete = true;
+        else await collectJsonFiles(full, limits, state, depth + 1);
+      } else if (info.isFile() && entry.name.endsWith('.json')) {
+        if (state.files.length >= limits.maxFiles) { state.incomplete = true; state.halted = true; break; }
+        state.files.push(full);
+      }
+    }
   } catch {
-    return out;
+    state.incomplete = true;
   }
-  for (const entry of entries) {
-    const full = join(dir, entry);
-    let s;
-    try {
-      s = await stat(full);
-    } catch {
-      continue;
-    }
-    if (s.isDirectory()) {
-      await collectJsonFiles(full, out);
-    } else if (entry.endsWith('.json')) {
-      out.push(full);
-    }
-  }
-  return out;
 }
 
 function isValidRecord(obj: unknown): obj is DatasetRecord {
@@ -94,6 +135,7 @@ export function createFilesystemIntelligenceProvider(
   options: FilesystemProviderOptions,
 ): VulnerabilityIntelligenceProvider {
   const { datasetPath, logger } = options;
+  const limits = limitsFor(options.limits);
   let loadPromise: Promise<void> | undefined;
   const records: DatasetRecord[] = [];
   const recordsByPackage = new Map<string, DatasetRecord[]>();
@@ -101,23 +143,33 @@ export function createFilesystemIntelligenceProvider(
   let skippedRecord = false;
 
   async function loadRecords(): Promise<void> {
-    const npmDir = join(datasetPath, 'vuln-intel', 'npm');
-    const pypiDir = join(datasetPath, 'vuln-intel', 'pypi');
-    const files = [...(await collectJsonFiles(npmDir)), ...(await collectJsonFiles(pypiDir))];
-    if (files.length === 0) {
-      loadError = `No advisory files found under ${datasetPath}/vuln-intel`;
+    const intelDir = join(datasetPath, 'vuln-intel');
+    try {
+      const info = await lstat(intelDir);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('advisory root is not a regular directory');
+    } catch {
+      loadError = 'Advisory root is missing, inaccessible or a symlink';
       logger?.warn?.(`[dataset] ${loadError}`);
       return;
     }
+    const state: EnumerationState = { files: [], entries: 0, incomplete: false, halted: false };
+    await collectJsonFiles(join(intelDir, 'npm'), limits, state);
+    await collectJsonFiles(join(intelDir, 'pypi'), limits, state);
+    skippedRecord = state.incomplete;
+    const files = state.files.sort();
+    if (files.length === 0) {
+      loadError = 'No accessible advisory files found';
+      logger?.warn?.(`[dataset] ${loadError}`);
+      return;
+    }
+    const budget = createJsonByteBudget(limits.maxTotalBytes);
     for (const file of files) {
-      // Skip samples explicitly
-      if (file.includes('/samples/') || file.includes('\\samples\\')) continue;
       try {
-        const raw = await readFile(file, 'utf8');
-        const parsed = JSON.parse(raw) as unknown;
+        const parsed = await readBoundedJsonFile(file, { maxFileBytes: limits.maxFileBytes, budget });
         if (!isValidRecord(parsed)) {
           skippedRecord = true;
-          logger?.warn?.(`[dataset] Skipping invalid record shape: ${file}`);
+          // A configured path or filename can contain arbitrary sensitive text.
+          logger?.warn?.('[dataset] Skipping invalid record shape (details withheld)');
           continue;
         }
         if (parsed.fixture === true) continue;
@@ -128,12 +180,13 @@ export function createFilesystemIntelligenceProvider(
         const bucket = recordsByPackage.get(key) ?? [];
         bucket.push(parsed);
         recordsByPackage.set(key, bucket);
-      } catch (err) {
+      } catch {
         skippedRecord = true;
-        logger?.warn?.(`[dataset] Failed to load ${file}: ${(err as Error).message}`);
+        // Parser and I/O errors may echo raw content, paths or credentials.
+        logger?.warn?.('[dataset] Failed to load advisory record (details withheld)');
       }
     }
-    logger?.info?.(`[dataset] Loaded ${records.length} advisory records from ${datasetPath} (${files.length} files scanned)`);
+    logger?.info?.(`[dataset] Loaded ${records.length} advisory records (${files.length} files scanned)`);
     if (records.length === 0) {
       loadError = 'Dataset path exists but contains no valid non-fixture records';
     }

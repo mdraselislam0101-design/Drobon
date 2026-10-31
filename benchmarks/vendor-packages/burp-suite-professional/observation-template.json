@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "drobon.vendor-observations/v1",
+  "product": "BURP_SUITE_PROFESSIONAL",
+  "version": null,
+  "executed": false,
+  "fixtureManifestSha256": "8ae13962b8889b7f92018216868c2b1483556ae08c1dfc12d5e730890d6911e6",
+  "unmappedAlertCount": null,
+  "observations": []
+}

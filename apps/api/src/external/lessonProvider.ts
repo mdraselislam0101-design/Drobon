@@ -10,7 +10,8 @@ import type { DatasetService } from './service.js';
 function convertDatasetLesson(raw: any): StudentLessonInternal | undefined {
   if (raw?.schemaVersion !== 'drobon.learning.lesson/v1') return undefined;
   if (typeof raw.id !== 'string' || !/^lsn_[a-z0-9_]{3,40}$/.test(raw.id)) return undefined;
-  if (!Array.isArray(raw.quiz) || raw.quiz.length === 0) return undefined;
+  if (!Array.isArray(raw.quiz) || raw.quiz.length === 0 ||
+      !raw.quiz.every((question: unknown) => typeof question === 'object' && question !== null && !Array.isArray(question))) return undefined;
   // Minimal conversion, keep quiz answerIndex
   return {
     id: raw.id,

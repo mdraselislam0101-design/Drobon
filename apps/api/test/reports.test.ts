@@ -42,6 +42,7 @@ describe('persisted security assessment reports', () => {
     expect(markdown).toContain('Dependency vulnerability intelligence: NOT ASSESSED');
     expect(markdown).not.toContain('<unsafe>');
     expect(markdown).not.toContain('<script>');
+    expect(markdown).toContain('&lt;unsafe&gt;');
     expect(markdown).toContain('&amp;lt;script&amp;gt;');
     expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe('{"a":{"x":3,"y":2},"z":1}');
   });

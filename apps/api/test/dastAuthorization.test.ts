@@ -43,6 +43,73 @@ const policy = () => createDastTargetPolicy({ resolve: async () => ['93.184.216.
 const signal = { signal: new AbortController().signal };
 
 describe('assessment-scoped DAST request authorization', () => {
+  test('strict mode blocks old unlinked and undeclared queued scans before DNS or transport', async () => {
+    const { scan, store } = await fixture();
+    const noEngagement = createMemoryAssessmentStore();
+    const created = await noEngagement.create({ ownerId: OWNER, projectId: PROJECT, title: 'Legacy assessment',
+      objectives: ['Review'], scope: { inScopeHosts: ['app.example.org'], outOfScopeHosts: [] }, now: NOW });
+    if ('outcome' in created) throw new Error('fixture could not be created');
+    await noEngagement.transition({ ownerId: OWNER, projectId: PROJECT, assessmentId: created.id, status: 'ACTIVE', now: NOW });
+    const unlinked = { ...scan }; delete unlinked.assessmentId;
+    const linkedUndeclared = { ...scan, assessmentId: created.id };
+    for (const record of [unlinked, linkedUndeclared]) for (const active of [false, true]) {
+      let resolutions = 0; let requests = 0;
+      const targetPolicy = createDastTargetPolicy({ resolve: async () => { resolutions += 1; return ['93.184.216.34']; } });
+      const transport: DastTransport = { probe: async () => { requests += 1; throw new Error('unexpected'); } };
+      const authorize = createAssessmentDastAuthorizer(noEngagement, () => Date.parse(NOW), { requireEngagement: true });
+      const options = { targetPolicy, transport, authorize };
+      const engine = active ? createActiveDastEngine({ ...options, throttleMs: 0 }) : createDastEngine(options);
+      const result = await engine.execute(active ? { ...record, dastMode: 'ACTIVE_SAFE', dastActiveConsent: true } : record, signal);
+      expect(result.kind).toBe('failed');
+      expect(resolutions).toBe(0);
+      expect(requests).toBe(0);
+    }
+    const strict = createAssessmentDastAuthorizer(store, () => Date.parse(NOW), { requireEngagement: true });
+    expect(await strict(scan, TARGET)).toBe(true);
+    expect(await strict(scan, 'https://app.example.org/outside')).toBe(false);
+    const compatibility = createAssessmentDastAuthorizer(noEngagement, () => Date.parse(NOW));
+    expect(await compatibility(unlinked, TARGET)).toBe(true);
+    expect(await compatibility(linkedUndeclared, TARGET)).toBe(true);
+  });
+
+  test('a denied initial scope causes neither DNS resolution nor transport', async () => {
+    const { scan } = await fixture();
+    for (const active of [false, true]) {
+      let resolutions = 0;
+      let requests = 0;
+      const targetPolicy = createDastTargetPolicy({ resolve: async () => { resolutions += 1; return ['93.184.216.34']; } });
+      const transport: DastTransport = { probe: async () => { requests += 1; throw new Error('unexpected'); } };
+      const options = { targetPolicy, transport, authorize: async () => false };
+      const engine = active ? createActiveDastEngine({ ...options, throttleMs: 0 }) : createDastEngine(options);
+      const result = await engine.execute(active ? { ...scan, dastMode: 'ACTIVE_SAFE', dastActiveConsent: true } : scan, signal);
+      expect(result.kind).toBe('failed');
+      expect(resolutions).toBe(0);
+      expect(requests).toBe(0);
+    }
+  });
+
+  test('nested-encoded separators are refused before DNS and transport for linked and legacy-unlinked scans', async () => {
+    const { scan, authorizer } = await fixture();
+    for (const linked of [true, false]) for (const active of [false, true]) {
+      let resolutions = 0;
+      let requests = 0;
+      const unsafe = { ...scan, dastTargetUrl: 'https://app.example.org/api/%252e%252e%252foutside',
+        ...(active ? { dastMode: 'ACTIVE_SAFE' as const, dastActiveConsent: true } : {}) };
+      if (!linked) delete unsafe.assessmentId;
+      const targetPolicy = createDastTargetPolicy({ resolve: async () => { resolutions += 1; return ['93.184.216.34']; } });
+      const transport: DastTransport = { probe: async () => {
+        requests += 1;
+        return { status: 200, headers: {}, body: '', bodyTruncated: false, elapsedMs: 1 };
+      } };
+      const options = { targetPolicy, transport, ...(linked ? { authorize: authorizer } : {}) };
+      const engine = active ? createActiveDastEngine({ ...options, throttleMs: 0 }) : createDastEngine(options);
+      const result = await engine.execute(unsafe, signal);
+      expect(result.kind).toBe('failed');
+      expect(resolutions).toBe(0);
+      expect(requests).toBe(0);
+    }
+  });
+
   test('refuses a linked request when the authorizer is unavailable, before transport', async () => {
     const { scan } = await fixture();
     let requests = 0;
@@ -68,6 +135,52 @@ describe('assessment-scoped DAST request authorization', () => {
       expect(result.dast?.partialReason).toContain('scope');
       expect(result.dast?.requestCount).toBe(1);
     }
+  });
+
+  test('an unlinked legacy scan does not follow an encoded traversal normalized by URL parsing', async () => {
+    const { scan } = await fixture();
+    const unlinked = { ...scan }; delete unlinked.assessmentId;
+    const requests: string[] = [];
+    const transport: DastTransport = { probe: async (target) => {
+      requests.push(target.url);
+      return { status: 302, headers: { location: '/api/%2e%2e/admin' }, body: '', bodyTruncated: false, elapsedMs: 1 };
+    } };
+    const result = await createDastEngine({ targetPolicy: policy(), transport }).execute(unlinked, signal);
+    expect(result.kind).toBe('completed');
+    expect(requests).toEqual([TARGET]);
+    if (result.kind === 'completed') expect(result.dast?.partial).toBe(true);
+  });
+
+  test('an active legacy crawl does not normalize encoded traversal into a new request', async () => {
+    const { scan } = await fixture();
+    const unlinked = { ...scan, dastMode: 'ACTIVE_SAFE' as const, dastActiveConsent: true }; delete unlinked.assessmentId;
+    const requests: string[] = [];
+    const transport: DastTransport = { probe: async (target) => {
+      requests.push(target.url);
+      return { status: 200, headers: {}, body: '<a href="/api/%2e%2e/admin">unsafe</a>', bodyTruncated: false, elapsedMs: 1 };
+    } };
+    await createActiveDastEngine({ targetPolicy: policy(), transport, throttleMs: 0 }).execute(unlinked, signal);
+    expect(requests[0]).toBe(TARGET);
+    expect(requests).not.toContain('https://app.example.org/admin');
+  });
+
+  test('an unlinked legacy scan never resolves or contacts a cross-host redirect', async () => {
+    const { scan } = await fixture();
+    const unlinked = { ...scan };
+    delete unlinked.assessmentId;
+    const hosts: string[] = [];
+    const requests: string[] = [];
+    const targetPolicy = createDastTargetPolicy({ resolve: async (host) => { hosts.push(host); return ['93.184.216.34']; } });
+    const transport: DastTransport = { probe: async (target) => {
+      requests.push(target.url);
+      return { status: 302, headers: { location: 'https://elsewhere.example.org/outside' }, body: '', bodyTruncated: false, elapsedMs: 3 };
+    } };
+    const result = await createDastEngine({ targetPolicy, transport }).execute(unlinked, signal);
+    expect(result.kind).toBe('completed');
+    expect(requests).toEqual([TARGET]);
+    expect(hosts.length).toBeGreaterThan(0);
+    expect(hosts.every((host) => host === 'app.example.org')).toBe(true);
+    if (result.kind === 'completed') expect(result.dast?.partial).toBe(true);
   });
 
   test('a withdrawn engagement stops a queued linked scan before its first request', async () => {
@@ -115,6 +228,42 @@ describe('assessment-scoped DAST request authorization', () => {
     expect(result.kind).toBe('failed');
     expect(checks).toBe(2);
     expect(requests).toBe(0);
+  });
+
+  test('withdrawal while DNS is resolving blocks passive and active transport', async () => {
+    const { scan } = await fixture();
+    for (const active of [false, true]) {
+      let allowed = true;
+      let requests = 0;
+      const targetPolicy = createDastTargetPolicy({ resolve: async () => { allowed = false; return ['93.184.216.34']; } });
+      const transport: DastTransport = { probe: async () => { requests += 1; throw new Error('unexpected transport'); } };
+      const options = { targetPolicy, transport, authorize: async () => allowed };
+      const engine = active ? createActiveDastEngine({ ...options, throttleMs: 0 }) : createDastEngine(options);
+      const record = active ? { ...scan, dastMode: 'ACTIVE_SAFE' as const, dastActiveConsent: true } : scan;
+      expect((await engine.execute(record, signal)).kind).toBe('failed');
+      expect(requests).toBe(0);
+    }
+  });
+
+  test('active and passive redirects never resolve or request a cross-host destination', async () => {
+    const { scan, authorizer } = await fixture();
+    for (const linked of [true, false]) for (const active of [false, true]) {
+      const hosts: string[] = [];
+      const requests: string[] = [];
+      const targetPolicy = createDastTargetPolicy({ resolve: async (host) => { hosts.push(host); return ['93.184.216.34']; } });
+      const transport: DastTransport = { probe: async (target) => {
+        requests.push(target.url);
+        return { status: 302, headers: { location: 'https://elsewhere.example.org/outside' }, body: '', bodyTruncated: false, elapsedMs: 1 };
+      } };
+      const record = { ...scan, ...(active ? { dastMode: 'ACTIVE_SAFE' as const, dastActiveConsent: true } : {}) };
+      if (!linked) delete record.assessmentId;
+      const options = { targetPolicy, transport, maxRequests: 1, ...(linked ? { authorize: authorizer } : {}) };
+      const engine = active ? createActiveDastEngine({ ...options, throttleMs: 0 }) : createDastEngine(options);
+      expect((await engine.execute(record, signal)).kind).toBe('completed');
+      expect(requests).toEqual([TARGET]);
+      expect(hosts.length).toBeGreaterThan(0);
+      expect(hosts.every((host) => host === 'app.example.org')).toBe(true);
+    }
   });
 
   test('an authorizer error is treated as a refusal', async () => {

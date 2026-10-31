@@ -9,6 +9,44 @@ security is a first-class, **tested** requirement. A control is listed as
 VERIFIED only if an automated test or an executed check proves it;
 anything else is marked IMPLEMENTED, PLANNED or NOT_IMPLEMENTED.
 
+## Historical JSON data: opt-in permission mitigation
+
+Raw source snapshots and some historical findings/reports remain plaintext at
+rest. Restricting file permission bits does **not** encrypt, erase or reliably
+identify every secret, and does not fix exposed backups, logs, ACLs, parent
+folders or old temporary files. Use operator-managed encrypted storage,
+access/retention controls, and a separately tested backup/restore policy.
+
+For an individually selected existing store, `scripts/restrict-json-file.mjs`
+is an **optional POSIX-only offline permission-bit tool**, not a migration. Do
+not run it automatically on production data. Stop all instances/writers, take
+an encrypted restricted backup and rehearse restoration; check filesystem ACLs,
+owner/service access, hard links, symlinks and parent permissions first. If
+those checks cannot be made, do not apply it. It rejects final symlinks,
+hard links, special mode bits and stale inode/mode plans, but cannot verify
+extended ACLs, network filesystem semantics or hostile path races. A mode
+rollback cannot promise to reconstruct ACLs or other metadata.
+
+```sh
+# Use operator-chosen paths in a protected directory; plan must not already exist.
+node scripts/restrict-json-file.mjs plan "$STORE_FILE" "$PRIVATE_PLAN"
+# Review the printed before/after bits and protected plan. This does not alter the store.
+node scripts/restrict-json-file.mjs apply "$STORE_FILE" "$PRIVATE_PLAN" --confirm-owner-only
+# If explicitly approved, before any writer replaces the file, restore prior mode bits:
+node scripts/restrict-json-file.mjs rollback "$STORE_FILE" "$PRIVATE_PLAN" --confirm-owner-only
+```
+
+The plan records device/inode and mode bits, not file contents or filename;
+keep it private and trusted. Apply removes group/other bits while retaining
+owner bits. It may interrupt services that require group access. Rollback can
+widen access and requires deliberate approval; it is refused if the inode or
+mode has changed. A subsequent atomic store write replaces the inode, making
+the plan stale. Synthetic tests confirm unchanged source/report bytes, report
+ID/digest, application reads, a protected backup restored to a separate local
+path, and apply/rollback on this POSIX environment only. This local copy is
+not an encrypted or independent-storage backup; encryption, ACLs, real
+deployment permissions and power-loss durability were not tested.
+
 ## Threat model (foundation + auth + authz + subscription + usage + projects + scan engines incl. passive DAST)
 
 In scope: Internet clients talking to the API/Web over HTTP; credential
@@ -48,8 +86,9 @@ DDoS/absorption (single-instance limiter only), attackers with a
 | Fixed-window rate limiting (429 + `Retry-After` + `RateLimit-*`), per-IP buckets | VERIFIED | `apps/api/test/rateLimit.test.ts` |
 | Request validation: content-type 415, size cap 413, malformed JSON 400, strict schemas 422 (unknown keys rejected) | VERIFIED | `apps/api/test/echo.test.ts`, `validate.test.ts` |
 | Central error mapping: 5xx collapse to `Internal Server Error.`, no stacks/messages leak, request ID always present | VERIFIED | `apps/api/test/errors.test.ts`, `errorDisclosure.test.ts` |
-| Correlation IDs: valid `x-request-id` echoed, invalid replaced, always in header + body + logs | VERIFIED | `apps/api/test/requestId.test.ts` |
-| Structured JSON logging with deep secret redaction (sensitive keys, bearer-like values, credentialed URLs); stacks dev-only | VERIFIED | `apps/api/test/logger.test.ts` |
+| Correlation IDs: valid `x-request-id` echoed in header/body, invalid replaced; a separate server-generated `x-log-id` correlates request logs | VERIFIED for tested paths | `apps/api/test/requestId.test.ts`, `requestLogPrivacy.test.ts` |
+| Structured JSON logging: exception messages/stacks withheld in all environments; access logs use static route templates and omit client request IDs | VERIFIED for tested paths, not universal secret detection | `apps/api/test/logger.test.ts`, `errorDisclosure.test.ts`, `requestLogPrivacy.test.ts` |
+| Dataset/advisory loaders omit paths and raw parser errors from tested logs and HTTP diagnostics; Dataset HTTP status withholds the optional configured path | VERIFIED for synthetic tested paths | `apps/api/test/loaderPrivacy.test.ts` |
 | Strict env validation, fail-fast with all issues; loopback bind + empty CORS allowlist by default | VERIFIED | `apps/api/test/config.test.ts` |
 | No `eval`/`Function`/child-process/`__proto__` primitives in sources | VERIFIED | `apps/api/test/staticSafety.test.ts` |
 | `process.env` readable only in `config.ts` | VERIFIED | `apps/api/test/staticSafety.test.ts` |
@@ -193,10 +232,10 @@ test in `apps/api/test/validate.test.ts`.
 | ------- | ------ | -------- |
 | Analysis only: source snapshots are read and regex-matched, NEVER executed/imported/sandboxed — `exec('touch /tmp/…')` in uploaded code is REPORTED (DG-SAST-001), never run (marker file absent after scans) | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
 | Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s processing deadline / 10 000 lines per file; every limit breach fails closed with a closed code | VERIFIED | `apps/api/test/sastEngine.test.ts` |
-| Linear-time rules only (ReDoS-shaped patterns rejected by the rule suite); whole-corpus timing pinned | VERIFIED | `apps/api/test/sastRules.test.ts` |
-| Deterministic findings (content fingerprints → stable ids; identical rescans yield identical ids) ordered most-severe-first; severities rule-fixed, never client-influenced | VERIFIED | `apps/api/test/sastEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
-| Evidence discipline: ≤ 200-char windowed, control-character-free (no CRLF/tab/NUL), credential values redacted BEFORE persistence (length-neutral) | VERIFIED | `apps/api/test/sastEngine.test.ts` |
-| No content exfiltration: sources read API returns metadata only; logs carry counts/ids, never content or secret values | VERIFIED | `apps/api/test/sastApi.test.ts` |
+| Static pattern lint rejects tested ReDoS-shaped patterns; it is not a proof that every accepted regex is linear-time | VERIFIED for tested examples only | `apps/api/test/sastRules.test.ts` |
+| SAST/Secrets v2 finding identity is independent of source evidence and uses rule, file and line, with conservative legacy matching; line moves and ambiguity remain limitations | VERIFIED for tested cases | `apps/api/test/findingIdentityV2.test.ts`, `sastEngine.test.ts` |
+| Source evidence is withheld before findings are persisted; bounded derived AST attribution may remain | VERIFIED for synthetic cases | `apps/api/test/evidenceRedaction.test.ts`, `sastEngine.test.ts` |
+| Sources read API returns metadata only and tested logs omit source content; uploaded source itself is retained in the server-side source store | VERIFIED for tested paths; raw data at rest remains | `apps/api/test/sastApi.test.ts`, `requestLogPrivacy.test.ts` |
 | Snapshot upload policy: single server-side path policy (no traversal/absolute/dotfiles, len/seg/depth caps), blocked key-material extensions (.env/.pem/.key/...), binary rejection, duplicate/unknown/proto-key rejection → 422/413 with nothing stored | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | SAST pre-flight: no snapshot → 409 BEFORE quota consumption (a FREE account cannot burn allowance on an impossible scan) | VERIFIED | `apps/api/test/sastApi.test.ts` |
 | Findings persist only with the terminal COMPLETED transition (atomic); source findings receive server-owned project context; every detail/page route is project- and scan-scoped, authenticated and owner-authorized | VERIFIED | `apps/api/test/reportsApi.test.ts`, `apps/api/test/sastApi.test.ts` |
@@ -210,7 +249,7 @@ test in `apps/api/test/validate.test.ts`.
 | Control | Status | Evidence |
 | ------- | ------ | -------- |
 | Analysis only: dependency manifests are parsed as DATA — never `npm`/`pip` installed, never executed, no lifecycle hooks; `postinstall: "touch /tmp/…"` in an uploaded package.json leaves the marker ABSENT after scans | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts` |
-| THE DATASET LOCK: no CVE/NVD/GHSA/OSV/KEV/EPSS data in the repo; `VULN_INTEL_PROVIDER` accepts only `none` (anything else fails startup); with no dataset the assessment is honestly NOT_ASSESSED with ZERO advisories — a vulnerable-looking fixture yields no fabricated findings | VERIFIED | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts`, `packages/shared/test/sca.test.ts`, config tests |
+| The dataset is not bundled; `VULN_INTEL_PROVIDER` supports `none` or a separately configured read-only `filesystem` provider. With no dataset, SCA is honestly NOT_ASSESSED with no fabricated advisories | VERIFIED for configured/absent fixtures | `apps/api/test/scaEngine.test.ts`, `apps/api/test/scaApi.test.ts`, `scaFilesystemSafety.test.ts`, config tests |
 | Provider boundary is real, not decorative: an injected stub provider's advisories are re-validated, deduped, dropped when phantom/malformed, and ASSESSED is claimed only with matched records | VERIFIED | `apps/api/test/scaEngine.test.ts` |
 | Parser security: own-property discipline (prototype keys are skipped as data, never `key in obj`), no recursion over JSON, entry/line/length bounds, control-character rejection, invalid data dropped — never guessed; staticSafety pins the denylist to data, not access | VERIFIED | `apps/api/test/scaParsers.test.ts`, `apps/api/test/staticSafety.test.ts` |
 | Path policy REUSE: evidence paths must satisfy the Pump 8 `SOURCE_PATH_PATTERN` (traversal/absolute/backslash/drive/percent classes unrepresentable) — enforced again in the shared guard; no second implementation | VERIFIED | `packages/shared/test/sca.test.ts`, `apps/api/test/scaEngine.test.ts` |
@@ -227,10 +266,10 @@ test in `apps/api/test/validate.test.ts`.
 | Control | Status | Evidence |
 | ------- | ------ | -------- |
 | DETECTED ≠ VERIFIED: no rule, title, description, remediation or UI string claims a credential is valid/active/compromised/revoked; the engine performs NO verification, NO network access, never contacts any service | VERIFIED | `apps/api/test/secretsRules.test.ts`, `apps/api/test/secretsEngine.test.ts` |
-| REDACTION (hard invariant): raw secret values never appear in API responses, UI, logs, errors, exports or stores — positional span blanking (window-cut values cannot leak partially), neighbour redaction (other secrets on the same line are blanked too), defensive re-scan (evidence matching ANY rule fails closed to `[DG-SEC-###] <redacted>`), PEM header-only evidence (key bodies never enter findings) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts` |
+| Detection is separate from evidence projection: source finding evidence is withheld, including adjacent values, before persistence and on legacy output projections; synthetic markers are checked across API, Assistant and report formats | VERIFIED for tested inputs, not a universal guarantee for arbitrary fields or historic data | `apps/api/test/evidenceRedaction.test.ts`, `reportGuidanceExport.test.ts`, `secretsEngine.test.ts` |
 | Three-layer redaction sweep over real HTTP: the same synthetic values asserted absent from the response body, the durable `scans.json` store AND the server logs | VERIFIED | `apps/api/test/secretsApi.test.ts` |
 | Whole-DOM no-leak sweep in the browser: raw values absent from text, attributes and URLs | VERIFIED | `apps/web/test/secretsUi.test.tsx` |
-| Fingerprints exclude the secret: ids derive from rule+file+line+sha256(redacted evidence) — deterministic, no random UUIDs, value-independent | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
+| V2 Secrets fingerprints exclude source evidence and use rule, file and line; conservative legacy matching avoids ambiguous merges | VERIFIED for tested cases | `apps/api/test/findingIdentityV2.test.ts`, `secretsEngine.test.ts` |
 | Analysis only: snapshot content never executed (marker-file test); credential-material file types (.pem/.key/.env/…) never enter a snapshot at all (Pump 8 upload policy) | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/sastApi.test.ts` |
 | Bounded work: 200 files / 256 KiB file / 1 MiB total / 200 findings / 10 s deadline; ignored dirs (node_modules/dist/build/…) and unsupported extensions are skipped-and-counted, never interpreted | VERIFIED | `apps/api/test/secretsEngine.test.ts` |
 | PARTIAL honesty: oversize skips and findings-cap truncation set `partial: true` + a bounded reason — a partial scan with 0 findings is "nothing found in what was inspected", NEVER "no secrets"; FAILED scans report no findings | VERIFIED | `apps/api/test/secretsEngine.test.ts`, `apps/api/test/secretsApi.test.ts`, `apps/web/test/secretsUi.test.tsx` |

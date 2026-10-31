@@ -32,7 +32,7 @@ import { createOwnProjectResolver, type OwnProjectResolver } from '../projects/a
 import type { ScanRecord, ScanStore } from '../scans/store.js';
 import { toScanResponse } from '../scans/store.js';
 import { sendSuccess } from '../respond.js';
-import { buildSecurityReport, canonicalJson, renderSbomExport, renderSecurityReportMarkdown, renderSecurityReportSarif } from '../reports/build.js';
+import { buildSecurityReport, canonicalJson, indexReportGuidance, REPORT_GUIDANCE_NOTICE, renderSbomExport, renderSecurityReportMarkdown, renderSecurityReportSarif, type ReportGuidanceEntry } from '../reports/build.js';
 import { renderPortfolioPdf, renderSecurityReportPdf, type PortfolioPdfEntry } from '../reports/pdf.js';
 import { selectLatestAttempt } from '../reports/portfolio.js';
 import { prepareFindingNote } from '../scans/findingWorkflow.js';
@@ -150,6 +150,15 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
     if (report === undefined) throw notFound('Report not found.');
     return report;
   };
+
+  // Guidance is explicitly an export-time supplement, not a mutation of the
+  // point-in-time report or a claim that its digest covers Dataset content.
+  const guidanceForReport = async (report: SecurityReport): Promise<ReportGuidanceEntry[]> => Promise.all(
+    report.findings.map(async (finding) => {
+      const entry = deps.guidance === undefined ? undefined : await deps.guidance(finding.ruleId).catch(() => undefined);
+      return { findingId: finding.id, guidance: remediationGuidanceForFinding(finding, entry) };
+    }),
+  );
 
   return [
     {
@@ -320,6 +329,7 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
         if (outcome === undefined || outcome.outcome === 'workflow-changed') throw conflict('Finding lifecycle changed while the report was generated; retry the request.');
         if (outcome.outcome === 'scan-unavailable') throw conflict('The scan changed before report persistence.');
         if (outcome.outcome === 'capacity-exceeded') throw conflict('Report storage capacity has been reached.');
+        if (outcome.outcome === 'legacy-report-protected') throw conflict('The historical report is preserved; a changed snapshot requires an approved migration.');
         if (outcome.outcome === 'invalid-report') throw internal('Generated report failed store validation.');
         sendSuccess(res, ctx, { report: outcome.report }, outcome.outcome === 'created' ? 201 : 200);
       },
@@ -341,33 +351,42 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
       handler: async (req, res, ctx): Promise<void> => {
         const report = await reportForScan(ctx);
         const url = queryUrl(req);
-        if ([...url.searchParams.keys()].some((key) => key !== 'format')) throw badRequest('Unsupported report export option.');
-        const formatValues = url.searchParams.getAll('format');
-        if (formatValues.length > 1) throw badRequest('Query parameter \'format\' must appear only once.');
-        const format = formatValues[0] ?? 'json';
-        const stem = `drobon-${report.reportId}`;
+        if ([...url.searchParams.keys()].some((key) => key !== 'format' && key !== 'guidance')) throw badRequest('Unsupported report export option.');
+        const format = parseSingleQuery(url, 'format') ?? 'json';
+        const guidanceOption = parseSingleQuery(url, 'guidance');
+        if (!['json', 'markdown', 'sarif', 'pdf'].includes(format)) {
+          throw validationError([{ path: 'format', message: 'Must be json, markdown, sarif, or pdf.' }]);
+        }
+        if (guidanceOption !== undefined && guidanceOption !== '1') {
+          throw validationError([{ path: 'guidance', message: 'When provided, guidance must be 1.' }]);
+        }
+        const guidance = guidanceOption === '1' ? await guidanceForReport(report) : undefined;
+        indexReportGuidance(report, guidance);
+        const stem = `drobon-${report.reportId}${guidance === undefined ? '' : '-guidance'}`;
         if (format === 'json') {
-          sendAttachment(res, `${canonicalJson(report)}\n`, 'application/json; charset=utf-8', `${stem}.json`);
+          // Keep the v1 report format byte-compatible unless explicitly opted
+          // into this separately-labelled, export-time guidance bundle.
+          const payload = guidance === undefined ? report : {
+            bundleVersion: '1.0', report, guidance, notice: REPORT_GUIDANCE_NOTICE,
+          };
+          sendAttachment(res, `${canonicalJson(payload)}\n`, 'application/json; charset=utf-8', `${stem}.json`);
           return;
         }
         if (format === 'markdown') {
-          sendAttachment(res, renderSecurityReportMarkdown(report), 'text/markdown; charset=utf-8', `${stem}.md`);
+          sendAttachment(res, renderSecurityReportMarkdown(report, guidance), 'text/markdown; charset=utf-8', `${stem}.md`);
           return;
         }
         if (format === 'sarif') {
-          sendAttachment(res, renderSecurityReportSarif(report), 'application/sarif+json; charset=utf-8', `${stem}.sarif`);
+          sendAttachment(res, renderSecurityReportSarif(report, guidance), 'application/sarif+json; charset=utf-8', `${stem}.sarif`);
           return;
         }
-        if (format === 'pdf') {
-          try {
-            sendAttachment(res, await renderSecurityReportPdf(report), 'application/pdf', `${stem}.pdf`);
-          } catch (error) {
-            if (error instanceof RangeError) throw conflict('The generated PDF exceeds the size limit.');
-            throw internal('The report could not be rendered safely.');
-          }
-          return;
+        try {
+          sendAttachment(res, await renderSecurityReportPdf(report, guidance), 'application/pdf', `${stem}.pdf`);
+        } catch (error) {
+          if (error instanceof RangeError) throw conflict('The generated PDF exceeds the size limit.');
+          throw internal('The report could not be rendered safely.');
         }
-        throw validationError([{ path: 'format', message: 'Must be json, markdown, sarif, or pdf.' }]);
+
       },
     },
     {
@@ -375,7 +394,10 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
       path: '/api/v1/projects/:projectId/reports/portfolio/download',
       requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {
-        rejectUnknownQueryParameters(req);
+        const url = queryUrl(req);
+        if ([...url.searchParams.keys()].some((key) => key !== 'guidance')) throw badRequest('Unsupported report export option.');
+        const guidanceOption = parseSingleQuery(url, 'guidance');
+        if (guidanceOption !== undefined && guidanceOption !== '1') throw validationError([{ path: 'guidance', message: 'When provided, guidance must be 1.' }]);
         if (ctx.user === undefined) throw unauthorized();
         const project = await access.ownProjectOr403(ctx.params['projectId'], ctx.user.id);
         // Select the latest ATTEMPT, never an older completion after a failure.
@@ -404,16 +426,18 @@ export function createReportsRoutes(deps: ReportsRouteDeps): Route[] {
           const workflows = await scans.getFindingWorkflowsForFindings(project.id, findings);
           if (workflows.length !== findings.length) throw conflict('Finding workflow snapshots are unavailable.');
           try {
-            entries.push({ scanner, status: 'COMPLETED', requestedAt: scan.createdAt,
-              report: buildSecurityReport(project, scan, generatedAt, workflows) });
+            const report = buildSecurityReport(project, scan, generatedAt, workflows);
+            const guidance = guidanceOption === '1' ? await guidanceForReport(report) : undefined;
+            entries.push({ scanner, status: 'COMPLETED', requestedAt: scan.createdAt, report,
+              ...(guidance === undefined ? {} : { guidance }) });
           } catch (error) {
             if (error instanceof RangeError) throw conflict('A scan report exceeds the configured size limit.');
             throw internal('The project report could not be generated safely.');
           }
         }
         try {
-          const pdf = await renderPortfolioPdf({ project: { id: project.id, name: project.name }, generatedAt, entries });
-          sendAttachment(res, pdf, 'application/pdf', `drobon-project-${project.id}.pdf`);
+          const pdf = await renderPortfolioPdf({ project: { id: project.id, name: project.name }, generatedAt, entries, includeGuidance: guidanceOption === '1' });
+          sendAttachment(res, pdf, 'application/pdf', `drobon-project-${project.id}${guidanceOption === '1' ? '-guidance' : ''}.pdf`);
         } catch (error) {
           if (error instanceof RangeError) throw conflict('The generated PDF exceeds the size limit.');
           throw internal('The project report could not be rendered safely.');
