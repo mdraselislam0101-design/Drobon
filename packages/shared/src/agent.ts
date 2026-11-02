@@ -128,3 +128,55 @@ export function isAgentExecutionResponse(value: unknown): value is AgentExecutio
       object(action) && keys(action, ['scanner', 'result', 'reason']) && isScanType(action['scanner']) &&
       ['CREATED', 'EXISTING', 'BLOCKED', 'INCONCLUSIVE'].includes(String(action['result'])) && text(action['reason']));
 }
+
+/** Read-only capability report: what the Agent can actually do right now. */
+export interface AgentRoleCapability {
+  id: 'MASTER' | 'RECON' | 'SAST' | 'DAST' | 'SCA' | 'SECRETS' | 'VALIDATION';
+  title: string;
+  responsibility: string;
+  tools: string[];
+  evidenceRequired: string[];
+  maxSteps: number;
+  integrated: boolean;
+  note: string;
+}
+export interface AgentCapabilities {
+  generatedAt: string;
+  roles: AgentRoleCapability[];
+  networkRoles: AgentRoleCapability['id'][];
+  model: { state: 'NONE' | 'UNAVAILABLE' | 'READY'; provider: 'NONE' | 'LOCAL_LOOPBACK'; note: string };
+  storage: { code: 'STORAGE_READY' | 'STORAGE_BLOCKED' | 'STORAGE_UNSUPPORTED'; issues: string[]; note: string };
+  execution: { enabled: boolean; note: string };
+  limitations: string[];
+}
+export interface AgentCapabilitiesResponse { capabilities: AgentCapabilities; assessmentId: string }
+
+const AGENT_ROLE_IDS = ['MASTER', 'RECON', 'SAST', 'DAST', 'SCA', 'SECRETS', 'VALIDATION'] as const;
+function isAgentRoleCapability(value: unknown): value is AgentRoleCapability {
+  return object(value) && keys(value, ['id', 'title', 'responsibility', 'tools', 'evidenceRequired', 'maxSteps', 'integrated', 'note']) &&
+    AGENT_ROLE_IDS.includes(value['id'] as (typeof AGENT_ROLE_IDS)[number]) && text(value['title']) &&
+    text(value['responsibility']) && text(value['note']) && typeof value['integrated'] === 'boolean' &&
+    Array.isArray(value['tools']) && value['tools'].every((tool) => text(tool)) &&
+    Array.isArray(value['evidenceRequired']) && value['evidenceRequired'].every((item) => text(item)) &&
+    Number.isInteger(value['maxSteps']) && (value['maxSteps'] as number) >= 0 && (value['maxSteps'] as number) <= 32;
+}
+/** Strict validator: an unknown capability payload must be rejected, not coerced to "ready". */
+export function isAgentCapabilitiesResponse(value: unknown): value is AgentCapabilitiesResponse {
+  if (!object(value) || !keys(value, ['capabilities', 'assessmentId']) || !ASSESSMENT_ID_PATTERN.test(String(value['assessmentId']))) return false;
+  const caps = value['capabilities'];
+  if (!object(caps) || !keys(caps, ['generatedAt', 'roles', 'networkRoles', 'model', 'storage', 'execution', 'limitations'])) return false;
+  const model = caps['model'];
+  const storage = caps['storage'];
+  const execution = caps['execution'];
+  return text(caps['generatedAt']) && !Number.isNaN(Date.parse(String(caps['generatedAt']))) &&
+    Array.isArray(caps['roles']) && caps['roles'].length === 7 && caps['roles'].every((role) => isAgentRoleCapability(role)) &&
+    Array.isArray(caps['networkRoles']) && caps['networkRoles'].every((role) => AGENT_ROLE_IDS.includes(role as (typeof AGENT_ROLE_IDS)[number])) &&
+    Array.isArray(caps['limitations']) && caps['limitations'].every((item) => text(item)) &&
+    object(model) && keys(model, ['state', 'provider', 'note']) && text(model['note']) &&
+    ['NONE', 'UNAVAILABLE', 'READY'].includes(String(model['state'])) &&
+    ['NONE', 'LOCAL_LOOPBACK'].includes(String(model['provider'])) &&
+    object(storage) && keys(storage, ['code', 'issues', 'note']) && text(storage['note']) &&
+    ['STORAGE_READY', 'STORAGE_BLOCKED', 'STORAGE_UNSUPPORTED'].includes(String(storage['code'])) &&
+    Array.isArray(storage['issues']) && storage['issues'].every((issue) => text(issue)) &&
+    object(execution) && keys(execution, ['enabled', 'note']) && text(execution['note']) && typeof execution['enabled'] === 'boolean';
+}

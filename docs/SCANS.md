@@ -15,8 +15,11 @@ contract is unchanged:
   (rule id, severity, CWE, bounded redacted evidence, remediation) —
   analysis only, source files are never executed.
 - `SCA` scans complete with a genuine, deterministic dependency
-  inventory (direct/transitive with lockfile evidence), a CycloneDX
-  1.5-subset SBOM and an honest assessment state — analysis only,
+  inventory (direct/transitive with lockfile evidence), a lockfile-evidenced
+  transitive dependency graph (npm: edges resolved through Node's own
+  `node_modules` lookup; no lockfile → no edge), a CycloneDX
+  1.5-subset SBOM whose `dependencies` mirror that graph exactly and
+  an honest assessment state — analysis only,
   manifests are never installed or executed. Without a loaded
   vulnerability-intelligence dataset the assessment is honestly
   `NOT_ASSESSED` with an empty advisory collection when no provider data is loaded (not a zero-vulnerability verdict); the
@@ -125,9 +128,11 @@ Allow`. The processor owns every transition.
 
 ```
 QUEUED ──→ RUNNING ──→ COMPLETED   (engine produced a real summary)
-   │           ├───→ FAILED        (deterministic failure)
+   │           ├───→ QUEUED        (retry: transient SCAN_ENGINE_ERROR only,
+   │           │                    durable `retryAt` backoff, `attempt`++)
+   │           ├───→ FAILED        (deterministic failure, or SCAN_CANCELLED)
    │           └───→ TIMED_OUT     (bounded DAST request/scan deadline)
-   └───────────────→ FAILED        (never claimed + engine missing)
+   └───────────────→ FAILED        (cancelled before start / engine missing)
 RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
 ```
 
@@ -140,6 +145,43 @@ RUNNING at boot ────→ FAILED / SCAN_INTERRUPTED   (startup recovery)
   `{ findingsTotal: n }`); `FAILED` and `TIMED_OUT` require a
   closed-vocabulary `failureCode` + a safe bounded message. The shared guard enforces
   these invariants on every untrusted payload.
+### Cancellation (owner-requested)
+
+`POST /api/v1/projects/:projectId/scans/:scanId/cancel` — owner only, uniform 404
+for unknown/foreign scans.
+
+- A `QUEUED` scan is cancelled immediately → `FAILED` / `SCAN_CANCELLED`
+  ("cancelled before it started"). Nothing is executed.
+- A `RUNNING` scan gets a **durable intent** (`cancelRequestedAt`, persisted before
+  any in-process signal). The processor re-checks it before invoking an engine, and
+  the terminal transition becomes `FAILED` / `SCAN_CANCELLED`. A cancellation that
+  lands while the engine is finishing wins — the run is never reported as a result.
+- Repeating a cancel of an already-cancelled scan is idempotent (same record);
+  cancelling a finished scan is a `409`. Finished results are never rewritten.
+- Honest limits: an abort is cooperative. A transport or CPU loop that ignores the
+  signal can outlive the attempt (the durable record already moved on), and a hard
+  kill turns the RUNNING record into `SCAN_INTERRUPTED` at startup — the intent is
+  then reported as interruption, not as cancellation.
+
+### Retry with backoff
+
+`SCAN_MAX_ATTEMPTS` (default `2`, range 1–5) and `SCAN_RETRY_BASE_DELAY_MS`
+(default `5000`, range 100–600000).
+
+- **Only** `SCAN_ENGINE_ERROR` (a transient engine crash) is retried. Invalid input,
+  missing targets, limit violations, engine timeouts, blocked DAST targets and
+  cancellations are deterministic and stay terminal on the first attempt.
+- A retry is a durable `RUNNING → QUEUED` transition with `retryAt = now +
+  base * 2^(attempt-1)`; `attempt` (1-based, bounded by the shared hard limit of 5)
+  survives restarts and is visible in the public scan shape.
+- Agent jobs are never retried: their authorization, engagement and source/Dataset
+  digests were verified for that attempt, so a withdrawal must fail closed.
+- No retry is scheduled while the processor is shutting down (the runtime is
+  releasing its lease); the attempt either finishes or startup recovery
+  reports `SCAN_INTERRUPTED`.
+- A retry re-executes the SAME scan record — it never creates a second scan and
+  never consumes quota twice.
+
 - Failure codes (scan-domain, stable, safe to expose):
   `SCAN_ENGINE_NOT_IMPLEMENTED`, `SCAN_INTERRUPTED`,
   `SCAN_ENGINE_ERROR` (orchestration), the closed SAST/SCA/SECRETS
@@ -159,6 +201,62 @@ registered server-side. DAST target policy, HTTP transport and rules
 are isolated under `apps/api/src/scans/dast/` and documented in
 `docs/DAST.md`. Test suites inject synthetic engines/transports only
 to verify bounded behavior; no arbitrary/public host is contacted.
+
+### Depth disclosures in the result summary (P2-13 / P2-14)
+
+Two engine-depth features add fields to the scan result summary contract
+(`ScanResultSummary` in `packages/shared/src/scans.ts`). Both are validated
+server-side and rendered by the scan UI and the Markdown/JSON reports; neither
+changes ownership, quota, lifecycle or the engine registry.
+
+- `astCoverage.projectFlow.rounds` / `.callEdges` (SAST): how many fixed-point
+  rounds the bounded project pass ran and how many cross-file call edges were
+  actually matched. `rounds ≤ 12`, `callEdges ≤ 1_000_000`, and a `RAN` pass
+  always has `rounds > 0`. A pass that does not converge is `INCOMPLETE` with a
+  partial reason — it is never reported as complete. Detail: `docs/SAST.md`.
+- `secretsBaseline` (SECRETS): `{ status, entries, applied, invalid }` for the
+  optional `drobon-secrets-baseline.json` at the snapshot root. `ABSENT` means
+  no baseline was supplied; `INVALID` means the document was rejected, so
+  **nothing** was suppressed and the scan is partial. Suppressions are counted,
+  never presented as "no secrets". Detail: `docs/SECRETS.md`.
+
+Both documents are ordinary snapshot files: they pass through the same source
+path policy, size caps and secret-redaction rules as every other input, and
+`.git` paths remain refused.
+
+## Throughput (parallel lanes)
+
+`SCAN_CONCURRENCY` (default **1**, range 1–8) lets one drain execute several
+independent scans at once. The default preserves the historical, fully serialized
+behaviour; raising it is an explicit operator decision.
+
+What does NOT change when lanes > 1:
+
+- claiming is still a serialized store transition, so a scan is executed at most
+  once and two lanes can never receive the same record;
+- every terminal transition is still a single serialized write, so findings and
+  reports commit with the scan exactly as before;
+- cancellation, retry backoff, startup recovery and shutdown semantics are
+  unchanged; a failing scan never blocks another lane.
+
+Honest limit: lanes share one Node event loop and one JSON document writer. The
+CPU-bound parts of SAST remain cooperative — it yields to the event loop when
+EITHER 8 files or a 12 ms CPU budget (`SAST_YIELD_BUDGET_MS`) is reached, so one
+very large file cannot stall the loop for the rest of a slice — and the
+persistence cost per transition still grows with document size — see
+`docs/SCAN_STORE_COMPACTION_DESIGN.md`. Raising `SCAN_CONCURRENCY` without fixing
+that will shift contention to disk, not remove it. No load test has been run, so
+no throughput number is claimed.
+
+## Operational metrics
+
+`GET /api/v1/metrics` — ADMIN role **and** the platform-admin allowlist (the same
+gate as every other admin surface). Returns one snapshot: uptime, process memory,
+scan totals by status/type, queue depth (`byStatus.QUEUED`) and whether the
+processor has started. It is not a time series, has no external metrics backend,
+contains no owner/project identifiers, and states explicitly that zero findings
+never means a target is safe. Scans left in `QUEUED` with a future `retryAt` mean
+"waiting out a retry backoff", not "stuck".
 
 ## The processor (worker integration)
 
@@ -194,6 +292,11 @@ stores: one JSON document (`{ version: 1, scans: [...], idempotency: [...], repo
   and the file contains no emails, passwords or device material;
 - scans survive restarts with their terminal states, timestamps and
   idempotency entries intact (tested, including quota continuity);
+- **known cost (P1-6, open):** every transition rewrites the whole document, so
+  I/O per transition grows with history. `GET /api/v1/metrics` exposes
+  `store.documentBytes`; the redesign is specified in
+  `docs/SCAN_STORE_COMPACTION_DESIGN.md` and deliberately NOT implemented without
+  an approved migration + backup rehearsal;
 - Pump 13 finding workflows and bounded audit events share this same
   document and serialized atomic writes. Scan completion updates workflow
   observations with the scanner result. Older Pump 12 documents without
@@ -251,8 +354,11 @@ above, not HTTP codes.
 
 Browser/full DAST and unrestricted active testing, project-wide/multi-scan reports,
 report signatures, full audit-history export,
-scan cancellation (deliberately absent — a half-implemented cancel
-would be worse than none), scan scheduling/recurring scans,
+scan scheduling/recurring scans,
+Git commit-history secret scanning (a snapshot is one content tree — see
+`docs/SECRETS.md`), DAST login/session automation (no form login, cookie jar or
+credential vault exists; only an operator-configured static header can be sent
+— see `docs/DAST.md`),
 out-of-process engine workers, project-level usage analytics,
 admin/operator scan visibility, and database-backed persistence remain
 NOT_IMPLEMENTED. Findings, the bounded remediation lifecycle, SBOM/inventory,

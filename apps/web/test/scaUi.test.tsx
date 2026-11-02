@@ -343,7 +343,9 @@ describe('SCA UI: the honest dependency analysis view', () => {
     const summary = await screen.find('sca-summary');
     expect(summary.textContent).toContain('5');
     expect(summary.textContent).toContain('4');
-    expect((await screen.find('sca-graph')).textContent).toContain('Available');
+    // "Available" must state HOW MUCH was evidenced — a bare "available"
+    // would hide that the graph is only as complete as the lockfile.
+    expect((await screen.find('sca-graph')).textContent).toMatch(/Available · \d+ evidenced edge/);
     expect((await screen.find('sca-sbom')).textContent).toContain('CycloneDX 1.5');
     // Manifests: analyzed AND unsupported stay visible.
     const statuses = (await screen.findAll('sca-manifest-status')).map((el) => el.textContent);

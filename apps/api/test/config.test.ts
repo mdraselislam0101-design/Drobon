@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { SOURCE_SNAPSHOT_BODY_MAX_BYTES } from '@drobon/shared';
 import { ConfigError, loadConfig } from '../src/config.js';
 
 describe('loadConfig', () => {
@@ -11,7 +12,7 @@ describe('loadConfig', () => {
     expect(config.corsAllowedOrigins).toEqual([]);
     expect(config.rateLimitMaxRequests).toBe(100);
     expect(config.rateLimitWindowMs).toBe(60_000);
-    expect(config.bodyMaxBytes).toBe(1_048_576);
+    expect(config.bodyMaxBytes).toBe(SOURCE_SNAPSHOT_BODY_MAX_BYTES);
     expect(typeof config.version).toBe('string');
     // Auth defaults (Pump 2): durable store, cost-32768 scrypt, 7-day
     // sessions, tight credential rate limit, Secure only in production.
@@ -34,13 +35,61 @@ describe('loadConfig', () => {
     expect(config.paymentRateLimitMaxRequests).toBe(10);
   });
 
-  test('strict DAST engagement policy is opt-in and invalid values fail closed', () => {
-    expect(loadConfig({ NODE_ENV: 'test' }).dastRequireEngagement).toBe(false);
+  test('DAST engagement is required by default and invalid values fail closed', () => {
+    expect(loadConfig({ NODE_ENV: 'test' }).dastRequireEngagement).toBe(true);
     expect(loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: 'true' }).dastRequireEngagement).toBe(true);
     expect(loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: 'false' }).dastRequireEngagement).toBe(false);
     for (const value of ['', 'TRUE', '1', 'yes']) {
       expect(() => loadConfig({ NODE_ENV: 'test', DAST_REQUIRE_ENGAGEMENT: value })).toThrow(ConfigError);
     }
+  });
+
+  test('authenticated DAST probing is optional, both-or-neither and never echoed', () => {
+    // Off by default: an existing deployment never starts sending a credential.
+    expect(loadConfig({ NODE_ENV: 'test' }).dastAuth).toBeUndefined();
+    expect(loadConfig({
+      NODE_ENV: 'test',
+      DAST_AUTH_HEADER_NAME: 'Authorization',
+      DAST_AUTH_HEADER_VALUE: 'Bearer synthetic-3f7a',
+    }).dastAuth).toEqual({ headerName: 'authorization', headerValue: 'Bearer synthetic-3f7a' });
+    // Half a credential is a startup error, not a silent downgrade.
+    for (const env of [
+      { DAST_AUTH_HEADER_NAME: 'authorization' },
+      { DAST_AUTH_HEADER_VALUE: 'Bearer synthetic-3f7a' },
+      { DAST_AUTH_HEADER_NAME: 'host', DAST_AUTH_HEADER_VALUE: 'evil.example.org' },
+      { DAST_AUTH_HEADER_NAME: 'authorization', DAST_AUTH_HEADER_VALUE: 'a\r\nX-Injected: 1' },
+      { DAST_AUTH_HEADER_NAME: 'authorization', DAST_AUTH_HEADER_VALUE: '   ' },
+    ]) {
+      let message = '';
+      try {
+        loadConfig({ NODE_ENV: 'test', ...env });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('DAST_AUTH_');
+      // The value itself must never be part of an error message or log line.
+      expect(message).not.toContain('synthetic-3f7a');
+      expect(message).not.toContain('evil.example.org');
+    }
+  });
+
+  test('a local AI endpoint is loopback-only and never configurable in production', () => {
+    expect(loadConfig({}).localModelEndpoint).toBeUndefined();
+    // Loopback with a name is accepted outside production.
+    expect(loadConfig({ NODE_ENV: 'test', LOCAL_MODEL_ENDPOINT: 'http://127.0.0.1:11434', LOCAL_MODEL_NAME: 'local-test' }))
+      .toMatchObject({ localModelEndpoint: 'http://127.0.0.1:11434', localModelName: 'local-test' });
+    expect(loadConfig({ NODE_ENV: 'test', LOCAL_MODEL_ENDPOINT: 'http://localhost:8080', LOCAL_MODEL_NAME: 'q4' }).localModelName).toBe('q4');
+    // Remote providers, private ranges and non-HTTP schemes are refused outright.
+    for (const endpoint of ['https://api.openai.com/v1', 'http://10.1.2.3:80', 'http://192.168.0.9:11434', 'ftp://127.0.0.1']) {
+      expect(() => loadConfig({ NODE_ENV: 'test', LOCAL_MODEL_ENDPOINT: endpoint, LOCAL_MODEL_NAME: 'm' }))
+        .toThrow(/loopback/);
+    }
+    // Name is mandatory with an endpoint; a name alone is refused.
+    expect(() => loadConfig({ NODE_ENV: 'test', LOCAL_MODEL_ENDPOINT: 'http://127.0.0.1:1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ NODE_ENV: 'test', LOCAL_MODEL_NAME: 'm' })).toThrow(/LOCAL_MODEL_NAME is only allowed/);
+    // Production is blocked, matching the Agent gate.
+    expect(() => loadConfig({ NODE_ENV: 'production', LOCAL_MODEL_ENDPOINT: 'http://127.0.0.1:1', LOCAL_MODEL_NAME: 'm' }))
+      .toThrow(/not allowed in production/);
   });
 
   test('experimental agent is disabled by default, rejects invalid flags and cannot be enabled in production', () => {

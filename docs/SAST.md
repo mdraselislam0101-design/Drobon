@@ -222,8 +222,10 @@ across lines of one file:
   never silently suppressed.
 - **Hard bounds (tested):** at most 512 tainted variables, 64 identifier
   tokens inspected per snippet, 3 findings per rule per file, a 300-char
-  sink-argument window; strictly single-pass, linear time, NO recursion,
-  NO fixpoint iteration, NO call graph, NO cross-file resolution.
+  sink-argument window; strictly single-pass and linear in this
+  single-file layer. This lexical layer has NO call graph and NO
+  cross-file resolution — that is the separate bounded project pass
+  described below (see "Project flow: interprocedural depth").
 
 **Known limitations (honest):** use-before-assignment ordering, loop-
 carried values, flows through local helper functions, cross-file flows
@@ -333,3 +335,51 @@ distinct from the common Finding contract.
 - **No build/dependency execution:** build-aware analysis would require
   an execution sandbox that does not exist; the engine never runs
   compilers, package managers or project scripts.
+
+## Project flow: interprocedural depth (P2-13)
+
+A second, separately bounded pass runs over the whole JavaScript/TypeScript
+part of the snapshot (`projectAst.mjs`). It is still analysis only: the
+snapshot is parsed from memory, nothing is imported, resolved from disk or
+executed, and no value ever leaves the worker.
+
+What it resolves:
+
+- **Named local functions** (declarations, arrow/function expressions) and
+  **relative named imports**; also **default import/export**,
+  **`import * as ns` + `ns.fn()`** and **`export * from './x'` re-export
+  chains** (cycle-safe, bounded).
+- A call site inherits the callee's sink summaries, so a sink reached
+  through several hops is attributed to the *original* source location with a
+  bounded cross-file trace (`source`, `via`).
+- Propagation runs to a **fixed point**: rounds repeat until the summaries stop
+  changing (maximum 12 rounds, shared work budget). The scan reports how many
+  rounds ran (`projectFlow.rounds`) and how many call edges were matched
+  (`projectFlow.callEdges`); not reaching a fixed point is reported as
+  `INCOMPLETE`, never assumed away.
+- Scale now matches the snapshot upload cap (200 files / 768 KiB), with per-file
+  and total byte bounds, a function cap, a node cap and a work cap.
+
+Still NOT resolved (honest limits): dynamic dispatch/property calls on local
+objects, method calls on classes, package imports (never resolved — no
+`node_modules` reading), conditional flows, aliasing, and any language other
+than JS/TS. A resolved call path is a review candidate, not proof of
+exploitation.
+
+## Cooperative yielding (P1-5 follow-up)
+
+The scan loop is synchronous lexical matching, so each event-loop slice is
+bounded by policy: `sastShouldYield(filesScanned, sliceElapsedMs)` yields when
+**either** 8 files (`SAST_YIELD_EVERY_FILES`) or 12 ms of wall time
+(`SAST_YIELD_BUDGET_MS`) have elapsed in the current slice. Previously only the
+file count mattered, so a snapshot of a few 256 KiB files could hold the loop
+for hundreds of milliseconds.
+
+- The slice clock (`sliceClock`, default `Date.now`) is deliberately separate
+  from the deadline clock (`now`), so a test that fakes time cannot silently
+  disable yielding.
+- Yielding changes scheduling only: the same snapshot and rules produce the same
+  findings, summaries and ordering (asserted in `apps/api/test/sastYielding.test.ts`).
+- This is not a fix for CPU-bound work in the process, and no latency number is
+  claimed: moving the engine out of the API process is **P1-8**
+  (NOT_IMPLEMENTED — needs a deployment/topology decision).

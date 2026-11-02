@@ -49,9 +49,14 @@ export function createDatasetRoutes(deps: DatasetRouteDeps): Route[] {
         else if (kind === 'dast') rules = await dataset.dastPacks();
         else rules = await dataset.scaPacks();
         const pack = await dataset.packMetadata(kind);
+        // Explicit integration-contract verdict for this family: the response
+        // states which layout/schema version was accepted, so a caller never has
+        // to infer compatibility from an empty rule list.
+        const contract = (await dataset.contract()).families[kind];
         // Return bounded summary (no regex source truncation, but limited fields)
         const list = (rules as any[]).slice(0, 50).map(r => ({ id: r.id, title: r.title, severity: r.severity, category: r.category }));
-        sendSuccess(res, ctx, { kind, count: (rules as any[]).length, ...(pack === undefined ? {} : { pack }), rules: list });
+        sendSuccess(res, ctx, { kind, count: (rules as any[]).length, contract,
+          ...(pack === undefined ? {} : { pack }), rules: list });
       },
     },
     {

@@ -880,6 +880,8 @@ describe('SAST scans: the real engine over HTTP', () => {
       const detail = payload.data as { scan: ScanDetailResponse['scan'] };
       expect(Object.keys(payload.data as Record<string, unknown>)).toEqual(['scan']);
       expect(Object.keys(detail.scan).sort()).toEqual([
+        // `attempt` is the durable execution counter (P1-3 retry visibility).
+        'attempt',
         'completedAt',
         'createdAt',
         'findings',

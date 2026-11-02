@@ -279,3 +279,50 @@ describe('Security scans section', () => {
     expect(await screen.findByTestId('scan-result')).toHaveTextContent('Findings: 2');
   });
 });
+
+describe('Scan cancellation (P1-4 UI)', () => {
+  test('a QUEUED or RUNNING scan offers an explicit cancel action and reports server truth', async () => {
+    const list = [
+      scan({ id: 'scan_00000000-0000-4000-8000-000000000002', status: 'RUNNING', scanType: 'SCA',
+        startedAt: '2026-09-28T10:01:00.000Z', updatedAt: '2026-09-28T10:01:00.000Z' }),
+      scan({ id: 'scan_00000000-0000-4000-8000-000000000001', scanType: 'SAST' }),
+    ];
+    const cancelled: ScanResponse = { scan: { ...list[1]!, status: 'FAILED',
+      startedAt: '2026-09-28T10:01:30.000Z', completedAt: '2026-09-28T10:01:30.000Z',
+      failureCode: 'SCAN_CANCELLED', failureMessage: 'The scan was cancelled before it started.' } };
+    const cancelScan = vi.fn(async () => cancelled);
+    const getScans = vi.fn()
+      .mockResolvedValueOnce(scansBody(list))
+      .mockResolvedValue(scansBody([{ ...cancelled.scan }]));
+    await renderProjectAt(signedInClient({ getScans, cancelScan }));
+    const buttons = await screen.findAllByTestId('cancel-scan');
+    expect(buttons).toHaveLength(2);
+    // "Stop scan" is the in-flight wording; "Cancel before start" the queued one.
+    expect(buttons[0]?.textContent).toBe('Stop scan');
+    expect(buttons[1]?.textContent).toBe('Cancel before start');
+
+    await userEvent.click(buttons[1]!);
+    await waitFor(() => {
+      expect(cancelScan).toHaveBeenCalledWith(
+        'prj_00000000-0000-4000-8000-0000000000aa',
+        'scan_00000000-0000-4000-8000-000000000001',
+      );
+    });
+    // The UI never invents the outcome: the reloaded server record is shown.
+    expect(await screen.findByText(/The scan was cancelled before it started\./)).toBeInTheDocument();
+  });
+
+  test('a completed scan has no cancel action at all', async () => {
+    const completed = scan({ status: 'COMPLETED', scanType: 'SAST',
+      startedAt: '2026-09-28T10:01:00.000Z', completedAt: '2026-09-28T10:01:05.000Z',
+      updatedAt: '2026-09-28T10:01:05.000Z',
+      resultSummary: {
+        engine: 'sast', findingsTotal: 0, filesScanned: 1, filesSkipped: 0,
+        parserErrors: 0, rulesEvaluated: 0, partial: false,
+      } as never });
+    const getScans = vi.fn(async () => scansBody([completed]));
+    await renderProjectAt(signedInClient({ getScans }));
+    await screen.findAllByTestId('scan-item');
+    expect(screen.queryByTestId('cancel-scan')).toBeNull();
+  });
+});

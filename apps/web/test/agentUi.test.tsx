@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
-import type { AgentAssessment, Assessment, CurrentUserResponse, EngagementResponse, Project } from '@drobon/shared';
+import type { AgentAssessment, AgentCapabilitiesResponse, Assessment, CurrentUserResponse, EngagementResponse, Project } from '@drobon/shared';
 import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
 const PROJECT = 'prj_00000000-0000-4000-8000-0000000000aa';
@@ -31,6 +31,23 @@ const plan: AgentAssessment = {
     explanation: 'Only a same-file observation.', prerequisites: 'Verify reachability.', impact: 'Unknown.', remediation: 'Review manually.' }],
   limitations: ['No AI model.', 'Not exploit validation.'],
 };
+const capabilityReport: AgentCapabilitiesResponse = {
+  assessmentId: ASSESSMENT,
+  capabilities: {
+    generatedAt: '2026-10-31T00:00:00.000Z',
+    roles: [
+      { id: 'MASTER', title: 'Coordinator', responsibility: 'Owns the bounded plan.', tools: ['plan.read'], evidenceRequired: ['scan.record'],
+        maxSteps: 8, integrated: true, note: 'Deterministic only; no model reasoning.' },
+      { id: 'VALIDATION', title: 'Independent validation', responsibility: 'Re-checks evidence.', tools: ['evidence.read'], evidenceRequired: ['finding.evidence'],
+        maxSteps: 6, integrated: false, note: 'Recorded as NOT_INTEGRATED until a runtime exists.' },
+    ],
+    networkRoles: ['DAST'],
+    model: { state: 'NONE', provider: 'NONE', note: 'No local model is configured on this server.' },
+    storage: { code: 'STORAGE_BLOCKED', issues: ['legacy-same-uid-writer'], note: 'Writer isolation is not enforceable.' },
+    execution: { enabled: false, note: 'Execution is disabled outside an isolated disposable store.' },
+    limitations: ['No model reasoning is available.', 'Verdicts come from scanners only.'],
+  },
+};
 function clientWith(selected: Assessment = assessment) {
   return stubClient({
     getMe: vi.fn(async (): Promise<CurrentUserResponse> => ({ user: { ...TEST_USER, userType: 'SECURITY_PROFESSIONAL' } })),
@@ -38,6 +55,7 @@ function clientWith(selected: Assessment = assessment) {
     getAssessments: vi.fn(async () => ({ assessments: [selected] })),
     getAssessment: vi.fn(async () => ({ assessment: selected, progress })),
     getAgentAssessment: vi.fn(async () => ({ agent: plan })),
+    getAgentCapabilities: vi.fn(async () => capabilityReport),
     executeAgent: vi.fn(async () => ({ agent: { ...plan, state: 'ACTIVE' as const, tasks: plan.tasks.map((task) => task.scanner === 'SAST' ? { ...task, state: 'QUEUED' as const, scanId: SCAN } : task) },
       actions: [{ scanner: 'SAST' as const, result: 'CREATED' as const, reason: 'Queued through existing quota.' }] })),
   });
@@ -55,6 +73,10 @@ describe('assessment-scoped deterministic agent UI', () => {
     expect(screen.getByTestId('agent-tasks')).toHaveTextContent('SECRETS: BLOCKED');
     expect(screen.getByTestId('agent-reviews')).toHaveTextContent('INCONCLUSIVE');
     expect(screen.getByTestId('agent-paths')).toHaveTextContent('THEORETICAL');
+    expect(screen.getByTestId('agent-capabilities')).toHaveTextContent('NONE');
+    expect(screen.getByTestId('agent-capabilities')).toHaveTextContent('DISABLED');
+    expect(screen.getByTestId('agent-capability-roles')).toHaveTextContent('VALIDATION — integration: NO');
+    expect(screen.getByTestId('agent-capability-storage-issues')).toHaveTextContent('legacy-same-uid-writer');
     expect(screen.getByTestId('agent-execute')).toBeDisabled();
     const scanCallsBefore = vi.mocked(client.getScans).mock.calls.length;
     await user.click(screen.getByTestId('agent-confirm'));
@@ -136,5 +158,18 @@ describe('assessment-scoped deterministic agent UI', () => {
     expect(screen.getByTestId('engagement-controls')).toHaveTextContent('in-flight request cannot be recalled');
     await user.click(screen.getByTestId('engagement-withdraw-confirm'));
     await waitFor(() => expect(client.withdrawEngagement).toHaveBeenCalledWith(PROJECT, ASSESSMENT, ENGAGEMENT));
+  });
+});
+
+describe('agent capability report', () => {
+  test('a failed capability report never hides the plan and is reported as unknown', async () => {
+    const user = userEvent.setup();
+    const client = clientWith();
+    client.getAgentCapabilities = vi.fn(async () => { throw new Error('capabilities unavailable'); });
+    await renderAt(`/projects/${PROJECT}`, client);
+    await user.click(await screen.findByTestId('agent-load'));
+    expect(await screen.findByTestId('agent-content')).toHaveTextContent('Model: NONE');
+    expect(await screen.findByTestId('agent-capability-error')).toHaveTextContent('unknown');
+    expect(screen.queryByTestId('agent-capabilities')).toBeNull();
   });
 });

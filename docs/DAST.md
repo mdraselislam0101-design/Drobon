@@ -13,7 +13,7 @@ The newer AST supplement separately parses inline/direct JavaScript from an alre
 
 ### Opt-in Active Safe and current query limitation
 
-With explicit user consent, `ACTIVE_SAFE` may inspect a bounded number of same-host static links and attempt bounded GET path-marker probes. Even GET requests can have side effects on a target; neither passive nor active mode is guaranteed non-destructive. It is not a browser, authenticated scanner, general fuzzer or exploitability test. The current safety policy **rejects every query-bearing URL**, so query links and query-parameter probes are not sent; such omissions are reported as partial. The current per-point budget selects only the first non-executable reflection marker, not the other catalog entries. Depending on scope, safety checks and request budget, even path probes may not be sent. No target-policy or SSRF restriction is relaxed for active mode.
+With explicit user consent, `ACTIVE_SAFE` may inspect a bounded number of same-host static links, read one JSON API specification from the target's well-known locations, and attempt bounded GET path-marker probes (see **API specification ingestion** below). A deployment may additionally configure ONE static credential header for the whole process (see **Operator-configured authenticated probing** below); Drobon itself still performs no login, keeps no cookie jar and stores no user secret. Even GET requests can have side effects on a target; neither passive nor active mode is guaranteed non-destructive. It is not a browser, a general fuzzer or an exploitability test. The current safety policy **rejects every query-bearing URL**, so query links and query-parameter probes are not sent; such omissions are reported as partial. The current per-point budget selects only the first non-executable reflection marker, not the other catalog entries. Depending on scope, safety checks and request budget, even path probes may not be sent. No target-policy or SSRF restriction is relaxed for active mode.
 
 When suitable Dataset response rules are loaded, passive checks can report observed properties such as the following. With no response rules the result is marked partial; these are not guaranteed built-in checks:
 
@@ -32,9 +32,11 @@ Results are observed facts, not proof of exploitability. Response-based checks c
 
 ## Project target authorization and SSRF defense
 
-**Assessment-linked requests:** Before each outbound request, the current assessment host scope and, when present, engagement path/type/validity are rechecked. A withdrawal before a queued request prevents that request. The check does not verify real-world authorization and cannot recall an in-flight request. By default, unlinked scans and assessments without engagements retain the prior unverified behavior.
+**Assessment-linked requests:** Before each outbound request, the current assessment host scope and, when present, engagement path/type/validity are rechecked. A withdrawal before a queued request prevents that request. The check does not verify real-world authorization and cannot recall an in-flight request.
 
-**Optional stricter deployments:** Set `DAST_REQUIRE_ENGAGEMENT=true` before starting the API to require an active assessment with a currently valid, owner-attested engagement matching the host, path and DAST scan type. New unlinked/undeclared scans are refused before scan DNS preflight and quota; the built-in engine also rechecks existing queued jobs and each request. In strict mode, saving a target validates syntax and rejects unsafe literal IPs locally without DNS; public-address resolution is deferred until an authorized scan preflight, before quota, and repeated before transport. A saved target is therefore not proof that DNS is safe or even resolvable. Compatibility mode retains DNS validation at target save. Default `false` preserves legacy workflows; invalid flag values refuse startup. Existing reports remain readable. This gate does not validate signatures, independently prove permission, recall an in-flight request, cover custom injected engines, or replace egress controls.
+**Default (secure) posture — changed 2026-11-02:** engagement authorization is now required **by default** (`DAST_REQUIRE_ENGAGEMENT` defaults to `true`). New DAST scans must be linked to an active assessment holding a currently valid, owner-attested engagement matching the host, path and DAST scan type; unlinked scans are refused before DNS preflight and before quota. A deployment that intentionally keeps the legacy unlinked flow must set `DAST_REQUIRE_ENGAGEMENT=false`; the API then logs a startup warning that DAST authorization is disabled. Invalid values still refuse startup. Treat `false` as a legacy/degraded mode, not a supported default.
+
+**Strict-mode mechanics (now the default):** With `DAST_REQUIRE_ENGAGEMENT=true` the API requires an active assessment with a currently valid, owner-attested engagement matching the host, path and DAST scan type. New unlinked/undeclared scans are refused before scan DNS preflight and quota; the built-in engine also rechecks existing queued jobs and each request. In strict mode, saving a target validates syntax and rejects unsafe literal IPs locally without DNS; public-address resolution is deferred until an authorized scan preflight, before quota, and repeated before transport. A saved target is therefore not proof that DNS is safe or even resolvable. Compatibility mode (`DAST_REQUIRE_ENGAGEMENT=false`) retains DNS validation at target save. Invalid flag values refuse startup. Existing reports remain readable. This gate does not validate signatures, independently prove permission, recall an in-flight request, cover custom injected engines, or replace egress controls.
 
 
 Targets are stored on the caller-owned project—not accepted as scan request fields. The authenticated project owner may set or remove one URL:
@@ -69,8 +71,85 @@ The Pentester workspace (Pump 20) is a classification/presentation over this sam
 
 ## Not implemented
 
-Browser/DOM analysis, JavaScript execution, authenticated crawling, unrestricted spidering, form submission, broad fuzzing, active exploit checks, port scanning, TLS-certificate grading, vulnerability-database matching, CVSS scoring, scheduling, and out-of-process DAST workers are **NOT_IMPLEMENTED**. The default passive mode does not discover links or inject markers; the limited opt-in active-safe behavior and its query limitation are described above. Pump 12 reports can include the existing bounded DAST result and findings; they do not add DAST coverage. SCA vulnerability data remains unavailable without a loaded provider dataset; this pump adds no security dataset or import.
+Browser/DOM analysis, JavaScript execution, login/session automation (no form login, cookie jar, CSRF/MFA handling, refresh-token flow or credential vault exists), per-user credential storage, multi-role authenticated crawling, unrestricted spidering, form submission, broad fuzzing, active exploit checks, port scanning, TLS-certificate grading, vulnerability-database matching, CVSS scoring, scheduling, and out-of-process DAST workers are **NOT_IMPLEMENTED**. The one authentication capability that DOES exist is the operator-configured static header described below — a whole-process credential, not a session. The default passive mode does not discover links or inject markers; the limited opt-in active-safe behavior and its query limitation are described above. Pump 12 reports can include the existing bounded DAST result and findings; they do not add DAST coverage. SCA vulnerability data remains unavailable without a loaded provider dataset; this pump adds no security dataset or import.
 
 ## Verification boundary
 
 Unit and API tests use synthetic resolver/transport fixtures and controlled local loopback HTTP fixtures only. The API lifecycle/restart test uses a synthetic transport response; it proves API integration and persistence, not a real public-target scan. Production loopback/private-address rejection is not relaxed for tests. See `docs/TESTING.md` and `apps/api/test/dastHttp.test.ts`.
+
+## API specification ingestion (P2-12, active mode only)
+
+Specification discovery is an **explicit per-scan opt-in**
+(`dastOpenApiDiscovery: true` on scan creation, shown as a checkbox in the
+project UI that stays disabled until active consent is given). It requires
+`dastMode: ACTIVE_SAFE` with `dastActiveConsent: true`, is refused for other
+scan types and for the agent path, and is part of the idempotency identity. Off
+by default, so an ordinary active scan sends exactly the requests it always did.
+
+An opted-in active-safe scan checks at most two of the well-known JSON specification
+locations (`/openapi.json`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, in that
+order) with the same authorization, target policy, throttle, deadline and
+request budget as every other probe. Discovery never starves the evidence
+phases: it may only use requests that still leave two for crawl/injection work,
+so a small `maxRequests` budget performs no discovery at all.
+
+What a specification can and cannot do here:
+
+- **JSON only.** No YAML parser is bundled in this workspace (zero runtime
+  dependencies), so a YAML document is reported as `UNSUPPORTED` and the scan is
+  marked partial. It is never half-parsed.
+- **Only query-free `GET` operations** become candidates. The target policy
+  rejects query-bearing URLs, so an operation with a required query parameter is
+  counted as skipped rather than probed with its mandatory input removed.
+- **Path parameters are filled only from values the specification itself
+  states** (`example`, schema `example`/`default`/`enum[0]`, `default`) and only
+  when they match `^[A-Za-z0-9._~-]{1,32}$`. An operation whose parameter has no
+  stated value is skipped — this engine does not invent identifiers.
+- **Hostile paths are refused** at parse time: traversal segments, `//`,
+  percent-encodings, control characters, whitespace and query/fragment markers.
+- **Bounded and deterministic**: at most 500 paths inspected, at most 50
+  endpoints selected, sorted iteration, hard edge caps. Endpoints beyond the cap
+  are disclosed in the result note instead of being silently dropped.
+- Every resulting URL is still re-validated by the target policy and the
+  authorization seam **before** transport, exactly like a crawled link.
+- The specification is a *hint list*, never an authorization: an in-scope path
+  from a document does not widen scope, bypass engagement checks or raise the
+  request budget. Findings derived from those probes are ordinary observations,
+  not proof of exploitability.
+
+Result fields (active results only, all optional): `openApiStatus`
+(`ANALYZED` | `NOT_FOUND` | `UNSUPPORTED` | `INVALID_INPUT`), `openApiSpecProbes`
+(0–2), `openApiEndpoints` (endpoints really probed), `openApiSkipped` (documented
+operations that needed input the document did not state). `NOT_FOUND` means "no
+JSON document at the checked locations" — it is **not** evidence that the API is
+undocumented. `crawledCount` and `injectedCount` now report what the crawl and
+injection phases really sent. The report markdown and the project UI state these
+counts instead of implying a complete crawl.
+
+## Operator-configured authenticated probing (P2-12, second half)
+
+An active-safe scan can reach an authenticated surface **only** when the
+deployment itself supplies one static credential header. There is no per-user,
+per-project or per-scan credential: Drobon never receives, stores, rotates or
+displays a user secret.
+
+| Aspect | Behaviour |
+|---|---|
+| Configuration | `DAST_AUTH_HEADER_NAME` + `DAST_AUTH_HEADER_VALUE`, read once at startup by `config.ts` (the only module that reads `process.env`). Both or neither: half a credential, a header the client owns (`host`, `connection`, `content-length`, `transfer-encoding`, `upgrade`, `te`, `trailer`, `keep-alive`, `expect`), a non-token header name, a value containing a control character, or an empty/oversized (>4096) value is a **startup error** — never a silent downgrade. |
+| Lifetime | Memory only, inside the engine closure. It is never written to a scan record, an observation, a finding, a report, a metric or a log line. |
+| Scope | Attached to the probes of the same authorized target the scan was created for. The transport never follows redirects; every redirect hop is re-resolved and re-authorized by the target policy, so the header cannot ride along to another host. Probes stay `GET`-only. |
+| Disclosure | Results carry `authMode: 'NONE' | 'HEADER'` and nothing else — not the header name, not the value. The shared `isDastResult` guard accepts `authMode` only on `ACTIVE_SAFE` results, so a passive result can never claim authenticated probing. The project UI prints the mode and states that the name and value are never stored, logged or reported. |
+| Default | `NONE`. A deployment that sets nothing behaves exactly as before. |
+
+Tests (`apps/api/test/dastAuth.test.ts`, `apps/api/test/config.test.ts`,
+`packages/shared/test/dast.test.ts`, `apps/web/test/dastUi.test.tsx`) prove: the
+header reaches every probe when configured; nothing reaches any probe when it is
+not; the credential string never appears in a serialized result, observation or
+finding; a passive result cannot declare `authMode`; and a misconfigured pair
+fails startup without echoing the value.
+
+What is still missing and deliberately not attempted here: form/login
+automation, cookie-jar session handling, refresh flows, CSRF/MFA, per-user
+credential vaults and multi-role scanning. Each needs a credential-storage and
+crypto design plus an explicit operator decision; a snapshot-only, in-memory
+header is the largest capability that can be added without one.

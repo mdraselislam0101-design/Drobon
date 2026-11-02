@@ -84,6 +84,8 @@ describe('scan vocabulary', () => {
       // Bounded active-DAST consent gates (apps/api/src/scans/dast/activeEngine.ts).
       'DAST_ACTIVE_CONSENT_REQUIRED',
       'DAST_ACTIVE_NOT_ALLOWED',
+      // P1-4: user-requested stop. Terminal, safe to expose, no internals.
+      'SCAN_CANCELLED',
     ]);
   });
 
@@ -367,7 +369,10 @@ describe('findings (Pump 8)', () => {
     expect(isFinding({ ...finding, scanner: 'SCA', astFlow: flow })).toBe(false);
     expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, source: { file: '../secret.ts', line: 1, column: 1 } } })).toBe(false);
     expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, source: { file: 'src/x.ts', line: 0, column: 1 } } })).toBe(false);
-    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, via: Array(5).fill(flow.source) } })).toBe(false);
+    // The cross-file trace is bounded at 6 steps (P2-13): six is accepted,
+    // seven is rejected — the bound stays enforced, it is simply deeper.
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, via: Array(6).fill(flow.source) } })).toBe(true);
+    expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, via: Array(7).fill(flow.source) } })).toBe(false);
     expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, attribution: 'EXACT_PATTERN' } })).toBe(false);
     expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, mode: { toString: null, valueOf: null } } })).toBe(false);
     expect(isFinding({ ...finding, scanner: 'SAST', astFlow: { ...flow, mode: 'STRUCTURED' } })).toBe(false);
@@ -490,13 +495,24 @@ describe('findings (Pump 8)', () => {
       families: [{ family: 'javascript', reporters: { command: 'DG-SAST-001' } }],
       files: [{ path: 'src/app.js', family: 'javascript', status: 'OK' }],
       unstructuredFiles: 0,
-      projectFlow: { status: 'RAN', examinedFiles: 1, unresolvedImports: 0, findings: 0 },
+      projectFlow: { status: 'RAN', examinedFiles: 1, unresolvedImports: 0, findings: 0, callEdges: 2, rounds: 2 },
     };
     const summary = { findingsTotal: 0, filesScanned: 1, partial: true, astFlowsFound: 0,
       astParser: { parsedFiles: 1, incompleteFiles: 0, filesWithoutRules: 0, findings: 0 }, astCoverage: coverage };
     expect(isScanResultSummary(summary)).toBe(true);
     expect(isScanResultSummary({ ...summary, partial: false })).toBe(false);
     expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, rules: { ...coverage.rules, sha256: 'bad' } } })).toBe(false);
+    // Fixed-point disclosure is bounded and cannot be faked.
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, projectFlow: { ...coverage.projectFlow, rounds: 13 } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, projectFlow: { ...coverage.projectFlow, callEdges: -1 } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, projectFlow: { ...coverage.projectFlow, rounds: 0 } } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, projectFlow: { status: 'NOT_RUN', examinedFiles: 0, unresolvedImports: 0, findings: 0, callEdges: 0, rounds: 0 } } })).toBe(true);
+    // The baseline disclosure is closed and self-consistent.
+    expect(isScanResultSummary({ ...summary, secretsBaseline: { status: 'ANALYZED', entries: 2, applied: 1, invalid: 0 } })).toBe(true);
+    expect(isScanResultSummary({ ...summary, secretsBaseline: { status: 'ANALYZED', entries: 0, applied: 1, invalid: 0 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, secretsBaseline: { status: 'ABSENT', entries: 1, applied: 0, invalid: 0 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, secretsBaseline: { status: 'INVALID', entries: 1, applied: 0, invalid: 0 } })).toBe(false);
+    expect(isScanResultSummary({ ...summary, secretsBaseline: { status: 'UNKNOWN', entries: 0, applied: 0, invalid: 0 } })).toBe(false);
     expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, rules: { ...coverage.rules, source: { toString: null, valueOf: null } } } })).toBe(false);
     expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, files: [{ ...coverage.files[0], path: '../secret.js' }] } })).toBe(false);
     expect(isScanResultSummary({ ...summary, astCoverage: { ...coverage, files: [...coverage.files, ...coverage.files] } })).toBe(false);

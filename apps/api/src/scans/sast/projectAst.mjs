@@ -7,16 +7,21 @@
 import path from 'node:path';
 import ts from 'typescript';
 
-const MAX_FILES = 64;
-const MAX_BYTES = 393_216;
+// Bounds are aligned with the snapshot upload caps (200 files / 768 KiB total),
+// so a project is no longer silently cut at 64 files.
+const MAX_FILES = 200;
+const MAX_BYTES = 786_432;
 const MAX_FILE_BYTES = 131_072;
-const MAX_FUNCTIONS = 96;
-const MAX_NODES = 30_000;
-const MAX_WORK = 150_000;
+const MAX_FUNCTIONS = 400;
+const MAX_NODES = 60_000;
+const MAX_WORK = 300_000;
 const MAX_DEPTH = 64;
 const MAX_TOKENS = 16;
 const MAX_SINKS = 200;
-const ITERATIONS = 4;
+/** Propagation continues to a FIXED POINT (summary equality), never past this. */
+const MAX_ROUNDS = 12;
+/** Steps recorded in a finding's cross-file trace. */
+const MAX_TRACE = 6;
 const KINDS = ['command', 'sql', 'html', 'code'];
 const SCRIPT_KINDS = { javascript: ts.ScriptKind.JS, typescript: ts.ScriptKind.TS, jsx: ts.ScriptKind.JSX, tsx: ts.ScriptKind.TSX };
 
@@ -63,7 +68,7 @@ function concrete(module, node) {
 function addVia(value, at) {
   const out = empty();
   for (const [key, origin] of value) {
-    const via = origin.via.some((step) => locKey(step) === locKey(at)) ? origin.via : [...origin.via, at].slice(-4);
+    const via = origin.via.some((step) => locKey(step) === locKey(at)) ? origin.via : [...origin.via, at].slice(-MAX_TRACE);
     out.set(key, { ...origin, via });
   }
   return out;
@@ -77,7 +82,7 @@ function substitute(value, args, callsite, state) {
       for (const step of origin.via) actual = addVia(actual, step);
       combine(out, actual, state);
     } else {
-      combine(out, new Map([[key, { ...origin, via: [...origin.via, callsite].slice(-4) }]]), state);
+      combine(out, new Map([[key, { ...origin, via: [...origin.via, callsite].slice(-MAX_TRACE) }]]), state);
     }
   }
   return out;
@@ -99,6 +104,7 @@ function resolveRelative(from, spec, modules) {
   return possibilities.find((candidate) => modules.has(candidate));
 }
 function isExported(node) { return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true; }
+function isDefaultExported(node) { return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true; }
 
 function prepare(input, state) {
   const modules = new Map();
@@ -121,7 +127,8 @@ function prepare(input, state) {
       if (++state.nodes > MAX_NODES) { state.limited = true; break; }
       ts.forEachChild(node, (child) => { cursor.push(child); });
     }
-    modules.set(file.path, { ...file, source, functions: new Map(), exports: new Map(), imports: new Map() });
+    modules.set(file.path, { ...file, source, functions: new Map(), exports: new Map(), imports: new Map(),
+      namespaces: new Map(), exportStars: [] });
     if (state.work > MAX_WORK || state.nodes > MAX_NODES) break;
   }
   let functionCount = 0;
@@ -131,6 +138,7 @@ function prepare(input, state) {
         if (++functionCount > MAX_FUNCTIONS) { state.limited = true; break; }
         module.functions.set(statement.name.text, { node: statement, module, summary: { returns: empty(), sinks: [] } });
         if (isExported(statement)) module.exports.set(statement.name.text, statement.name.text);
+        if (isDefaultExported(statement)) module.exports.set('default', statement.name.text);
       } else if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (!ts.isIdentifier(declaration.name) || !declaration.initializer || !(ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) continue;
@@ -140,26 +148,64 @@ function prepare(input, state) {
         }
       } else if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
         for (const item of statement.exportClause.elements) module.exports.set(item.name.text, (item.propertyName ?? item.name).text);
+      } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
+        // `export default fn` — an explicit, local, named re-export.
+        module.exports.set('default', statement.expression.text);
       }
     }
     module.top = { node: module.source, module, summary: { returns: empty(), sinks: [] } };
   }
+  const resolveSpecifier = (module, specifier) => {
+    const resolved = resolveRelative(module.path, specifier, modules);
+    if (!resolved && (specifier.startsWith('./') || specifier.startsWith('../'))) {
+      state.unresolvedImports += 1;
+      state.limited = true;
+    }
+    return resolved;
+  };
   for (const module of modules.values()) {
     for (const statement of module.source.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || !statement.importClause?.namedBindings ||
-          !ts.isNamedImports(statement.importClause.namedBindings) || statement.importClause.isTypeOnly) continue;
-      const specifier = statement.moduleSpecifier.text;
-      const resolved = resolveRelative(module.path, specifier, modules);
-      if (!resolved) {
-        if (specifier.startsWith('./') || specifier.startsWith('../')) { state.unresolvedImports += 1; state.limited = true; }
+      // `export * from './x'` re-exports every named export of the target.
+      if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier) &&
+          statement.exportClause === undefined && !statement.isTypeOnly) {
+        const resolved = resolveSpecifier(module, statement.moduleSpecifier.text);
+        if (resolved !== undefined && resolved !== module.path) module.exportStars.push(resolved);
         continue;
       }
-      for (const item of statement.importClause.namedBindings.elements) {
-        if (!item.isTypeOnly) module.imports.set(item.name.text, { file: resolved, exported: (item.propertyName ?? item.name).text });
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
+          statement.importClause === undefined || statement.importClause.isTypeOnly) continue;
+      const resolved = resolveSpecifier(module, statement.moduleSpecifier.text);
+      if (resolved === undefined) continue;
+      const bindings = statement.importClause.namedBindings;
+      if (statement.importClause.name !== undefined) {
+        // `import fn from './m'` — resolves only to that module's default export.
+        module.imports.set(statement.importClause.name.text, { file: resolved, exported: 'default' });
+      }
+      if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        for (const item of bindings.elements) {
+          if (!item.isTypeOnly) module.imports.set(item.name.text, { file: resolved, exported: (item.propertyName ?? item.name).text });
+        }
+      } else if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+        // `import * as ns from './m'` — recorded so `ns.fn()` can resolve.
+        module.namespaces.set(bindings.name.text, resolved);
       }
     }
   }
   return modules;
+}
+/** Named export lookup that follows `export * from './x'` chains (cycle-safe). */
+function lookupExport(module, exported, modules, seen = new Set()) {
+  if (seen.has(module.path)) return undefined;
+  seen.add(module.path);
+  const local = module.exports.get(exported);
+  if (local !== undefined) return { module, local };
+  for (const starPath of module.exportStars) {
+    const target = modules.get(starPath);
+    if (target === undefined) continue;
+    const found = lookupExport(target, exported, modules, seen);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 function resolveFunction(module, name, modules) {
   if (module.functions.has(name)) return module.functions.get(name);
@@ -167,8 +213,19 @@ function resolveFunction(module, name, modules) {
   if (!reference) return undefined;
   const target = modules.get(reference.file);
   if (!target) return undefined;
-  const local = target.exports.get(reference.exported);
-  return local ? target.functions.get(local) : undefined;
+  const found = lookupExport(target, reference.exported, modules);
+  return found === undefined ? undefined : found.module.functions.get(found.local);
+}
+/** `ns.fn()` where `ns` is a namespace import of a relative module. */
+function resolveNamespacedCall(module, chain, modules) {
+  const parts = chain.split('.');
+  if (parts.length !== 2) return undefined;
+  const file = module.namespaces.get(parts[0]);
+  if (file === undefined) return undefined;
+  const target = modules.get(file);
+  if (target === undefined) return undefined;
+  const found = lookupExport(target, parts[1], modules);
+  return found === undefined ? undefined : found.module.functions.get(found.local);
 }
 function recordSink(ctx, kind, sink, value) {
   if (!value.size) return;
@@ -210,8 +267,10 @@ function evaluate(node, ctx, depth = 0) {
     }
     if (sourceMatches(callee, ctx.module.profile.sourceCalls)) return concrete(ctx.module, node.expression);
     const target = ts.isIdentifier(node.expression) && !ctx.env.has(node.expression.text)
-      ? resolveFunction(ctx.module, node.expression.text, ctx.modules) : undefined;
+      ? resolveFunction(ctx.module, node.expression.text, ctx.modules)
+      : (callee !== '' ? resolveNamespacedCall(ctx.module, callee, ctx.modules) : undefined);
     if (target) {
+      ctx.state.callEdges += 1;
       const at = location(ctx.module, node.expression);
       for (const item of target.summary.sinks) recordSink(ctx, item.kind, item.sink, substitute(item.value, args, at, ctx.state));
       return substitute(target.summary.returns, args, at, ctx.state);
@@ -267,18 +326,38 @@ function summarize(fn, modules, state) {
   return { returns, sinks: [...unique.values()] };
 }
 
+/** Canonical form of a summary, used only for fixed-point comparison. */
+function summaryKey(summary) {
+  const sinks = summary.sinks.map((item) => `${item.kind}|${locKey(item.sink)}|${item.value.size}`).join(';');
+  const origins = [];
+  for (const value of [summary.returns, ...summary.sinks.map((item) => item.value)]) {
+    for (const [key, origin] of value) origins.push(`${key}=${origin.source === undefined ? '' : locKey(origin.source)}/${origin.via.map(locKey).join('>')}`);
+  }
+  origins.sort();
+  return `${sinks}#${origins.join(';')}`;
+}
+
 export function analyzeProjectAst(input) {
-  const state = { work: 0, nodes: 0, limited: false, unresolvedImports: 0 };
+  const state = { work: 0, nodes: 0, limited: false, unresolvedImports: 0, callEdges: 0, rounds: 0, converged: false };
   let modules;
   try {
     modules = prepare(input, state);
-    // Fixed-point iterations bound call-chain depth; this is not recursion or
-    // a promise of complete call graph resolution.
-    for (let iteration = 0; iteration < ITERATIONS && state.work <= MAX_WORK; iteration += 1) {
+    // Propagation continues until the summaries stop changing (a real fixed
+    // point for the bounded call graph), capped by MAX_ROUNDS and the shared
+    // work budget. Not converging is reported, never assumed away.
+    let previous = undefined;
+    for (let round = 0; round < MAX_ROUNDS && state.work <= MAX_WORK; round += 1) {
+      state.rounds = round + 1;
+      state.callEdges = 0;
       for (const module of modules.values()) {
         for (const fn of module.functions.values()) fn.summary = summarize(fn, modules, state);
         module.top.summary = summarize(module.top, modules, state);
       }
+      const current = [...modules.values()].map((module) =>
+        `${module.path}::top=${summaryKey(module.top.summary)}|${[...module.functions].map(([name, fn]) => `${name}=${summaryKey(fn.summary)}`).join(',')}`).join('\n');
+      if (current === previous) { state.converged = true; break; }
+      previous = current;
+      if (state.work > MAX_WORK) break;
     }
     const candidates = [];
     const seen = new Set();
@@ -300,8 +379,16 @@ export function analyzeProjectAst(input) {
         }
       }
     }
-    return { status: state.limited ? 'LIMIT' : 'OK', examinedFiles: modules.size, unresolvedImports: state.unresolvedImports, candidates };
+    return {
+      status: state.limited || !state.converged ? 'LIMIT' : 'OK',
+      examinedFiles: modules.size,
+      unresolvedImports: state.unresolvedImports,
+      callEdges: state.callEdges,
+      rounds: state.rounds,
+      converged: state.converged,
+      candidates,
+    };
   } catch {
-    return { status: 'ERROR', examinedFiles: 0, unresolvedImports: 0, candidates: [] };
+    return { status: 'ERROR', examinedFiles: 0, unresolvedImports: 0, callEdges: 0, rounds: 0, converged: false, candidates: [] };
   }
 }

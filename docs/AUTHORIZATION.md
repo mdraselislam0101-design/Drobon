@@ -118,10 +118,12 @@ not independent proof of third-party authorization. A target-specific
 `USER_DECLARED` statement is timestamped owner metadata and stays unverified;
 ordinary resource access and DAST scan creation continue to use the existing
 role, project ownership, plan, quota, rate-limit and target-safety checks.
-For deployments opting in to `DAST_REQUIRE_ENGAGEMENT=true`, the built-in
-DAST path additionally requires a current assessment-linked, scoped engagement
-at creation and execution. This remains an owner attestation, not independent
-proof of permission; without the flag legacy unlinked DAST remains unverified.
+Since 2026-11-02 the built-in DAST path requires a current
+assessment-linked, scoped engagement at creation and execution by default
+(`DAST_REQUIRE_ENGAGEMENT` defaults to `true`). An explicit
+`DAST_REQUIRE_ENGAGEMENT=false` restores the legacy unlinked flow and is
+reported as a startup warning. In both modes the engagement remains an owner
+attestation, not independent proof of permission.
 
 Plans/entitlements exist since Pump 4 but are a SEPARATE model — see
 `docs/SUBSCRIPTIONS.md`. `AccountRole` and `UserType` are never

@@ -45,6 +45,12 @@ export interface ScanProcessor {
   kick(): void;
   /** Signal the one owned in-process agent attempt after cancellation commits. */
   abortAgentJob(scanId: string): void;
+  /**
+   * Signal an in-flight attempt for ANY scan type. The durable cancellation
+   * intent is written by the store first; this only stops the work, and the
+   * terminal transition becomes FAILED/`SCAN_CANCELLED` because of that intent.
+   */
+  cancelScan(scanId: string): void;
   /** Signal only attempts bound to the exact withdrawn authorization. */
   abortAgentEngagement(ownerId: string, projectId: string, assessmentId: string, engagementId: string): void;
   /** Stop the periodic sweep (in-flight work still settles). */
@@ -63,12 +69,79 @@ export interface ScanProcessorOptions {
   intervalMs?: number;
   /** Serialize Agent completion with its exact engagement's withdrawal. */
   finalizeAgent?: (scan: ScanRecord, complete: () => Promise<ScanRecord | undefined>) => Promise<ScanRecord | undefined>;
+  /** Total attempts per scan (1 disables retry). Default 2. */
+  maxAttempts?: number;
+  /** Base backoff for attempt N: base * 2^(N-1). Default 5s. */
+  retryBaseDelayMs?: number;
+  /** Clock for the backoff instant (tests). */
+  now?: () => number;
+  /**
+   * How many scans one drain may execute at the same time (P1-9).
+   *
+   * Default 1 — the historical, fully serialized behaviour. Values above 1
+   * run independent scans in parallel lanes; the durable store still serializes
+   * every state transition, so a claim can never hand the same scan to two
+   * lanes, and cancellation/shutdown semantics are unchanged.
+   */
+  concurrency?: number;
 }
+
+/**
+ * Which failure codes are worth another attempt.
+ *
+ * Only a transient ENGINE crash qualifies: the process failed to run the
+ * scanner, so a second run can plausibly succeed. Everything else is a
+ * deterministic statement about the input, the configured target, the limits
+ * or a deadline — retrying those would burn quota to reproduce the same answer.
+ */
+export function isRetryableFailure(code: string | undefined): boolean {
+  return code === 'SCAN_ENGINE_ERROR';
+}
+
+/**
+ * Hard per-engine bound enforced by the processor. Every engine's OWN deadline
+ * must be strictly smaller than this so it can return a deterministic
+ * `*_TIMEOUT` outcome instead of being aborted mid-flight (see
+ * `test/engineDeadlineMargin.test.ts`).
+ */
+export const SCAN_ENGINE_TIMEOUT_MS = 30_000;
 
 /** Safety bound: one drain call never spins forever. */
 const MAX_DRAIN_ITERATIONS = 1000;
 
+/** Upper bound for parallel scan lanes in one drain (operator-tunable below it). */
+export const MAX_SCAN_CONCURRENCY = 8;
+
 export function createScanProcessor(options: ScanProcessorOptions): ScanProcessor {
+  const maxAttempts = Math.min(5, Math.max(1, options.maxAttempts ?? 2));
+  const retryBaseDelayMs = Math.max(100, options.retryBaseDelayMs ?? 5_000);
+  const clock = options.now ?? (() => Date.now());
+  // Lanes are a throughput knob, never an unbounded fan-out.
+  const concurrency = Math.min(MAX_SCAN_CONCURRENCY, Math.max(1, options.concurrency ?? 1));
+
+  /**
+   * Requeue a failed attempt with exponential backoff, or answer `false` when
+   * the scan must stay FAILED (attempts exhausted / non-retryable outcome).
+   */
+  const scheduleRetry = async (scan: ScanRecord, failureCode: string | undefined): Promise<boolean> => {
+    // Agent jobs are never retried: their authorization, engagement and
+    // Dataset/source digests were checked for THIS attempt. A withdrawn or
+    // expired authorization must fail closed, not re-run later.
+    if (scan.agent !== undefined) return false;
+    // Never re-queue while shutting down: the runtime is releasing its lease.
+    if (closed) return false;
+    if (!isRetryableFailure(failureCode)) return false;
+    const attempt = scan.attempt ?? 1;
+    if (attempt >= maxAttempts) return false;
+    const delay = retryBaseDelayMs * 2 ** (attempt - 1);
+    const retryAt = new Date(clock() + delay).toISOString();
+    const requeued = await store.requeueScan(scan.id, retryAt);
+    if (requeued === undefined) return false;
+    logger.warn('Scan requeued for retry', {
+      scanId: requeued.id, projectId: requeued.projectId, attempt: requeued.attempt, retryAt,
+    });
+    return true;
+  };
   const { store, engines, logger } = options;
   const intervalMs = options.intervalMs ?? 5000;
   let started = false;
@@ -119,18 +192,28 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       return true;
     }
     const controller = new AbortController();
-    // Register immediately after claim, before any asynchronous recheck.
-    if (scan.agent !== undefined) activeAgents.set(scan.id, { scan, controller });
+    // Register immediately after claim, before any asynchronous recheck, so a
+    // cancellation that lands during the recheck can still signal this attempt.
+    activeAgents.set(scan.id, { scan, controller });
     // Defensive per-engine bound (mirrors the Pump 1 runner's timeout
     // posture): a hung engine fails the scan deterministically instead
     // of blocking the sweep. The attempt may still be running in the
     // background — the durable store already moved on, exactly like the
     // worker runner's documented at-most-once caveat.
-    const engineTimeoutMs = 30_000;
+    const engineTimeoutMs = SCAN_ENGINE_TIMEOUT_MS;
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, engineTimeoutMs);
     timer.unref?.();
     try {
+      if (scan.agent === undefined) {
+        // A user cancellation can commit between claim and registration.
+        const latest = await store.findByProjectAndId(scan.projectId, scan.id);
+        if (latest === undefined || latest.cancelRequestedAt !== undefined || controller.signal.aborted) {
+          await store.failScan(scan.id, closed ? 'SCAN_INTERRUPTED' : 'SCAN_ENGINE_ERROR',
+            'The scan was cancelled before it started.');
+          return true;
+        }
+      }
       if (scan.agent !== undefined) {
         // Cancellation can commit between claim and controller registration.
         // Reread the durable intent before invoking any scanner.
@@ -185,6 +268,15 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
         throw error;
       }
       if (outcome.kind === 'completed') {
+        // A cancellation that landed while the engine was finishing wins: the
+        // owner asked to stop, so the run must not be presented as a result.
+        const latest = scan.agent === undefined
+          ? await store.findByProjectAndId(scan.projectId, scan.id)
+          : undefined;
+        if (latest?.cancelRequestedAt !== undefined) {
+          await store.failScan(scan.id, 'SCAN_ENGINE_ERROR', 'The scan was cancelled on request.');
+          return true;
+        }
         // Pump 8: real findings (when the engine produced any) persist
         // atomically with the terminal transition. Pump 9: the SCA
         // payload (inventory + manifest results + SBOM + assessment)
@@ -250,6 +342,9 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
         });
         return true;
       }
+      // Transient engine crash: requeue with backoff instead of a terminal
+      // failure, so a flaky scanner does not consume the user's scan.
+      if (await scheduleRetry(scan, outcome.failureCode)) return true;
       const failed = await store.failScan(scan.id, outcome.failureCode, outcome.failureMessage);
       if (failed === undefined) {
         logger.error('Scan finalize failed after engine failure', { scanId: scan.id });
@@ -265,6 +360,11 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       // An engine crash must never hang a scan in RUNNING and never
       // leak internals: bounded, generic, closed-vocabulary failure.
       void error;
+      // A cancellation is never retried; a crash is.
+      const latest = await store.findByProjectAndId(scan.projectId, scan.id);
+      if (latest?.cancelRequestedAt === undefined && await scheduleRetry(scan, 'SCAN_ENGINE_ERROR')) {
+        return true;
+      }
       const failed = await store.failScan(
         scan.id,
         'SCAN_ENGINE_ERROR',
@@ -300,10 +400,16 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       try {
         do {
           drainAgain = false;
-          while (!closed && processed < MAX_DRAIN_ITERATIONS) {
-            if (!(await processOne())) break;
-            processed += 1;
-          }
+          // Concurrency lanes: each lane independently claims the next queued
+          // scan. Claiming is a serialized store transition, so a scan is
+          // still executed at most once — two lanes can never get the same
+          // record, they only move to the next one when a lane finds work.
+          await Promise.all(Array.from({ length: concurrency }, async () => {
+            while (!closed && processed < MAX_DRAIN_ITERATIONS) {
+              if (!(await processOne())) break;
+              processed += 1;
+            }
+          }));
           if (processed >= MAX_DRAIN_ITERATIONS) {
             logger.error('Scan processor drain hit its iteration bound');
             return;
@@ -359,6 +465,7 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
     },
     drain,
     abortAgentJob: (scanId) => { activeAgents.get(scanId)?.controller.abort(); },
+    cancelScan: (scanId) => { activeAgents.get(scanId)?.controller.abort(); },
     abortAgentEngagement: (ownerId, projectId, assessmentId, engagementId) => {
       for (const { scan, controller } of activeAgents.values()) {
         if (scan.ownerId === ownerId && scan.projectId === projectId && scan.assessmentId === assessmentId &&
@@ -385,7 +492,14 @@ export function createScanProcessor(options: ScanProcessorOptions): ScanProcesso
       // A cooperative network transport closes; a transport/CPU loop that
       // ignores the signal can still outlive the processor and cannot have
       // already-sent requests recalled.
-      for (const { controller } of activeAgents.values()) controller.abort();
+      //
+      // Normal scans are deliberately NOT aborted here: shutdown waits for the
+      // active drain to settle, and a scan that finishes in that window should
+      // record its real result. A hard kill is covered by startup recovery
+      // (RUNNING → FAILED/SCAN_INTERRUPTED).
+      for (const { scan, controller } of activeAgents.values()) {
+        if (scan.agent !== undefined) controller.abort();
+      }
       // Both promises may fail; either way they have settled before the
       // runtime releases its lease. Engine code that ignores abort can
       // still outlive its timeout and is not covered by this guarantee.

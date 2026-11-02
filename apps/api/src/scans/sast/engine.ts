@@ -121,6 +121,12 @@ export interface SastEngineOptions {
   limits?: Partial<SastLimits>;
   /** Clock for the deadline (tests). */
   now?: () => number;
+  /**
+   * Monotonic-ish clock used ONLY for cooperative time-slicing (P1-5). Kept
+   * separate from `now` so a test that fakes the deadline clock cannot
+   * accidentally disable event-loop yielding.
+   */
+  sliceClock?: () => number;
   /** Optional dataset pack rules merged with built-in rules (server-side dataset integration). */
   rules?: readonly SastRule[];
   /** Optional dataset service for dynamic pack loading (merged per scan). */
@@ -198,6 +204,28 @@ function discover(snapshot: SourceSnapshotRecord, limits: SastLimits, ruleFamili
   return { kind: 'ok', files: scannable, skipped };
 }
 
+/** Upper bound on files analysed between event-loop yields (P1-5). */
+export const SAST_YIELD_EVERY_FILES = 8;
+/**
+ * CPU time budget per event-loop slice (P1-5). Large files (up to 256 KiB each)
+ * are the real stall risk: a fixed "every 8 files" rule can still block the
+ * loop for hundreds of milliseconds on a maximal snapshot. Yielding when EITHER
+ * the file count or this budget is reached bounds each stall to roughly one
+ * file's work plus the budget, without adding overhead to small files.
+ */
+export const SAST_YIELD_BUDGET_MS = 12;
+
+/**
+ * Should the scan yield to the event loop here? True when the file-count
+ * ceiling is reached OR the current slice has used its CPU budget — whichever
+ * comes first. Pure, so the policy is testable without timing.
+ */
+export function sastShouldYield(filesScanned: number, sliceElapsedMs: number): boolean {
+  if (filesScanned <= 1) return false;
+  if ((filesScanned - 1) % SAST_YIELD_EVERY_FILES === 0) return true;
+  return sliceElapsedMs >= SAST_YIELD_BUDGET_MS;
+}
+
 const AST_HEURISTIC_DESCRIPTION = 'A bounded AST pass found a possible untrusted data flow. The rule was selected by category, not by its exact pattern; severity is inherited from that rule. Review the source and sink manually.';
 const AST_COMMAND_REVIEW = ' An argument-vector flow does not prove shell execution; executable, options and argument-level risks still require review.';
 function astHeuristicDescription(kind: string): string {
@@ -223,6 +251,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
   const sources = options.sources;
   const limits: SastLimits = { ...DEFAULT_SAST_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
+  const sliceClock = options.sliceClock ?? Date.now;
 
   return {
     scanType: 'SAST',
@@ -232,13 +261,17 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       let ruleSource: AstAnalysisCoverage['rules']['source'] = options.rules === undefined ? 'NONE' : 'EXPLICIT';
       let pack: { packId: string; version: string } | undefined;
       let datasetRulesIncomplete = false;
+      let datasetContractReason: string | undefined;
       if (options.dataset?.configured) {
         try {
-          const { getMergedSastRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
+          const { getMergedSastRules, hasRejectedPackRules, datasetContractProblem } = await import('../../external/packIntegration.js');
           effectiveRules = await getMergedSastRules(options.dataset);
           ruleSource = 'DATASET';
           if (typeof options.dataset.packMetadata === 'function') pack = await options.dataset.packMetadata('sast');
           datasetRulesIncomplete = await hasRejectedPackRules(options.dataset, 'sast');
+          // Explicit version compatibility: an unsupported (or unvalidatable)
+          // pack version means no rules were accepted, never "clean".
+          datasetContractReason = await datasetContractProblem(options.dataset, 'sast');
         } catch {
           datasetRulesIncomplete = true;
         }
@@ -311,12 +344,14 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       let astFilesAnalyzed = 0;
       let astFlowsFound = 0;
       let filesScanned = 0;
+      // Start of the current cooperative slice (P1-5).
+      let sliceStartedAt = sliceClock();
       const astParser: StructuredAstSummary = { parsedFiles: 0, incompleteFiles: 0, filesWithoutRules: 0, findings: 0 };
       const astCoverage: AstAnalysisCoverage = {
         rules: { source: ruleSource, count: effectiveRules.length, sha256: effectiveSastRuleDigest(effectiveRules),
           ...(pack === undefined ? {} : { packId: pack.packId, packVersion: pack.version }) },
         parsers: parserVersions(), families: [], files: [], unstructuredFiles: 0,
-        projectFlow: { status: 'NOT_RUN', examinedFiles: 0, unresolvedImports: 0, findings: 0 },
+        projectFlow: { status: 'NOT_RUN', examinedFiles: 0, unresolvedImports: 0, findings: 0, callEdges: 0, rounds: 0 },
       };
       const structuredAst = new StructuredAstSession();
 
@@ -333,6 +368,14 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           // Count a file only after processing actually reaches it; the
           // findings cap may leave later discovered files untouched.
           filesScanned += 1;
+          // Yield to the event loop between files. Lexical matching is
+          // synchronous, and a maximal snapshot (200 files x 256 KiB) is tens
+          // of MiB of CPU work: without a yield the API process stops
+          // answering while a scan runs (audit finding P1-5).
+          if (sastShouldYield(filesScanned, sliceClock() - sliceStartedAt)) {
+            await new Promise<void>((resolve) => { setImmediate(resolve); });
+            sliceStartedAt = sliceClock();
+          }
           // CRLF-safe: strip the trailing CR so evidence and matching
           // never see control characters.
           const lines = file.content.split('\n').map((line) => line.replace(/\r$/, ''));
@@ -621,6 +664,10 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
           astCoverage.projectFlow.status = projectResult.status === 'OK' ? 'RAN' : 'INCOMPLETE';
           astCoverage.projectFlow.examinedFiles = projectResult.examinedFiles;
           astCoverage.projectFlow.unresolvedImports = projectResult.unresolvedImports;
+          astCoverage.projectFlow.callEdges = projectResult.callEdges;
+          astCoverage.projectFlow.rounds = projectResult.rounds;
+          // Not reaching a fixed point is a real coverage limit, not a detail.
+          if (!projectResult.converged && projectResult.status === 'OK') astCoverage.projectFlow.status = 'INCOMPLETE';
           const projectByPath = new Map(projectFiles.map((file) => [file.path, file]));
           const linesByPath = new Map(projectFiles.map((file) => [file.path, file.content.split('\n')]));
           const validLocation = (location: unknown): location is { file: string; line: number; column: number } => {
@@ -637,7 +684,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
             const sink = { file: candidate.path, line: candidate.lineIndex + 1, column: candidate.column };
             if (sinkFile === undefined || rule === undefined || !(AST_FLOW_KINDS as readonly string[]).includes(candidate.kind) ||
                 sinkFile.reporters[candidate.kind] !== candidate.ruleId || !validLocation(sink) || !validLocation(candidate.source) ||
-                !Array.isArray(candidate.via) || candidate.via.length > 4 || !candidate.via.every(validLocation)) {
+                !Array.isArray(candidate.via) || candidate.via.length > 6 || !candidate.via.every(validLocation)) {
               astCoverage.projectFlow.status = 'INCOMPLETE';
               continue;
             }
@@ -669,6 +716,7 @@ export function createSastEngine(options: SastEngineOptions): ScanEngine {
       }
 
       const partialReasons: string[] = [];
+      if (datasetContractReason !== undefined) partialReasons.push(datasetContractReason);
       if (datasetRulesIncomplete) partialReasons.push('Some configured SAST rules were rejected or could not be loaded.');
       if (effectiveRules.length === 0) partialReasons.push('No SAST rules were available.');
       else if (astParser.filesWithoutRules > 0) partialReasons.push('Some parsed files had no applicable AST flow rules.');

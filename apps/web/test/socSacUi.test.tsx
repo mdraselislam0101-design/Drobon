@@ -115,7 +115,7 @@ describe('operations and assessment coverage UI', () => {
           families: [{ family: 'javascript', reporters: {} }],
           files: [{ path: 'src/app.js', family: 'javascript', status: 'OK' }, { path: 'src/broken.js', family: 'javascript', status: 'SYNTAX_ERROR' }],
           unstructuredFiles: 0,
-          projectFlow: { status: 'INCOMPLETE', examinedFiles: 1, unresolvedImports: 1, findings: 0 },
+          projectFlow: { status: 'INCOMPLETE', examinedFiles: 1, unresolvedImports: 1, findings: 0, callEdges: 3, rounds: 2 },
         },
       },
     };
@@ -138,7 +138,8 @@ describe('operations and assessment coverage UI', () => {
     expect(scanCoverage).toHaveTextContent('src/broken.js');
     expect(scanCoverage).toHaveTextContent('SYNTAX_ERROR');
     expect(scanCoverage).toHaveTextContent('missing: command, sql, html, code');
-    expect(scanCoverage).toHaveTextContent('1 unresolved relative named imports');
+    expect(scanCoverage).toHaveTextContent('1 unresolved relative imports');
+    expect(scanCoverage).toHaveTextContent('3 resolved call edge(s) over 2 propagation round(s)');
     await userEvent.click(await screen.findByTestId('generate-report'));
     const reportCoverage = await screen.findByTestId('report-ast-coverage');
     expect(reportCoverage).toHaveTextContent('JavaScript, TypeScript, JSX, TSX');

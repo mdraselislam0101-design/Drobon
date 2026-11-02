@@ -203,6 +203,45 @@ describe('SAC bounded report coverage ledger', () => {
     expect((await scans.createReport(report)).outcome).toBe('created');
   });
 
+  test('the report discloses specification coverage instead of implying a full crawl', async () => {
+    const projects = createMemoryProjectStore();
+    const project = await projects.create({ ownerId: 'usr_owner', name: 'DAST spec report', description: '' });
+    const scans = createMemoryScanStore();
+    const target = 'https://app.example.org/';
+    const created = await scans.createScanWithQuota({
+      ownerId: 'usr_owner', projectId: project.id, scanType: 'DAST', targetUrl: target,
+      dastMode: 'ACTIVE_SAFE', dastActiveConsent: true, consume: async () => ({ ok: true }),
+    });
+    if (created.outcome !== 'created') throw new Error('scan fixture failed');
+    const running = await scans.claimNextQueued();
+    if (running === undefined) throw new Error('scan fixture failed');
+    const completed = await scans.completeScan(
+      running.id,
+      { findingsTotal: 0, requestsMade: 2, redirectsFollowed: 0 },
+      [],
+      undefined,
+      {
+        targetUrl: target, mode: 'ACTIVE_SAFE', requestCount: 2, redirectsFollowed: 0, partial: false,
+        crawledCount: 1, injectedCount: 0,
+        openApiStatus: 'ANALYZED', openApiSpecProbes: 1, openApiEndpoints: 1, openApiSkipped: 3,
+        observations: [
+          { endpoint: target, method: 'GET', status: 200, observedAt: NOW, responseTimeMs: 1, bodyBytes: 0, bodyTruncated: false, headers: [] },
+          { endpoint: 'https://app.example.org/health', method: 'GET', status: 200, observedAt: NOW, responseTimeMs: 1, bodyBytes: 0, bodyTruncated: false, headers: [] },
+        ],
+      },
+    );
+    if (completed === undefined) throw new Error('scan fixture failed');
+    const report = buildSecurityReport(project, completed, NOW);
+    const markdown = renderSecurityReportMarkdown(report);
+    expect(markdown).toContain('Crawled links probed: 1');
+    expect(markdown).toContain('Injection probes sent: 0');
+    expect(markdown).toContain('1 documented GET endpoint(s) probed from 1 document(s)');
+    expect(markdown).toContain('3 documented operation(s) were skipped');
+    expect(isSecurityReport(report)).toBe(true);
+    expect(verifySecurityReportIntegrity(report)).toBe(true);
+    expect((await scans.createReport(report)).outcome).toBe('created');
+  });
+
   test('legacy reports without a ledger remain valid and are not mislabelled', async () => {
     const { project, completed } = await completedReport();
     const report = buildSecurityReport(project, completed, NOW);

@@ -150,7 +150,12 @@ describe('bounded project flow and scan-time facts', () => {
     if (result.kind !== 'completed') throw new Error('Scan did not complete.');
     expect(isScanResultSummary(result.resultSummary)).toBe(true);
     expect(result.resultSummary.partial).toBe(true); // only command category has a reporter
-    expect(result.resultSummary.astCoverage?.projectFlow).toEqual({ status: 'RAN', examinedFiles: 3, unresolvedImports: 0, findings: 1 });
+    expect(result.resultSummary.astCoverage?.projectFlow).toMatchObject({
+      status: 'RAN', examinedFiles: 3, unresolvedImports: 0, findings: 1, callEdges: 2,
+    });
+    // The pass must have reached a fixed point (honest depth disclosure).
+    expect(result.resultSummary.astCoverage?.projectFlow.rounds).toBeGreaterThanOrEqual(2);
+    expect(result.resultSummary.astCoverage?.projectFlow.rounds).toBeLessThanOrEqual(12);
     expect(result.resultSummary.astCoverage?.families).toEqual([{ family: 'javascript', reporters: { command: RULE.id } }]);
     expect(result.resultSummary.astCoverage?.rules).toMatchObject({ source: 'EXPLICIT', count: 1, sha256: effectiveSastRuleDigest([RULE]) });
     expect(result.resultSummary.astCoverage?.parsers.python).toMatch(/^\d/);
@@ -179,11 +184,78 @@ describe('bounded project flow and scan-time facts', () => {
   });
 
   test('files exceeding the project file cap make project analysis incomplete', () => {
-    const files = Array.from({ length: 65 }, (_, index) => projectFile(`f${index}.js`, 'const value = 1;'));
+    // The cap now matches the snapshot upload cap (200 files).
+    const files = Array.from({ length: 201 }, (_, index) => projectFile(`f${index}.js`, 'const value = 1;'));
     const result = analyzeProjectAst({ files });
     expect(result.status).toBe('LIMIT');
-    expect(result.examinedFiles).toBe(64);
+    expect(result.examinedFiles).toBe(200);
     expect(result.candidates).toEqual([]);
+  });
+
+  test('a six-hop cross-file chain is resolved to a fixed point (P2-13 depth)', () => {
+    const names = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'];
+    const files = names.map((name, index) => {
+      const next = names[index + 1];
+      return projectFile(
+        `src/${name}.js`,
+        next === undefined
+          ? `export function ${name}(x){child_process.exec(x);}`
+          : `import { ${next} } from "./${next}";\nexport function ${name}(x){${next}(x);}`,
+      );
+    });
+    files.push(projectFile('src/entry.js', 'import { f1 } from "./f1";\nexport function entry(req){f1(req.body.cmd);}'));
+    const result = analyzeProjectAst({ files });
+    expect(result.status).toBe('OK');
+    expect(result.converged).toBe(true);
+    expect(result.callEdges).toBe(6);
+    expect(result.candidates).toHaveLength(1);
+    const candidate = result.candidates[0];
+    expect(candidate?.path).toBe('src/f6.js');
+    expect(candidate?.source.file).toBe('src/entry.js');
+    // The trace is the bounded call path, not a guess.
+    expect(candidate?.via.map((step: { file: string }) => step.file)).toEqual([
+      'src/entry.js', 'src/f1.js', 'src/f2.js', 'src/f3.js', 'src/f4.js', 'src/f5.js',
+    ]);
+  });
+
+  test('namespace imports, default exports and `export * from` are resolved', () => {
+    const namespace = analyzeProjectAst({
+      files: [
+        projectFile('src/ns.js', 'import * as runner from "./ns-impl";\nexport function handle(req){runner.run(req.body.cmd);}'),
+        projectFile('src/ns-impl.js', 'export function run(y){child_process.exec(y);}'),
+      ],
+    });
+    expect(namespace.candidates).toHaveLength(1);
+    expect(namespace.callEdges).toBe(1);
+
+    const defaultExport = analyzeProjectAst({
+      files: [
+        projectFile('src/d.js', 'import run from "./d-impl";\nexport function handle(req){run(req.body.cmd);}'),
+        projectFile('src/d-impl.js', 'export default function run(y){child_process.exec(y);}'),
+      ],
+    });
+    expect(defaultExport.candidates).toHaveLength(1);
+
+    const reExport = analyzeProjectAst({
+      files: [
+        projectFile('src/s.js', 'import { run } from "./s-index";\nexport function handle(req){run(req.body.cmd);}'),
+        projectFile('src/s-index.js', 'export * from "./s-impl";'),
+        projectFile('src/s-impl.js', 'export function run(y){child_process.exec(y);}'),
+      ],
+    });
+    expect(reExport.candidates).toHaveLength(1);
+  });
+
+  test('a cyclic re-export chain terminates without inventing a flow', () => {
+    const result = analyzeProjectAst({
+      files: [
+        projectFile('src/a.js', 'export * from "./b";'),
+        projectFile('src/b.js', 'export * from "./a";'),
+      ],
+    });
+    expect(result.candidates).toEqual([]);
+    expect(result.status).toBe('OK');
+    expect(result.callEdges).toBe(0);
   });
 
   test('constant arguments do not produce a project flow; SQL parameter arrays remain suppressed', () => {

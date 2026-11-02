@@ -33,6 +33,7 @@ import { createAuthzRoutes } from './routes/authz.js';
 import { createEchoRoutes } from './routes/echo.js';
 import { createHealthRoutes } from './routes/health.js';
 import { createStatusRoutes } from './routes/status.js';
+import { createMetricsRoutes } from './routes/metrics.js';
 import { createSubscriptionRoutes } from './routes/subscription.js';
 import { createUsageRoutes } from './routes/usage.js';
 import { createProjectRoutes } from './routes/projects.js';
@@ -90,7 +91,10 @@ import { createDastEngine } from './scans/dast/engine.js';
 import { createJsonFileAssessmentStore, createMemoryAssessmentStore, type AssessmentStore } from './assessments/store.js';
 import { createAssessmentRoutes } from './routes/assessments.js';
 import { createSocRoutes } from './routes/soc.js';
+import { createRiskRoutes } from './routes/risk.js';
 import { createAssessmentDastAuthorizer } from './scans/dast/authorization.js';
+import { createLocalModelProvider } from './agent/localModel.js';
+import { attestAgentStorage, StorageBlockedError } from './lib/storageBoundary.js';
 import { createAgentExecutor, finalizeAuthorizedAgentScan } from './agent/execution.js';
 import { createAgentRoutes } from './routes/agent.js';
 import { createScanRequestService } from './scans/request.js';
@@ -271,11 +275,26 @@ export function createApp(deps: AppDeps): App {
   // Scan-job store (Pump 7): durable by default (fail-fast on a corrupt
   // document — createApp throws, the process refuses to start). Tests
   // inject their own store; `:memory:` is the ephemeral dev opt-in.
+  // Durable paths the Agent can mutate. Used for startup attestation, the
+  // per-write re-check below, and the read-only capability report.
+  const agentDurablePaths = [config.scanStorePath, config.assessmentStorePath, config.usageStorePath]
+    .filter((path) => path !== ':memory:');
+  const agentActive = config.agentExperimentalEnabled === true && config.env !== 'production';
+  const agentStorageGuard = agentActive && agentDurablePaths.length > 0
+    ? (): void => {
+        // Cheap re-check per publication (mode/owner/ancestors, no /proc walk):
+        // a directory widened after startup fails the write instead of landing in
+        // an unprotected location. Same-identity writers are still not excluded.
+        const verdict = attestAgentStorage(agentDurablePaths, { scanForeignWriters: false });
+        if (!verdict.ok) throw new StorageBlockedError(verdict.issues);
+      }
+    : undefined;
   const scanStore: ScanStore =
     deps.scanStore ??
     (config.scanStorePath === ':memory:'
       ? createMemoryScanStore()
-      : createJsonFileScanStore(config.scanStorePath));
+      : createJsonFileScanStore(config.scanStorePath,
+        agentStorageGuard === undefined ? {} : { beforePersist: agentStorageGuard }));
   const assessmentStore: AssessmentStore =
     deps.assessmentStore ??
     (config.assessmentStorePath === ':memory:'
@@ -378,8 +397,15 @@ export function createApp(deps: AppDeps): App {
   // surface the same dataset-backed guidance for a rule (or the same honest
   // UNAVAILABLE fallback when no dataset is configured).
   const guidance = createGuidanceLookup(datasetService);
+  const localModelProvider = createLocalModelProvider(
+    config.localModelEndpoint === undefined || config.localModelName === undefined
+      ? {}
+      : { config: { endpoint: config.localModelEndpoint, model: config.localModelName } });
   const agentExecutor = createAgentExecutor({
-    executionEnabled: config.agentExperimentalEnabled === true && config.env !== 'production',
+    executionEnabled: agentActive,
+    ...(agentActive && agentDurablePaths.length > 0
+      ? { storageBoundary: () => attestAgentStorage(agentDurablePaths) }
+      : {}),
     datasetPath: config.datasetPath,
     providerId: config.vulnIntelProvider,
     advisoryPath: config.advisoryPath,
@@ -400,6 +426,7 @@ export function createApp(deps: AppDeps): App {
         authorize: createAssessmentDastAuthorizer(assessmentStore, clock, { requireEngagement: config.dastRequireEngagement === true }),
         dataset: datasetService,
         advisory: advisoryService,
+        ...(config.dastAuth === undefined ? {} : { auth: config.dastAuth }),
         ...(deps.dastTransport === undefined ? {} : { transport: deps.dastTransport }),
       }),
     ];
@@ -415,6 +442,9 @@ export function createApp(deps: AppDeps): App {
     store: scanStore,
     engines: scanEngines,
     logger,
+    maxAttempts: config.scanMaxAttempts,
+    retryBaseDelayMs: config.scanRetryBaseDelayMs,
+    concurrency: config.scanConcurrency,
     finalizeAgent: (scan, complete) => finalizeAuthorizedAgentScan(assessmentStore, clock, scan, complete),
     ...(deps.scanProcessorIntervalMs === undefined
       ? {}
@@ -432,6 +462,7 @@ export function createApp(deps: AppDeps): App {
   const routes: Route[] = [
     ...createHealthRoutes({ config }),
     ...createStatusRoutes({ config }),
+    ...createMetricsRoutes({ config, scans: scanStore, processor: scanProcessor }),
     ...createEchoRoutes({ config }),
     ...createAuthRoutes({ config, users, sessions }),
     ...createAuthzRoutes({ config, users }),
@@ -446,9 +477,11 @@ export function createApp(deps: AppDeps): App {
     ...createAdvisoryRoutes({ config, advisory: advisoryService }),
     ...createProjectRoutes({ config, projects: projectStore, dastTargetPolicy }),
     ...createSocRoutes({ projects: projectStore, scans: scanStore, dataset: datasetService, advisory: advisoryService, now: clock }),
+    ...createRiskRoutes({ projects: projectStore, scans: scanStore, now: clock }),
     ...createAssessmentRoutes({ config, projects: projectStore, assessments: assessmentStore, scans: scanStore, processor: scanProcessor, now: clock }),
     ...createAgentRoutes({ config, users, projects: projectStore, assessments: assessmentStore, scans: scanStore,
-      sources: sourceStore, usage, processor: scanProcessor, requestService, now: clock }),
+      sources: sourceStore, usage, processor: scanProcessor, requestService, now: clock,
+      modelProvider: localModelProvider, agentStoragePaths: agentDurablePaths }),
     ...createScanRoutes({
       config,
       users,

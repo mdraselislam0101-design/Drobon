@@ -115,6 +115,7 @@ export const SCAN_FAILURE_CODES = [
   'DAST_SCAN_TIMEOUT',
   'DAST_ACTIVE_CONSENT_REQUIRED',
   'DAST_ACTIVE_NOT_ALLOWED',
+  'SCAN_CANCELLED',
 ] as const;
 
 export type ScanFailureCode = (typeof SCAN_FAILURE_CODES)[number];
@@ -173,7 +174,16 @@ export interface AstAnalysisCoverage {
   families: Array<{ family: AstParserFamily; reporters: Partial<Record<AstFlowKind, string>> }>;
   files: Array<{ path: string; family: AstParserFamily; status: AstFileStatus }>;
   unstructuredFiles: number;
-  projectFlow: { status: 'RAN' | 'INCOMPLETE' | 'NOT_RUN'; examinedFiles: number; unresolvedImports: number; findings: number };
+  projectFlow: {
+    status: 'RAN' | 'INCOMPLETE' | 'NOT_RUN';
+    examinedFiles: number;
+    unresolvedImports: number;
+    findings: number;
+    /** Call edges the bounded resolver matched (0 when the pass did not run). */
+    callEdges: number;
+    /** Fixed-point propagation rounds executed (0–12). */
+    rounds: number;
+  };
 }
 
 /** Additional AST work on the actual input of a non-SAST scanner. Optional
@@ -200,6 +210,20 @@ export interface AstSupplementSummary {
  * exploitability claims — an engine may only report what it actually
  * measured.
  */
+export const SECRETS_BASELINE_STATUSES = ['ABSENT', 'ANALYZED', 'INVALID', 'UNSUPPORTED'] as const;
+export type SecretsBaselineStatus = (typeof SECRETS_BASELINE_STATUSES)[number];
+
+/** Per-scan disclosure of the project's secrets baseline (P2-14). */
+export interface SecretsBaselineSummary {
+  status: SecretsBaselineStatus;
+  /** Usable suppression entries that were loaded. */
+  entries: number;
+  /** Findings actually suppressed by the baseline. */
+  applied: number;
+  /** Entries rejected for shape/bounds (never applied). */
+  invalid: number;
+}
+
 export interface ScanResultSummary {
   /** Total number of findings the engine reported (0 = clean scan). */
   findingsTotal: number;
@@ -250,6 +274,8 @@ export interface ScanResultSummary {
   astCoverage?: AstAnalysisCoverage;
   /** Bounded AST supplement on DAST responses, Secrets source, or SCA JSON manifests. */
   astSupplement?: AstSupplementSummary;
+  /** Secrets-only (P2-14): baseline suppression is always disclosed. */
+  secretsBaseline?: SecretsBaselineSummary;
 }
 
 const SUMMARY_ALLOWED_KEYS = [
@@ -277,6 +303,8 @@ const SUMMARY_ALLOWED_KEYS = [
   'astParser',
   'astCoverage',
   'astSupplement',
+  // Secrets baseline (P2-14): what was suppressed and what could not be applied.
+  'secretsBaseline',
 ] as const;
 
 function isCount(value: unknown): value is number {
@@ -326,12 +354,16 @@ function isAstCoverage(value: unknown, summary: Record<string, unknown>): value 
     if (count < AST_FLOW_KINDS.length) missing = true;
     if (file['status'] === 'OK') { parsed += 1; if (count === 0) withoutRules += 1; }
   }
-  if (!isRecord(projectFlow) || !hasKeys(projectFlow, ['status', 'examinedFiles', 'unresolvedImports', 'findings']) ||
+  if (!isRecord(projectFlow) || !hasKeys(projectFlow, ['status', 'examinedFiles', 'unresolvedImports', 'findings', 'callEdges', 'rounds']) ||
       typeof projectFlow['status'] !== 'string' || !['RAN', 'INCOMPLETE', 'NOT_RUN'].includes(projectFlow['status']) || !isCount(projectFlow['examinedFiles']) ||
-      projectFlow['examinedFiles'] > 64 || !isCount(projectFlow['unresolvedImports']) || projectFlow['unresolvedImports'] > 30_000 ||
+      projectFlow['examinedFiles'] > 200 || !isCount(projectFlow['unresolvedImports']) || projectFlow['unresolvedImports'] > 30_000 ||
+      !isCount(projectFlow['callEdges']) || projectFlow['callEdges'] > 1_000_000 ||
+      !isCount(projectFlow['rounds']) || projectFlow['rounds'] > 12 ||
+      (projectFlow['status'] === 'NOT_RUN' && (projectFlow['callEdges'] !== 0 || projectFlow['rounds'] !== 0)) ||
       (projectFlow['unresolvedImports'] > 0 && projectFlow['status'] !== 'INCOMPLETE') ||
       !isCount(projectFlow['findings']) || projectFlow['findings'] > MAX_FINDINGS_PER_SCAN ||
       (projectFlow['status'] === 'NOT_RUN' && (projectFlow['examinedFiles'] !== 0 || projectFlow['unresolvedImports'] !== 0 || projectFlow['findings'] !== 0))) return false;
+  if (projectFlow['status'] === 'RAN' && projectFlow['rounds'] === 0) return false;
   const parser = summary['astParser'];
   if (!isRecord(parser) || parser['parsedFiles'] !== parsed || parser['incompleteFiles'] !== files.length - parsed ||
       parser['filesWithoutRules'] !== withoutRules || typeof parser['findings'] !== 'number' || projectFlow['findings'] > parser['findings'] ||
@@ -381,6 +413,20 @@ export function isScanResultSummary(value: unknown): value is ScanResultSummary 
   }
   if (!isCount(record['findingsTotal'])) {
     return false;
+  }
+  if (record['secretsBaseline'] !== undefined) {
+    const baseline = record['secretsBaseline'];
+    if (!isRecord(baseline) || !hasKeys(baseline, ['status', 'entries', 'applied', 'invalid'])) return false;
+    if (typeof baseline['status'] !== 'string' || !(SECRETS_BASELINE_STATUSES as readonly string[]).includes(baseline['status'])) return false;
+    for (const key of ['entries', 'applied', 'invalid'] as const) {
+      if (!isCount(baseline[key])) return false;
+    }
+    if ((baseline['entries'] as number) > 500 || (baseline['invalid'] as number) > 500) return false;
+    // A suppression count can never exceed the entries that authorize it, and
+    // a status that suppressed nothing cannot claim applied findings.
+    if ((baseline['applied'] as number) > 0 && (baseline['status'] !== 'ANALYZED' || (baseline['entries'] as number) === 0)) return false;
+    if (baseline['status'] === 'ABSENT' && ((baseline['entries'] as number) !== 0 || (baseline['applied'] as number) !== 0 || (baseline['invalid'] as number) !== 0)) return false;
+    if (baseline['status'] === 'INVALID' && (baseline['entries'] as number) !== 0) return false;
   }
   if (record['findingsBySeverity'] !== undefined) {
     const bySeverity = record['findingsBySeverity'];
@@ -499,7 +545,25 @@ export interface Scan {
   failureMessage?: string;
   /** Engine-produced summary (COMPLETED only, never fabricated). */
   resultSummary?: ScanResultSummary;
+  /**
+   * Durable cancellation intent (user-requested). While RUNNING the value
+   * means "stop at the next safe point"; the terminal transition then becomes
+   * FAILED/`SCAN_CANCELLED`. A QUEUED scan is cancelled immediately and never
+   * carries this field.
+   */
+  cancelRequestedAt?: string;
+  /**
+   * 1-based execution attempt. Absent on a never-started scan; incremented by
+   * the processor when it claims the job. A retried job is QUEUED again with a
+   * higher attempt, so the history of an unstable engine is visible.
+   */
+  attempt?: number;
+  /** Earliest time a retried QUEUED job may be claimed (present only on QUEUED). */
+  retryAt?: string;
 }
+
+/** Execution attempts are bounded; the caller never chooses this. */
+export const SCAN_MAX_ATTEMPT_LIMIT = 5;
 
 /** `GET /api/v1/projects/:projectId/scans` — one project's scans, ordered. */
 export interface ScansResponse {
@@ -818,7 +882,7 @@ export function isFinding(value: unknown): value is Finding {
       isValidSourcePath(location['file']) && isCount(location['line']) && location['line'] > 0 && location['line'] <= 10_000_000 &&
       isCount(location['column']) && location['column'] > 0 && location['column'] <= 10_000_000;
     if (flow['mode'] === 'PROJECT') {
-      if (!isLocation(flow['source']) || !Array.isArray(flow['via']) || flow['via'].length > 4 || !flow['via'].every(isLocation)) return false;
+      if (!isLocation(flow['source']) || !Array.isArray(flow['via']) || flow['via'].length > 6 || !flow['via'].every(isLocation)) return false;
     } else if (flow['source'] !== undefined || flow['via'] !== undefined) return false;
   }
   return true;
@@ -973,6 +1037,9 @@ export function isScan(value: unknown): value is Scan {
     'failureCode',
     'failureMessage',
     'resultSummary',
+    'cancelRequestedAt',
+    'attempt',
+    'retryAt',
   ];
   if (keys.some((key) => !allowed.includes(key))) {
     return false;
@@ -1005,6 +1072,20 @@ export function isScan(value: unknown): value is Scan {
   if (record['resultSummary'] !== undefined && !isScanResultSummary(record['resultSummary'])) {
     return false;
   }
+  if (record['attempt'] !== undefined) {
+    if (typeof record['attempt'] !== 'number' || !Number.isInteger(record['attempt']) ||
+        record['attempt'] < 1 || record['attempt'] > SCAN_MAX_ATTEMPT_LIMIT) return false;
+  }
+  if (record['retryAt'] !== undefined) {
+    if (typeof record['retryAt'] !== 'string' || Number.isNaN(Date.parse(record['retryAt']))) return false;
+    if (record['status'] !== 'QUEUED') return false;
+  }
+  // Cancellation intent is a server-authored ISO timestamp; it can never
+  // exist on a completed scan (a finished scan has nothing to cancel).
+  if (record['cancelRequestedAt'] !== undefined) {
+    if (typeof record['cancelRequestedAt'] !== 'string' || Number.isNaN(Date.parse(record['cancelRequestedAt']))) return false;
+    if (record['status'] === 'COMPLETED' || record['status'] === 'TIMED_OUT') return false;
+  }
   if (isScanResultSummary(record['resultSummary'])) {
     if ((record['resultSummary'].astParser !== undefined || record['resultSummary'].astCoverage !== undefined) && record['scanType'] !== 'SAST') return false;
     if (!isAstSupplementForScanType(record['resultSummary'], record['scanType'])) return false;
@@ -1022,6 +1103,8 @@ export function isScan(value: unknown): value is Scan {
     return false;
   }
   if (status === 'QUEUED') {
+    // A queued scan is cancelled immediately, so intent never persists here.
+    if (record['cancelRequestedAt'] !== undefined) return false;
     return !(hasStartedAt || hasCompletedAt || hasFailureCode || hasFailureMessage || hasResult);
   }
   if (!hasStartedAt) {

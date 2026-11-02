@@ -12,7 +12,7 @@ import { SECRETS_SUPPORTED_EXTENSIONS } from '../../apps/api/src/scans/secrets/e
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target', 'coverage', '.cache', '.next', '.venv']);
 const MAX_VISITED_ENTRIES = 20_000;
 const MAX_BATCHES = 10;
-const SCA_FILENAMES = new Set(['package.json', 'package-lock.json', 'requirements.txt', 'pyproject.toml', 'go.mod', 'go.sum', 'gemfile.lock', 'cargo.lock', 'yarn.lock', 'pnpm-lock.yaml']);
+const SCA_FILENAMES = new Set(['package.json', 'package-lock.json', 'requirements.txt', 'pyproject.toml', 'poetry.lock', 'uv.lock', 'Pipfile', 'Pipfile.lock', 'go.mod', 'go.sum', 'gemfile.lock', 'cargo.lock', 'yarn.lock', 'pnpm-lock.yaml']);
 const CANDIDATE_EXTENSIONS = new Set([
   ...SAST_LANGUAGE_CATALOG.flatMap((family) => family.extensions ?? []),
   ...SECRETS_SUPPORTED_EXTENSIONS,

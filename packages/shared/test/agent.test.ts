@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { isAgentAssessmentResponse, isAgentCancellationResponse, isAgentExecutionResponse } from '../src/agent.js';
+import { isAgentAssessmentResponse, isAgentCancellationResponse, isAgentCapabilitiesResponse, isAgentExecutionResponse } from '../src/agent.js';
 
 const agent = {
   assessmentId: 'asm_00000000-0000-4000-8000-000000000001', generatedAt: '2026-10-31T00:00:00.000Z',
@@ -35,5 +35,41 @@ describe('agent public contract guards', () => {
     expect(isAgentAssessmentResponse({ agent: { ...agent, paths: [path] } })).toBe(true);
     expect(isAgentAssessmentResponse({ agent: { ...agent, paths: [{ ...path, status: 'VALIDATED' }] } })).toBe(false);
     expect(isAgentAssessmentResponse({ agent: { ...agent, paths: [{ ...path, findingIds: ['bad'] }] } })).toBe(false);
+  });
+});
+
+const role = (id: string) => ({ id, title: 'Role', responsibility: 'Bounded work.', tools: ['plan.read'],
+  evidenceRequired: ['scan.record'], maxSteps: 8, integrated: true, note: 'Deterministic only.' });
+const capabilities = {
+  assessmentId: 'asm_00000000-0000-4000-8000-000000000001',
+  capabilities: {
+    generatedAt: '2026-10-31T00:00:00.000Z',
+    roles: ['MASTER', 'RECON', 'SAST', 'DAST', 'SCA', 'SECRETS', 'VALIDATION'].map((id) => role(id)),
+    networkRoles: ['DAST'],
+    model: { state: 'NONE', provider: 'NONE', note: 'No model configured.' },
+    storage: { code: 'STORAGE_BLOCKED', issues: ['legacy-same-uid-writer'], note: 'Not isolated.' },
+    execution: { enabled: false, note: 'Disabled.' },
+    limitations: ['No model reasoning.'],
+  },
+};
+describe('agent capability report contract', () => {
+  test('accepts a complete seven-role report', () => {
+    expect(isAgentCapabilitiesResponse(capabilities)).toBe(true);
+  });
+  test('rejects an incomplete or over-claiming report', () => {
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      roles: capabilities.capabilities.roles.slice(0, 6) } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      roles: [...capabilities.capabilities.roles.slice(0, 6), role('SUPERUSER')] } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      model: { state: 'READY', provider: 'REMOTE_API', note: 'Paid provider.' } } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      storage: { code: 'PRODUCTION_SAFE', issues: [], note: 'Claimed.' } } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      execution: { enabled: 'yes', note: 'Typed loosely.' } } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ ...capabilities, capabilities: { ...capabilities.capabilities,
+      limitations: ['ok', 42] } })).toBe(false);
+    expect(isAgentCapabilitiesResponse({ capabilities: capabilities.capabilities, assessmentId: 'bad' })).toBe(false);
+    expect(isAgentCapabilitiesResponse(null)).toBe(false);
   });
 });

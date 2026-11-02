@@ -15,6 +15,7 @@ import { createFilesystemIntelligenceProvider } from '../scans/sca/filesystemPro
 import { createDatasetService } from '../external/service.js';
 import { createAdvisoryService } from '../external/advisory.js';
 import { digestDataset, digestSource } from './snapshot.js';
+import { planRoleExecution, type ToolGrant } from './orchestration.js';
 
 export interface AgentExecutorOptions {
   executionEnabled: boolean;
@@ -28,6 +29,18 @@ export interface AgentExecutorOptions {
   targetPolicy: DastTargetPolicy;
   transport?: DastTransport | undefined;
   now?: () => number;
+  /**
+   * Re-attested before every Agent job so a boundary lost after startup (a new
+   * foreign writer, a widened directory) fails the job instead of writing. Not
+   * a substitute for OS-level identity isolation; see lib/storageBoundary.ts.
+   */
+  storageBoundary?: (() => { ok: boolean; issues: readonly string[] }) | undefined;
+  /**
+   * Role -> tool grant lookup used before any scanner work. Production always
+   * uses the static table in agent/roles.ts; the seam exists so a test can
+   * prove a revoked grant actually stops the job.
+   */
+  roleGrant?: ToolGrant | undefined;
 }
 
 function failure(message: string): EngineOutcome {
@@ -121,7 +134,15 @@ export function createAgentExecutor(options: AgentExecutorOptions) {
       const agent = record.agent;
       if (agent === undefined) return failure('Agent execution context is missing.');
       if (!options.executionEnabled) return failure('Experimental agent execution is disabled.');
+      // Role gateway: the owning role must hold the scanner tool grant before
+      // any source, Dataset or network work happens. Fail closed, no detail.
+      const role = planRoleExecution(record.scanType, options.roleGrant);
+      if (!role.allowed) return failure(`AGENT ROLE BLOCKED: ${role.reason}`);
       try {
+        const boundary = options.storageBoundary?.();
+        if (boundary !== undefined && !boundary.ok) {
+          return failure(`STORAGE BLOCKED: agent storage boundary is not attested (${boundary.issues.join(', ')}).`);
+        }
         const issue = await agentAuthorizationIssue(record, options);
         if (issue !== undefined) return failure(issue);
         if (options.providerId !== 'filesystem' || options.datasetPath === undefined ||

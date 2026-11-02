@@ -112,7 +112,14 @@ evidence; a value containing placeholder markers does not fire even in
   `coverage`, `vendor`, `target`, `cache` (dependency trees, build
   output, caches — out of scope, not partial).
 - **Snapshot only**: the engine inspects the uploaded snapshot — never
-  git history, remotes or branches.
+  git history, remotes or branches. Git commit history is
+  **NOT_IMPLEMENTED** by design: a snapshot is one content tree with no
+  VCS objects, `.git` paths are refused by the shared source-path policy,
+  and parsing packfiles/indexes would be a new subsystem with its own
+  security surface. Comparing two SECRETS scans (the scan comparison
+  endpoint, by finding fingerprint) is the supported "history" view: it
+  shows new/resolved/unresolved findings across snapshots without ever
+  reading a repository.
 - **Never executes** snapshot content; binaries cannot enter a
   snapshot at all (text-only upload validation).
 - **Per-rule one match per line**: the first matching pattern wins;
@@ -198,3 +205,38 @@ cannot know that.
   restart determinism, tamper fail-fast, SAST/SCA regression.
 - `apps/web/test/secretsUi.test.tsx` — findings surface, confidence
   badge, partial rendering, whole-DOM no-leak sweep, DAST honesty.
+
+## Baseline (`drobon-secrets-baseline.json`) — P2-14
+
+A project can place one baseline document at the **snapshot root**. It records
+accepted-risk secrets so a re-scan does not re-report them.
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "ruleId": "DG-SEC-002", "file": "test/fixtures/aws.js", "reason": "synthetic fixture" },
+    { "fingerprint": "0123…(64 hex)" }
+  ]
+}
+```
+
+- **A leading-dot name is not supported** (`.drobon-secrets-baseline.json` can
+  never be uploaded): the shared source-path policy refuses dotfiles. The
+  baseline is an ordinary snapshot path.
+- **An entry suppresses only what it names.** `{ruleId, file}` suppresses that
+  rule in that file; `{fingerprint}` suppresses exactly that finding. A
+  baseline entry cannot suppress a different rule, a different file, or a
+  secret it does not describe.
+- **Nothing is hidden silently.** The summary always carries
+  `secretsBaseline: { status, entries, applied, invalid }`; the scan UI and the
+  report state how many entries loaded, how many findings were suppressed and
+  how many entries were rejected.
+- **Fail-closed on suppression:** a malformed, oversized (> 64 KiB), wrong
+  version, or over-long (> 500 entries) document is `INVALID` — it suppresses
+  nothing and marks the scan partial with the reason.
+- **No secret material** is read from or written to the baseline: entries name
+  a rule, a path and an optional ≤ 200-character reason. The fingerprint form
+  uses the engine's existing identity (rule + path + line), never the value.
+- **A baseline is not a fix.** Suppressed findings are a recorded decision;
+  the report says so explicitly and never turns suppression into "no secrets".

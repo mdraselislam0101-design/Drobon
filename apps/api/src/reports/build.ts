@@ -218,7 +218,7 @@ function astCoverageLines(coverage: AstAnalysisCoverage): string[] {
     `- Effective rules: ${rules.source}, ${rules.count}; SHA-256: \`${rules.sha256}\` (not a signature)`,
     ...(rules.packId === undefined ? ['- Dataset pack identity: not recorded'] : [`- Dataset pack: ${escapeMarkdown(rules.packId)} ${escapeMarkdown(rules.packVersion ?? 'unknown')}`]),
     `- Parser versions: TypeScript ${escapeMarkdown(parsers.typescript)}, Python/Lezer ${escapeMarkdown(parsers.python)}, PHP ${escapeMarkdown(parsers.php)}, Java/Lezer ${escapeMarkdown(parsers.java)}`,
-    `- Project flow: ${projectFlow.status}; ${projectFlow.examinedFiles} files examined, ${projectFlow.unresolvedImports} unresolved relative named imports, ${projectFlow.findings} additional findings.`,
+    `- Project flow: ${projectFlow.status}; ${projectFlow.examinedFiles} files examined, ${projectFlow.unresolvedImports} unresolved relative imports, ${projectFlow.callEdges} resolved call edge(s) over ${projectFlow.rounds} propagation round(s), ${projectFlow.findings} additional findings.`,
     `- Files without a structured parser: ${coverage.unstructuredFiles}`,
     ...coverage.families.map(({ family, reporters }) => {
       const available = AST_FLOW_KINDS.filter((kind) => reporters[kind] !== undefined).map((kind) => `${kind}=${reporters[kind]}`).join(', ') || 'none';
@@ -258,6 +258,15 @@ export function renderSecurityReportMarkdown(input: SecurityReport, guidance?: r
     '',
     ...report.scannerCoverage.map((entry) => `- ${entry.scanner}: ${entry.status}${entry.reason === undefined ? '' : ` — ${escapeMarkdown(entry.reason)}`}`),
     '',
+    ...(report.scan.resultSummary?.secretsBaseline === undefined ? [] : (() => {
+      const baseline = report.scan.resultSummary.secretsBaseline;
+      const text = baseline.status === 'ABSENT'
+        ? '- Secrets baseline: none present in the scanned snapshot (no suppression applied).'
+        : baseline.status === 'ANALYZED'
+          ? `- Secrets baseline: ${baseline.entries} entr${baseline.entries === 1 ? 'y' : 'ies'} loaded, ${baseline.applied} finding(s) suppressed, ${baseline.invalid} invalid entr${baseline.invalid === 1 ? 'y' : 'ies'} not applied.`
+          : `- Secrets baseline: ${baseline.status} — the document was not applied, so nothing was suppressed.`;
+      return ['## Secrets baseline', '', text, '', '- Suppressed findings are not proof of absence: the baseline records a decision, not a fixed secret.', ''];
+    })()),
     '## Coverage and residual risk',
     '',
     ...(report.sac === undefined
@@ -319,6 +328,32 @@ export function renderSecurityReportMarkdown(input: SecurityReport, guidance?: r
   if (report.dast !== undefined) {
     const mode = report.scan.dastMode ?? report.dast.mode ?? 'PASSIVE';
     lines.push(`## DAST observations (${mode})`, '', `Target: ${escapeMarkdown(report.dast.targetUrl)}`, '');
+    lines.push(
+      `Requests: ${report.dast.requestCount}; redirects followed: ${report.dast.redirectsFollowed}.`
+        + (report.dast.crawledCount === undefined ? '' : ` Crawled links probed: ${report.dast.crawledCount}.`)
+        + (report.dast.injectedCount === undefined ? '' : ` Injection probes sent: ${report.dast.injectedCount}.`),
+      '',
+    );
+    if (report.dast.authMode !== undefined) {
+      lines.push(
+        report.dast.authMode === 'HEADER'
+          ? 'Authenticated probing: an operator-configured credential header was sent with every request. Its name and value are never stored, logged or reported.'
+          : 'Authenticated probing: none. Every request was anonymous.',
+        '',
+      );
+    }
+    if (report.dast.openApiStatus !== undefined) {
+      // Coverage disclosure, never a claim that the API was fully enumerated.
+      const spec = report.dast;
+      lines.push(
+        spec.openApiStatus === 'ANALYZED'
+          ? `API specification: ${spec.openApiEndpoints ?? 0} documented GET endpoint(s) probed from ${spec.openApiSpecProbes ?? 0} document(s); ${spec.openApiSkipped ?? 0} documented operation(s) were skipped because the specification did not state usable input.`
+          : spec.openApiStatus === 'NOT_FOUND'
+            ? 'API specification: no JSON OpenAPI/Swagger document was found at the well-known locations; this is not evidence that the API is undocumented.'
+            : 'API specification: a document was found but could not be used (JSON only); documented endpoints were not probed.',
+        '',
+      );
+    }
     for (const observation of report.dast.observations) {
       lines.push(
         `- ${observation.method} ${escapeMarkdown(observation.endpoint)} — HTTP ${observation.status}, ${observation.responseTimeMs} ms, ${observation.bodyBytes} bytes inspected${observation.bodyTruncated ? ' (bounded body truncated)' : ''}`,

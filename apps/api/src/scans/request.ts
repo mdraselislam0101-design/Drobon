@@ -29,6 +29,8 @@ export interface ScanRequest {
   assessmentId?: string | undefined;
   dastMode?: string | undefined;
   dastActiveConsent?: boolean | undefined;
+  /** ACTIVE_SAFE only: opt in to bounded API-specification discovery. */
+  dastOpenApiDiscovery?: boolean | undefined;
   /** Evaluated after scope preflight, preserving ordinary API validation order. */
   idempotencyKeyFromRequest?: (() => string | undefined) | undefined;
   /** Server-only: never taken from the HTTP scan body. */
@@ -75,6 +77,12 @@ export function createScanRequestService(options: ScanRequestServiceOptions) {
       }
       if (input.dastMode === 'ACTIVE_SAFE' && input.dastActiveConsent !== true) {
         throw validationError([{ path: 'dastActiveConsent', message: 'Active DAST requires dastActiveConsent: true.' }]);
+      }
+      if (input.dastOpenApiDiscovery !== undefined && input.dastOpenApiDiscovery !== true) {
+        throw validationError([{ path: 'dastOpenApiDiscovery', message: 'API specification discovery is opt-in (true) or omitted.' }]);
+      }
+      if (input.dastOpenApiDiscovery === true && (scanType !== 'DAST' || dastMode !== 'ACTIVE_SAFE' || input.dastActiveConsent !== true)) {
+        throw validationError([{ path: 'dastOpenApiDiscovery', message: 'API specification discovery requires dastMode ACTIVE_SAFE with dastActiveConsent: true.' }]);
       }
       if (agent !== undefined && (input.dastMode === 'ACTIVE_SAFE' || input.dastActiveConsent === true)) {
         throw conflict('The agent supports passive DAST only.');
@@ -154,6 +162,7 @@ export function createScanRequestService(options: ScanRequestServiceOptions) {
         ...(targetUrl === undefined ? {} : { targetUrl }),
         ...(dastMode === undefined ? {} : { dastMode }),
         ...(input.dastActiveConsent === undefined ? {} : { dastActiveConsent: input.dastActiveConsent }),
+        ...(input.dastOpenApiDiscovery === undefined ? {} : { dastOpenApiDiscovery: input.dastOpenApiDiscovery }),
         ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         ...(boundAgent === undefined ? {} : { agent: boundAgent }),
         consume: (scanId) => usage.reserveScan(user, deviceHash, project.id, scanId),

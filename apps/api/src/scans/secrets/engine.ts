@@ -13,6 +13,12 @@ import { matchSecretsRuleLine, SECRETS_RULES, type SecretsRule } from './rules.j
 import type { DatasetService } from '../../external/service.js';
 import { findingFingerprint, WITHHELD_SOURCE_EVIDENCE } from '../findingIdentity.js';
 import { addSecretAstContext } from '../supplementAst.js';
+import {
+  isSecretsFindingBaselined,
+  parseSecretsBaseline,
+  SECRETS_BASELINE_PATH,
+  type SecretsBaseline,
+} from './baseline.js';
 
 /**
  * THE REAL SECRETS ENGINE (Pump 10).
@@ -240,11 +246,14 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
     execute: async (record: ScanRecord, ctx: ScanEngineContext): Promise<EngineOutcome> => {
       let effectiveRules: readonly SecretsRule[] = options.rules ?? SECRETS_RULES;
       let datasetRulesIncomplete = false;
+      let datasetContractReason: string | undefined;
       if (options.dataset?.configured) {
         try {
-          const { getMergedSecretsRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
+          const { getMergedSecretsRules, hasRejectedPackRules, datasetContractProblem } = await import('../../external/packIntegration.js');
           effectiveRules = await getMergedSecretsRules(options.dataset);
           datasetRulesIncomplete = await hasRejectedPackRules(options.dataset, 'secrets');
+          // An unsupported pack version must never look like "0 secrets found".
+          datasetContractReason = await datasetContractProblem(options.dataset, 'secrets');
         } catch {
           datasetRulesIncomplete = true;
         }
@@ -267,6 +276,11 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
           failureMessage: 'The scan target is inconsistent with the scan owner.',
         };
       }
+      // Baseline (P2-14): read from the project's own snapshot. A missing file
+      // is ABSENT (not an error); a malformed one suppresses nothing.
+      const baselineText = snapshot.files.find((file) => file.path === SECRETS_BASELINE_PATH)?.content;
+      const baseline: SecretsBaseline = parseSecretsBaseline(baselineText);
+      let baselinedFindings = 0;
       const discovery = discover(snapshot, limits);
       if (discovery.kind === 'input-invalid') {
         return {
@@ -343,6 +357,12 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
               scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
               location: file.path, line: index + 1, evidence,
             });
+            // A baseline suppresses only what it names; every suppression is
+            // counted and disclosed in the summary.
+            if (isSecretsFindingBaselined(baseline.entries, { ruleId: rule.id, file: file.path, fingerprint })) {
+              baselinedFindings += 1;
+              continue;
+            }
             findings.push({
               id: `fnd_${fingerprint.slice(0, 24)}`,
               scanId: record.id,
@@ -379,10 +399,14 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
           const dedupeKey = `${rule.id}\n${file}\n${line}`;
           if (seenRuleLine.has(dedupeKey)) return 'IGNORED';
           if (findings.length >= limits.maxFindings) { truncated = true; return 'STOP'; }
-          seenRuleLine.add(dedupeKey);
           const evidence = evidenceFromLine();
           const fingerprint = findingFingerprint({ scanner: 'SECRETS', projectId: record.projectId, ruleId: rule.id,
             location: file, line, evidence });
+          if (isSecretsFindingBaselined(baseline.entries, { ruleId: rule.id, file, fingerprint })) {
+            baselinedFindings += 1;
+            return 'IGNORED';
+          }
+          seenRuleLine.add(dedupeKey);
           findings.push({ id: `fnd_${fingerprint.slice(0, 24)}`, scanId: record.id, ruleId: rule.id,
             scanner: 'SECRETS', projectId: record.projectId, severity: rule.severity, title: rule.title,
             description: `A static literal concatenation matched this rule; credential validity was not checked. ${rule.description}`.slice(0, FINDING_TEXT_MAX_LENGTH),
@@ -406,12 +430,16 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
       // coverage is reported separately by astSupplement, including parser
       // errors, unsupported files and limits. A findings cap is scan-partial.
       const partialReasons: string[] = [];
+      if (datasetContractReason !== undefined) partialReasons.push(datasetContractReason);
       if (datasetRulesIncomplete) partialReasons.push('Some configured secrets rules were rejected or could not be loaded');
       if (effectiveRules.length === 0) partialReasons.push('No secrets rules were available');
       if (discovery.oversize > 0) {
         partialReasons.push(`${discovery.oversize} file(s) exceeded the per-file size limit and were not inspected`);
       }
       if (truncated) partialReasons.push('the findings cap was reached; later matches are not listed');
+      if (baseline.status === 'INVALID') {
+        partialReasons.push(`the secrets baseline was rejected and suppressed nothing (${baseline.note ?? 'invalid document'})`);
+      }
       const partial = partialReasons.length > 0;
       const resultSummary: ScanResultSummary = {
         astSupplement,
@@ -420,6 +448,12 @@ export function createSecretsEngine(options: SecretsEngineOptions): ScanEngine {
         filesScanned,
         filesSkipped: discovery.skipped + discovery.oversize + (discovery.files.length - filesScanned),
         truncated,
+        secretsBaseline: {
+          status: baseline.status,
+          entries: baseline.entries.length,
+          applied: baselinedFindings,
+          invalid: baseline.invalid,
+        },
         ...(partial ? { partial: true, partialReason: `${partialReasons.join('; ')}.`.slice(0, 200) } : {}),
       };
       return {
