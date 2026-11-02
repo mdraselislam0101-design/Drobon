@@ -51,8 +51,12 @@ import {
   buildSbom,
   parsePackageJson,
   parsePackageLock,
+  parsePipfile,
+  parsePipfileLock,
+  parsePoetryLock,
   parsePyprojectToml,
   parseRequirementsTxt,
+  parseUvLock,
   type DiscoveredManifest,
 } from './inventory.js';
 import {
@@ -94,6 +98,10 @@ export const SCA_MANIFEST_FILE_NAMES = [
   'package-lock.json',
   'requirements.txt',
   'pyproject.toml',
+  'poetry.lock',
+  'uv.lock',
+  'Pipfile',
+  'Pipfile.lock',
 ] as const;
 
 /**
@@ -340,14 +348,21 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       let declarationRules: unknown[] = [];
       let rejectedDeclarationRules = 0;
       let datasetRulesIncomplete = false;
+      let datasetContractReason: string | undefined;
       if (options.dataset?.configured === true) {
         try {
+          const { datasetContractProblem } = await import('../../external/packIntegration.js');
           declarationRules = await options.dataset.scaPacks();
           if (typeof options.dataset.conformance === 'function') {
             const report = (await options.dataset.conformance()).sca;
             rejectedDeclarationRules = Math.max(0, report.filesSeen - report.accepted);
             datasetRulesIncomplete = rejectedDeclarationRules > 0 || report.enumerationFailures > 0 || report.manifestIssue !== undefined;
           }
+          // Explicit version compatibility: an unsupported pack version means
+          // zero declaration rules were evaluated, which is NOT_ASSESSED for
+          // that evidence class — never an implicit pass.
+          datasetContractReason = await datasetContractProblem(options.dataset, 'sca');
+          if (datasetContractReason !== undefined) datasetRulesIncomplete = true;
         } catch {
           datasetRulesIncomplete = true;
         }
@@ -388,7 +403,11 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       // notes — never manifest content).
       const manifestResults: ScaManifestResult[] = discovery.manifests.map((manifest) => {
         const base = manifest.path.split('/').pop() ?? manifest.path;
-        const ecosystem = base === 'requirements.txt' || base === 'pyproject.toml' ? 'pypi' : 'npm';
+        const ecosystem =
+          base === 'requirements.txt' || base === 'pyproject.toml' || base === 'poetry.lock' ||
+          base === 'uv.lock' || base === 'Pipfile' || base === 'Pipfile.lock'
+            ? 'pypi'
+            : 'npm';
         const parsed = parseForManifestResult(manifest);
         return parsed === undefined
           ? { path: manifest.path, ecosystem, status: 'ANALYZED' as const, dependencyCount: 0 }
@@ -480,9 +499,18 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
         // evidence. Requirements/pyproject-only projects list DIRECT
         // declarations — no graph exists there, even when every
         // dependency is classified.
+        // AVAILABLE now requires an EVIDENCED graph, not just lockfile-looking
+        // input: edges must exist (or the project genuinely has no transitive
+        // dependency). Claiming a transitive closure without edges was the
+        // exact overstatement this fixes (P2-11).
         transitiveGraph:
           inventory.hasLockfileEvidence && inventory.allDependenciesResolved &&
-          !inventory.truncated && inventory.unclassifiedCount === 0 &&
+          // Only a lock format that states edges can evidence a graph; a
+          // Pipfile lock pins versions but records no relationship at all.
+          inventory.edgeEvidence &&
+          !inventory.truncated && !inventory.graph.truncated &&
+          inventory.unclassifiedCount === 0 &&
+          (inventory.edges.length > 0 || inventory.transitiveCount === 0) &&
           manifestResults.every((manifest) => manifest.status === 'ANALYZED')
             ? 'AVAILABLE'
             : 'UNAVAILABLE',
@@ -496,6 +524,7 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       const astSupplement = await analyzeScaManifestAst(discovery.manifests, ctx.signal, () => deadline - now());
       if (ctx.signal.aborted || now() >= deadline) return deadlineFailure();
       const partialReasons: string[] = [];
+      if (datasetContractReason !== undefined) partialReasons.push(datasetContractReason);
       if (datasetRulesIncomplete) partialReasons.push('Some configured SCA rules were rejected or could not be loaded.');
       if (assessment.datasetStatus !== 'DATASET_AVAILABLE') partialReasons.push('Dependency advisory data was unavailable.');
       else if (assessment.incomplete === true || invalidAdvisory || coordinates.some((coordinate) => coordinate.version === undefined)) {
@@ -505,6 +534,13 @@ export function createScaEngine(options: ScaEngineOptions): ScanEngine {
       if (advisoryFindingsOmitted || producedFindings > allFindings.length) partialReasons.push('Some source finding details exceeded the limit.');
       if (inventory.dependencies.some((dependency) => dependency.versionSource === 'manifest')) {
         partialReasons.push('Declared versions do not prove what was installed.');
+      }
+      // Honest graph statement: a transitive inventory without evidenced edges
+      // is reported, never silently treated as a complete dependency tree.
+      if (inventory.transitiveCount > 0 && inventory.edges.length === 0) {
+        partialReasons.push('Transitive dependencies were listed but no dependency-graph edges could be evidenced.');
+      } else if (inventory.graph.truncated) {
+        partialReasons.push('The dependency graph exceeded its edge budget and is incomplete.');
       }
       if (manifestResults.some((manifest) => manifest.status !== 'ANALYZED') || discovery.skipped > 0) {
         partialReasons.push('Some manifests were incomplete, invalid or skipped.');
@@ -591,6 +627,28 @@ function parseForManifestResult(
   }
   if (base === 'pyproject.toml') {
     const parsed = parsePyprojectToml(manifest.content, manifest.path);
+    return {
+      path: manifest.path,
+      status: parsed.status,
+      dependencyCount: parsed.dependencies.length,
+      ...(parsed.note === undefined ? {} : { note: parsed.note }),
+    };
+  }
+  if (base === 'poetry.lock' || base === 'uv.lock' || base === 'Pipfile.lock') {
+    const parsed = base === 'poetry.lock'
+      ? parsePoetryLock(manifest.content, manifest.path)
+      : base === 'uv.lock'
+        ? parseUvLock(manifest.content, manifest.path)
+        : parsePipfileLock(manifest.content, manifest.path);
+    return {
+      path: manifest.path,
+      status: parsed.status,
+      dependencyCount: parsed.dependencies.length,
+      ...(parsed.note === undefined ? {} : { note: parsed.note }),
+    };
+  }
+  if (base === 'Pipfile') {
+    const parsed = parsePipfile(manifest.content, manifest.path);
     return {
       path: manifest.path,
       status: parsed.status,

@@ -20,6 +20,7 @@ import {
   type FindingLifecycleState,
   type FindingsPageResponse,
   type SecurityReportResponse,
+  type RiskAssessment,
   type SocPosture,
   type AssessmentSummaryResponse,
   type ScanComparisonResponse,
@@ -107,6 +108,72 @@ function SocOverview({ projectId }: { projectId: string }): React.JSX.Element {
   );
 }
 
+/**
+ * Correlated risk over saved scans, loaded only on request.
+ * Every cluster names the recorded finding ids it was built from; the band and
+ * score come from the server's published model and are never recomputed here.
+ */
+function RiskAssessmentOverview({ projectId }: { projectId: string }): React.JSX.Element {
+  const client = useApiClient();
+  const [assessment, setAssessment] = useState<RiskAssessment | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try { setAssessment((await client.getRiskAssessment(projectId)).assessment); }
+    catch (caught: unknown) { setError(caught instanceof ApiClientError ? caught.message : 'Could not load the risk assessment.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <section id="risk-assessment" aria-labelledby="risk-title" data-testid="risk-assessment">
+      <h2 id="risk-title">Correlated risk assessment</h2>
+      <p className="muted">
+        Combines the latest completed SAST, SCA, secrets and DAST results into one view of where evidence overlaps.
+        It is a triage aid over saved findings—not CVSS, not an exploit proof, and not a statement that the project is safe.
+      </p>
+      <button type="button" className="button button-secondary" onClick={() => void load()} disabled={busy} data-testid="risk-load">
+        {busy ? 'Loading…' : assessment === null ? 'Load risk assessment' : 'Refresh risk assessment'}
+      </button>
+      {error !== null && <div className="form-alert" role="alert"><p>{error}</p></div>}
+      {assessment !== null && (
+        <div data-testid="risk-content">
+          <p data-testid="risk-headline">
+            <strong>{assessment.band}</strong> band · score {assessment.score} · status {assessment.status} ·{' '}
+            {assessment.findingsAnalysed} finding(s) analysed, {assessment.correlatedFindings} correlated, {assessment.unclusteredFindings} unclustered.
+          </p>
+          <p className="muted">
+            Scoring model {assessment.scoringModel}; level {assessment.assessmentLevel}. Only the latest completed scan of each scanner is read.
+          </p>
+          <ul data-testid="risk-sources">
+            {assessment.sources.map((source) => (
+              <li key={source.scanner}>
+                {source.scanner}: {source.scanId === null ? 'no completed scan' : `${source.findings} finding(s), completed ${source.completedAt}`}
+              </li>
+            ))}
+          </ul>
+          {assessment.truncated && <p className="muted">This assessment is bounded; older or extra evidence was omitted.</p>}
+          {assessment.clusters.length === 0 ? (
+            <p>No evidence overlap was found between the analysed findings. That is not evidence that the project is safe.</p>
+          ) : (
+            <ul data-testid="risk-clusters">
+              {assessment.clusters.map((cluster) => (
+                <li key={cluster.id}>
+                  <strong>{cluster.band} ({cluster.score}) · {cluster.title}</strong>{' '}
+                  <span className="muted">[{cluster.kind} · {cluster.asset}]</span>
+                  <p>{cluster.summary}</p>
+                  <p className="muted">Evidence: {cluster.evidence.map((item) => `${item.scanner} ${item.ruleId} (${item.findingId})`).join('; ')}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+          <details><summary>What this assessment cannot claim</summary><ul>{assessment.disclosures.map((item) => <li key={item}>{item}</li>)}</ul></details>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** The structured parser is a SAST pass, not an additional scan type. */
 function AstParserCoverage({ summary, coverage, testId }: { summary: StructuredAstSummary; coverage?: AstAnalysisCoverage | undefined; testId: string }): React.JSX.Element {
   return (
@@ -117,7 +184,11 @@ function AstParserCoverage({ summary, coverage, testId }: { summary: StructuredA
         <summary>Rule, parser and file coverage</summary>
         <p>Rules: {coverage.rules.source} · {coverage.rules.count} effective · SHA-256 <code>{coverage.rules.sha256}</code> (not a signature). Pack: {coverage.rules.packId === undefined ? 'not recorded' : `${coverage.rules.packId} ${coverage.rules.packVersion ?? ''}`}.</p>
         <p>Parser versions: TypeScript {coverage.parsers.typescript} · Python/Lezer {coverage.parsers.python} · PHP {coverage.parsers.php} · Java/Lezer {coverage.parsers.java}.</p>
-        <p>Bounded JS/TS project flow: {coverage.projectFlow.status} · {coverage.projectFlow.examinedFiles} files · {coverage.projectFlow.unresolvedImports} unresolved relative named imports · {coverage.projectFlow.findings} additional findings. Files without structured parser: {coverage.unstructuredFiles}.</p>
+        <p>
+          Bounded JS/TS project flow: {coverage.projectFlow.status} · {coverage.projectFlow.examinedFiles} files ·{' '}
+          {coverage.projectFlow.unresolvedImports} unresolved relative imports · {coverage.projectFlow.callEdges} resolved call edge(s) over{' '}
+          {coverage.projectFlow.rounds} propagation round(s) · {coverage.projectFlow.findings} additional findings. Files without structured parser: {coverage.unstructuredFiles}.
+        </p>
         <ul>{coverage.families.map(({ family, reporters }) => <li key={family}>{family}: {AST_FLOW_KINDS.filter((kind) => reporters[kind] !== undefined).map((kind) => `${kind}=${reporters[kind]}`).join(', ') || 'no category reporters'}; missing: {AST_FLOW_KINDS.filter((kind) => reporters[kind] === undefined).join(', ') || 'none'}.</li>)}</ul>
         {coverage.files.some((file) => file.status !== 'OK') && <><p>Incomplete parser files:</p><ul>{coverage.files.filter((file) => file.status !== 'OK').map((file) => <li key={file.path}><code>{file.path}</code> · {file.family} · {file.status}</li>)}</ul></>}
         <p>AST reporter rules are selected by category; their exact pattern may not have matched. Severity is inherited from the selected rule.</p>
@@ -281,6 +352,7 @@ export function ProjectDetailPage(): React.JSX.Element {
             {showAssessmentTools && <a className="nav-link" href="#assessments">Assessments</a>}
             <a className="nav-link" href="#security-scans">Scans, findings &amp; reports</a>
             <a className="nav-link" href="#soc-overview">Operations</a>
+            <a className="nav-link" href="#risk-assessment">Risk</a>
             <a className="nav-link" href="#assistant-title">Assistant</a>
           </nav>
 
@@ -330,6 +402,7 @@ export function ProjectDetailPage(): React.JSX.Element {
 
           <AstWorkflowGuide userType={state.status === 'ready' ? state.user.userType : null} />
           <SocOverview projectId={project.project.id} />
+          <RiskAssessmentOverview projectId={project.project.id} />
 
           <DastTargetSection
             projectId={project.project.id}
@@ -827,6 +900,7 @@ function ScansSection({
   const [scanType, setScanType] = useState<ScanType>('SAST');
   const [dastMode, setDastMode] = useState<'PASSIVE' | 'ACTIVE_SAFE'>('PASSIVE');
   const [dastConsent, setDastConsent] = useState(false);
+  const [dastOpenApi, setDastOpenApi] = useState(false);
   const [activeAssessments, setActiveAssessments] = useState<Assessment[]>([]);
   const [assessmentId, setAssessmentId] = useState('');
   const [assessmentLoadError, setAssessmentLoadError] = useState<string | null>(null);
@@ -836,6 +910,8 @@ function ScansSection({
   const [portfolioGuidance, setPortfolioGuidance] = useState(false);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const downloadPortfolio = async (): Promise<void> => {
     setPortfolioBusy(true);
@@ -911,6 +987,21 @@ function ScansSection({
     return () => { active = false; };
   }, [client, projectId, showAssessmentTools, reloadToken, assessmentId]);
 
+  const cancelScan = async (scanId: string): Promise<void> => {
+    setCancelError(null);
+    setCancelling(scanId);
+    try {
+      await client.cancelScan(projectId, scanId);
+      await load();
+    } catch (error: unknown) {
+      setCancelError(
+        error instanceof ApiClientError ? error.message : 'Could not cancel the scan.',
+      );
+    } finally {
+      setCancelling(null);
+    }
+  };
+
   const requestScan = async (): Promise<void> => {
     setFormError(null);
     setSubmitting(true);
@@ -921,7 +1012,19 @@ function ScansSection({
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `web-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
-      const dastOpts = scanType === 'DAST' ? { dastMode, ...(dastMode === 'ACTIVE_SAFE' ? { dastActiveConsent: dastConsent } : {}) } : undefined;
+      const dastOpts = scanType === 'DAST'
+        ? {
+            dastMode,
+            ...(dastMode === 'ACTIVE_SAFE'
+              ? {
+                  dastActiveConsent: dastConsent,
+                  // Bounded JSON API-spec discovery is a separate opt-in: it
+                  // changes the requests sent to the target.
+                  ...(dastOpenApi ? { dastOpenApiDiscovery: true } : {}),
+                }
+              : {}),
+          }
+        : undefined;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy untyped boundary; new modules use unknown.
       await client.createScan(projectId, scanType, key, undefined, assessmentId.length === 0 ? undefined : assessmentId, dastOpts as any);
       await load();
@@ -987,9 +1090,21 @@ function ScansSection({
               </select>
               <p className="field-hint">Passive: no crawl or injection, headers/body only. Active Safe may inspect up to 10 same-host links and attempt up to 10 bounded path-based GET marker probes, with a 200ms throttle. Query-bearing links and query-parameter probes are blocked by the current target safety policy. Browser execution, authentication, broad fuzzing and exploitability checks are not provided.</p>
               {dastMode === 'ACTIVE_SAFE' && (
-                <label style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', fontWeight: 500 }}>
-                  <input type="checkbox" checked={dastConsent} onChange={(e) => setDastConsent(e.target.checked)} data-testid="dast-consent-checkbox" /> I confirm I have permission to actively test this target and accept the assessment scope.
-                </label>
+                <>
+                  <label style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', fontWeight: 500 }}>
+                    <input type="checkbox" checked={dastConsent} onChange={(e) => setDastConsent(e.target.checked)} data-testid="dast-consent-checkbox" /> I confirm I have permission to actively test this target and accept the assessment scope.
+                  </label>
+                  <label style={{ display: 'flex', gap: '0.5rem', marginTop: '0.4rem', fontWeight: 500 }}>
+                    <input
+                      type="checkbox"
+                      checked={dastOpenApi}
+                      disabled={!dastConsent}
+                      onChange={(e) => setDastOpenApi(e.target.checked)}
+                      data-testid="dast-openapi-checkbox"
+                    />{' '}
+                    Also read one JSON OpenAPI/Swagger document from the target (2 extra requests; JSON only, GET-only endpoints, values come from the document).
+                  </label>
+                </>
               )}
             </div>
           )}
@@ -1111,7 +1226,24 @@ function ScansSection({
                 >
                   {scan.status}
                 </span>
+                {(scan.status === 'QUEUED' || scan.status === 'RUNNING') && (
+                  <button
+                    type="button"
+                    className="button button-ghost"
+                    onClick={() => void cancelScan(scan.id)}
+                    disabled={cancelling === scan.id}
+                    aria-busy={cancelling === scan.id}
+                    data-testid="cancel-scan"
+                  >
+                    {cancelling === scan.id ? 'Cancelling…' : scan.status === 'QUEUED' ? 'Cancel before start' : 'Stop scan'}
+                  </button>
+                )}
               </div>
+              {scan.cancelRequestedAt !== undefined && scan.status === 'RUNNING' && (
+                <p className="muted" data-testid="scan-cancel-pending">
+                  Cancellation requested at <code>{scan.cancelRequestedAt}</code>; the engine stops at its next safe point.
+                </p>
+              )}
               <dl className="facts">
                 <div className="fact">
                   <dt>Requested</dt>
@@ -1152,6 +1284,15 @@ function ScansSection({
               {scan.status === 'COMPLETED' && scan.scanType === 'SAST' && scan.resultSummary?.astParser !== undefined && (
                 <AstParserCoverage summary={scan.resultSummary.astParser} coverage={scan.resultSummary.astCoverage} testId="scan-ast-coverage" />
               )}
+              {scan.status === 'COMPLETED' && scan.scanType === 'SECRETS' && scan.resultSummary?.secretsBaseline !== undefined && (
+                <p className="muted" data-testid="secrets-baseline">
+                  {scan.resultSummary.secretsBaseline.status === 'ABSENT'
+                    ? 'Secrets baseline: none in this snapshot — nothing was suppressed.'
+                    : scan.resultSummary.secretsBaseline.status === 'INVALID'
+                      ? 'Secrets baseline: rejected (nothing was suppressed). Fix the baseline file and re-scan.'
+                      : `Secrets baseline: ${scan.resultSummary.secretsBaseline.entries} entr${scan.resultSummary.secretsBaseline.entries === 1 ? 'y' : 'ies'} loaded · ${scan.resultSummary.secretsBaseline.applied} finding${scan.resultSummary.secretsBaseline.applied === 1 ? '' : 's'} suppressed · ${scan.resultSummary.secretsBaseline.invalid} invalid entr${scan.resultSummary.secretsBaseline.invalid === 1 ? 'y' : 'ies'} not applied.`}
+                </p>
+              )}
               {scan.status === 'COMPLETED' && scan.scanType !== 'SAST' && (scan.resultSummary?.astSupplement === undefined
                 ? <p className="muted">This saved scan has no scanner-specific AST supplement record; coverage is unknown.</p>
                 : <AstSupplementCoverage summary={scan.resultSummary.astSupplement} testId="scan-ast-supplement" />)}
@@ -1175,6 +1316,11 @@ function ScansSection({
             </li>
           ))}
         </ul>
+      )}
+      {cancelError !== null && (
+        <div className="form-alert" role="alert">
+          <p data-testid="scan-cancel-error">{cancelError}</p>
+        </div>
       )}
       <div className="hero-actions">
         <button
@@ -1779,11 +1925,32 @@ function FindingsView({
             <section className="dast-observations" data-testid="dast-observations">
               <h4>Observed responses</h4>
               {scanDetail.scan.dastMode === 'ACTIVE_SAFE' || scanDetail.scan.dast.mode === 'ACTIVE_SAFE' ? (
-                <p className="muted">The recorded active-safe mode may include bounded GET probes and static-link crawling. Observations do not prove exploitability; no browser or authenticated session was used.</p>
+                <p className="muted">The recorded active-safe mode may include bounded GET probes, static-link crawling and specification-derived GET endpoints. Observations do not prove exploitability; no browser was used and no login/session was established.</p>
               ) : (
                 <p className="muted">Passive GET observations only; response content was bounded and never executed. No browser, JavaScript, authentication, or crawling was used.</p>
               )}
               <p data-testid="dast-target-url">Target: <code>{scanDetail.scan.dast.targetUrl}</code></p>
+              {scanDetail.scan.dast.mode === 'ACTIVE_SAFE' && (
+                <p className="muted" data-testid="dast-active-counts">
+                  Requests: {scanDetail.scan.dast.requestCount} · crawled links probed: {scanDetail.scan.dast.crawledCount ?? 0} · injection probes sent: {scanDetail.scan.dast.injectedCount ?? 0}
+                </p>
+              )}
+              {scanDetail.scan.dast.openApiStatus !== undefined && (
+                <p className="muted" data-testid="dast-openapi">
+                  {scanDetail.scan.dast.openApiStatus === 'ANALYZED'
+                    ? `API specification: ${scanDetail.scan.dast.openApiEndpoints ?? 0} documented GET endpoint(s) probed from ${scanDetail.scan.dast.openApiSpecProbes ?? 0} document(s)${(scanDetail.scan.dast.openApiSkipped ?? 0) > 0 ? `; ${scanDetail.scan.dast.openApiSkipped} documented operation(s) needed input the spec did not state and were skipped` : ''}.`
+                    : scanDetail.scan.dast.openApiStatus === 'NOT_FOUND'
+                      ? 'API specification: none found at the well-known JSON locations; this is not evidence that the API is undocumented.'
+                      : 'API specification: a document was found but could not be used (JSON only); documented endpoints were not probed.'}
+                </p>
+              )}
+              {scanDetail.scan.dast.authMode !== undefined && (
+                <p className="muted" data-testid="dast-auth-mode">
+                  {scanDetail.scan.dast.authMode === 'HEADER'
+                    ? 'Authenticated probing: an operator-configured credential header was sent with every request. Its name and value are never stored, logged or reported.'
+                    : 'Authenticated probing: none. Every request was anonymous.'}
+                </p>
+              )}
               {scanDetail.scan.dast.partial && <p className="muted" data-testid="dast-partial-note">Partial result: {scanDetail.scan.dast.partialReason ?? 'some response checks were not completed'}</p>}
               <ul className="scan-list">
                 {scanDetail.scan.dast.observations.map((observation, index) => (
@@ -2191,8 +2358,8 @@ function ScaView({
               <dt>Transitive graph</dt>
               <dd data-testid="sca-graph">
                 {sca.summary.transitiveGraph === 'AVAILABLE'
-                  ? 'Available (lockfile evidence)'
-                  : 'Unavailable (no lockfile closure)'}
+                  ? `Available · ${sca.sbom.dependencies.length} evidenced edge${sca.sbom.dependencies.length === 1 ? '' : 's'}`
+                  : 'Unavailable (the lockfile graph was not evidenced or was clipped)'}
               </dd>
             </div>
             <div className="fact">

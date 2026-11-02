@@ -65,8 +65,12 @@ consumption). There is no parallel system.
 | `package.json` | npm | ANALYZED | dependencies/devDependencies/optionalDependencies/peerDependencies; runtime wins on duplicate names; name+version give the root identity |
 | `package-lock.json` v3/v2 | npm | ANALYZED | `packages` map: root `""` entry supplies the direct set; nested `node_modules/...` keys resolve to the innermost package; `link: true` and version-less entries are skipped |
 | `package-lock.json` v1 | npm | ANALYZED/PARTIAL | bounded iterative nested `dependencies` walk; a companion `package.json` classifies root entries, nested copies are transitive; depth/entry caps are disclosed |
-| `requirements.txt` | pypi | ANALYZED/PARTIAL | pins, ranges, extras (stripped from the name), environment markers (after `;`), continuation lines, `--hash` evidence; skipped options/directives, bare URLs or malformed requirement lines make the inventory PARTIAL. Referenced files are never followed. |
-| `pyproject.toml` | pypi | ANALYZED | PEP 621 `[project]` `dependencies` + `optional-dependencies` groups; Poetry `[tool.poetry]` dependency tables (`python` key excluded) |
+| `requirements.txt` | pypi | ANALYZED/PARTIAL | pins, ranges, extras (stripped from the name), environment markers (after `;`), continuation lines, `--hash` evidence; skipped options/directives, bare URLs or malformed requirement lines make the inventory PARTIAL. Referenced files are never followed. A **pip-compile** file (`pip-tools`, including `--generate-hashes`) also carries `# via` provenance, which is read as real dependency edges — see below. |
+| `Pipfile` | pypi | ANALYZED/PARTIAL | `[packages]` and `[dev-packages]` declarations only (Pipenv declares no installation) |
+| `Pipfile.lock` | pypi | ANALYZED/PARTIAL | every resolved pin from `default`/`develop`, exact versions, `development` type for the dev section. **Pipenv records no inter-package relationship**, so versions are evidence but no graph can exist for it |
+| `uv.lock` | pypi | ANALYZED/PARTIAL | resolved `name@version` nodes + `dependencies = [{ name = … }]` edges; the project's own entry (`source = { editable/virtual = "." }`) is the graph root and its dependencies are the direct set |
+| `pyproject.toml` | pypi | ANALYZED | PEP 621 `[project]` `dependencies` + `optional-dependencies` groups; Poetry `[tool.poetry]` dependency tables (`python` key excluded); `name`/`version` from `[project]` (or `[tool.poetry]`) give the SBOM root identity |
+| `poetry.lock` | pypi | ANALYZED/PARTIAL | `[[package]]` tables give resolved `name` + `version` for the whole locked tree; `[package.dependencies]` gives real parent → child edges. A companion `pyproject.toml` in the same directory supplies the direct set (without it every class stays `unknown`). `python` constraints, `[package.extras]`, hashes and sources are not dependencies. PARTIAL with a bounded note when a locked dependency points at a package the lock does not list |
 | other formats (e.g. `Pipfile`, `Gemfile`, `go.mod`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.toml`, `pom.xml`) | — | no full dependency inventory | Some can separately be inspected by bounded dataset declaration readers; that is not equivalent to installed-package inventory or full lockfile resolution. See `SCA_READERS.md`. |
 
 Discovery ignores `node_modules/`, `dist/`, `build/`, `out/`,
@@ -81,15 +85,73 @@ evidence.
   (`package.json` sections, `requirements.txt`, `pyproject.toml`).
   Dev dependencies are direct AND typed `development`.
 - **Transitive** = present in a lockfile closure without a direct
-  declaration (npm lockfiles only).
+  declaration (npm and PyPI Poetry lockfiles).
 - **Unknown** is honest: a lockfile v1 without a companion manifest
   leaves top-level classes unknown; its nested copies remain transitive.
 - `transitiveGraph` is `AVAILABLE` only when there is lockfile evidence,
   every retained coordinate is lockfile-resolved and classified, the
-  inventory was not truncated and discovered inventory manifests were
-  analyzed. Mixed unresolved Python/npm declarations therefore report
-  `UNAVAILABLE`. This flag describes the bounded lockfile closure, not a
-  complete dependency-edge graph: the SBOM emits root edges only.
+  inventory was not truncated, the dependency graph itself was not
+  clipped, and discovered inventory manifests were analyzed. Mixed
+  unresolved Python/npm declarations therefore report `UNAVAILABLE`.
+  The flag now describes a real, evidenced edge graph (see below), not
+  merely the presence of lockfile-looking input.
+- **Dependency graph (P2-11).** Edges come from the lockfile, never from
+  a name guess:
+  - npm v2/v3: every accepted `packages["node_modules/…"]` node declares
+    its own `dependencies`/`optionalDependencies` (plus `devDependencies`
+    for the root node only — a nested package's dev deps are not
+    installed). Each declared name is resolved with Node's own upward
+    `node_modules` walk from that node, so a nested copy wins over a
+    hoisted one. No resolved installation → no edge.
+  - npm v1: the nested `dependencies` maps *are* the installed tree, so a
+    node inside a parent's map is a structural parent → child edge.
+    Hoisted siblings appear at the top level. Top-level directness still
+    needs a companion manifest (a standalone v1 lockfile leaves classes
+    `unknown`).
+  - **Poetry (`poetry.lock`)**: each `[[package]]` entry is a resolved
+    installation (`name@version` node), and `[package.dependencies]` names
+    the locked packages it needs — so the edge is the lockfile's own
+    statement, not a resolution guess. A Python environment is flat, so a
+    name has one installed version (a lock that lists the same coordinate
+    twice collapses to one node; genuinely different versions stay
+    distinct). Root → direct edges come only from the companion
+    `pyproject.toml` declarations. A declared dependency the lock does not
+    list, or a locked dependency naming a package the lock does not list,
+    makes the manifest `PARTIAL` with a bounded note instead of a silently
+    thinned graph. `poetry.lock` without a `pyproject.toml` reports the
+    locked installations with class `unknown` and no root edges.
+  - **uv (`uv.lock`)**: each `[[package]]` is a resolved installation, and
+    its `dependencies = [{ name = … }]` array names the locked packages it
+    needs. The project's own entry (`source = { editable = "." }` /
+    `{ virtual = "." }`) is the graph root: it is never listed as a
+    dependency, its `dependencies` supply the root edges, and its name/version
+    are the SBOM root identity when no `pyproject.toml` states one. An entry
+    with an explicit `version` pins exactly one node; a bare `name` joins the
+    single locked version of that name, and when several versions exist the
+    edge is refused and counted (`ambiguousEdges`) instead of guessed.
+  - **pip-compile (`requirements.txt` with `# via`)**: `pip-tools` writes
+    `# via <parent>` provenance (and `# via -r requirements.in` for the
+    project's own requirements, including the backslash-joined
+    `--generate-hashes` layout). Those lines are dependency statements, so a
+    compiled file evidences a graph: `<parent> → pin`, plus root edges for
+    pins whose provenance is `-r`/`-c`/`-e`. An edge needs both endpoints
+    pinned in the same file; a parent that is not pinned
+    (`unresolvedEdges`) or a pin without provenance (`missingProvenance`)
+    makes the manifest `PARTIAL` — never a silently thinned graph. A
+    hand-written requirements file has no `# via` lines at all and therefore
+    keeps the old declaration-only answer.
+  - **Pipenv (`Pipfile.lock`)**: the file pins every resolved package but
+    records no relationship between them, so it upgrades version evidence
+    (advisory matching gets real versions) while `transitiveGraph` stays
+    `UNAVAILABLE`. This is a property of the format, not a missing reader.
+  - Projects with declarations only (`requirements.txt` without provenance,
+    `pyproject.toml`, `Pipfile`) have no resolved installation evidence and
+    emit no edges, so their graph stays `UNAVAILABLE`.
+  - The parser clips its graph at 4 000 edges (`LOCK_MAX_EDGES`) and
+    reports `edgesTruncated`; the inventory also drops edges whose
+    endpoints were not retained. Either case marks the graph incomplete,
+    forces `transitiveGraph: UNAVAILABLE` and adds a bounded partial
+    reason. A clipped graph is never presented as complete.
 - Distinct version/path evidence is preserved. Identical coordinates at
   different nested installation paths under the same manifest may merge.
 - Only evaluable exact declarations, including Python `==1.2.3`, are
@@ -128,13 +190,23 @@ evidence.
 Emitted fields: `bomFormat` (`CycloneDX`), `specVersion` (`1.5`),
 `serialNumber` (`urn:uuid:…`, deterministic), `version` (1),
 `metadata.tools.components[0]` (the analyzer), `metadata.component`
-(root application, when a single named `package.json` provides it),
+(root application, from a single named `package.json` — or, for a
+Python-only project, the `pyproject.toml` `[project]`/`[tool.poetry]`
+`name`+`version`),
 `components[]` (`type: library`, `bom-ref` = dependency fingerprint, name,
 resolved-or-exact-pin version, `scope` required/optional/excluded by
 type, `purl` when constructible, `hashes` from lockfile integrity —
-never fabricated), `dependencies[]` (only evidenced edges:
-root → direct dependencies declared by that root manifest). If several
-named npm manifests exist, no single application root is invented.
+never fabricated), `dependencies[]` (only evidenced edges: the
+root → its resolved direct set, plus one entry per component whose own
+resolved children the lockfile states). If several named npm manifests
+exist, no single application root is invented, and a manifest whose
+graph was not evidenced contributes no transitive edges. Every
+`dependsOn` ref points at a `bom-ref` present in `components`, so the
+document is self-consistent for a CycloneDX consumer. The serial number
+hashes the component set **and** the edge list: same components with a
+different graph produce a different serial. The shared validator bounds
+the document at `components + 1` edges with ≤ 200 refs per edge, so the
+graph shape can never exceed the persisted contract.
 An exact manifest-only version is declaration evidence, not an installed
 version. Deliberately omitted: timestamps, suppliers, licenses,
 external references, contacts — everything without evidence in the
@@ -170,7 +242,11 @@ assess(coordinates) → { providerId, datasetStatus, advisories[] }
 | Manifests per scan | 50 | `SCA_MAX_MANIFESTS_PER_SCAN` (breach → `SCA_MANIFEST_LIMIT_EXCEEDED`) |
 | Manifest bytes (total, pre-parse) | 768 KiB | breach → `SCA_TARGET_TOO_LARGE` |
 | Inventory entries persisted | 200 | `SCA_MAX_DEPENDENCIES_PER_SCAN` — the summary keeps the honest total + `truncated: true` |
-| Parser entries per manifest | 500 | breach → manifest PARTIAL with a bounded note |
+| Parser entries per manifest | 500 | breach → manifest PARTIAL with a bounded note (packages for Python lock formats) |
+| Lockfile lines | 10 000 (npm/Poetry/Pipenv), 20 000 (`uv.lock`) | breach → INVALID_INPUT (npm/Poetry/Pipenv); `uv.lock` truncates and reports PARTIAL |
+| Locked dependency entries per `[[package]]` | 200 | breach → manifest PARTIAL with a bounded note |
+| Lockfile graph edges per manifest | 4 000 | breach → `edgesTruncated`, graph reported incomplete (`transitiveGraph: UNAVAILABLE`) |
+| SBOM edges per document | `components + 1` | shared `isSbomDocument` bound (root edge + one per component) |
 | Parser lines per manifest | 10 000 | breach → manifest INVALID_INPUT |
 | Processing deadline | 10 s | breach/abort → `SCA_SCAN_TIMEOUT` |
 
@@ -245,6 +321,7 @@ findings view is untouched and clearly separate.
 | Suite | Covers |
 | ----- | ------ |
 | `apps/api/test/scaParsers.test.ts` | name normalization (npm/pypi), all four manifests, adversarial matrices (proto keys, deep nesting, huge maps, malformed locks, invalid versions/names, control chars, traversal-shaped names), bounds (entry cap → PARTIAL, line cap → INVALID_INPUT), shell-looking strings as data |
+| `apps/api/test/scaTransitiveGraph.test.ts` | P2-11 graph contract: Node-style nested resolution (nested copy beats hoisted), declared-but-absent never becomes an edge, v1 structural nesting, malformed locks carry no edges, per-component SBOM edges with no dangling refs, serial covers the graph, clipped graph → `UNAVAILABLE` + stated reason, 200-component bound respected |
 | `apps/api/test/scaEngine.test.ts` | multi-ecosystem end-to-end, determinism (ids + SBOM serial), lockfile-priority truth, transitive-graph honesty (pypi-only → UNAVAILABLE), Null-provider honesty (NOT_ASSESSED, 0 advisories), stub-provider reality (validated advisories, phantom/malformed dropped), marker-file non-execution, path/owner fail-closed, caps (manifests/bytes/inventory truncation), deadline/abort, malformed-manifest honesty, default limits |
 | `apps/api/test/scaApi.test.ts` | pre-flight 409 (quota protected), real scan over HTTP (validated payload, detail-route only), idempotent replay, archived 409, cross-account isolation, no content leakage, persistence/restart determinism, tamper guards (forged sca on SAST/QUEUED/malformed → refuse to boot; client injection → 422), SAST/SECRETS regressions and passive DAST integration (Pump 11) |
 | `packages/shared/test/sca.test.ts` | closed vocabularies, id/fingerprint patterns, caps constants, guard rejections (unknown keys, out-of-vocabulary, fabricated pins, fake hashes/URLs, traversal evidence paths), cross-field honesty (NOT_ASSESSED↔advisories, ASSESSED requires provider+advisories, counts match arrays, manifest cap), deterministic ordering |

@@ -18,6 +18,12 @@ import type {
 import { emptyPackReport, parsePackManifest, validatePackRules, type PackFamily, type PackReport } from './conformance.js';
 import { SCA_READABLE_PARSERS } from './scaDeclaration.js';
 import { createJsonByteBudget, isResourceLimitError, readBoundedJsonFile, type JsonByteBudget } from './boundedJson.js';
+import {
+  aggregateContractVerdict, emptyContractState, evaluatePackContract, PACK_FAMILIES_FOR_CONTRACT,
+  parsePackLayoutVersion, selectSupportedLayoutVersion, DATASET_CONTRACT_VERSION,
+  SUPPORTED_PACK_LAYOUT_VERSIONS, SUPPORTED_PACK_SCHEMA_VERSIONS,
+  type DatasetContractState, type PackContractState, type PackFamilyName,
+} from './contract.js';
 
 /** Conservative process-local load ceilings; the pinned Dataset is much smaller.
  * Overrides are an internal test seam and can lower, but never raise, ceilings. */
@@ -228,6 +234,43 @@ async function loadDir(path: string, budget: LoadBudget, identityKey?: 'id' | 'r
   return { records, issues };
 }
 
+/**
+ * Read ONLY the layout version directory names under `packs/<family>`
+ * (`v1`, `v2`, …). This does not open rule files and does not follow
+ * symlinks; an unreadable directory is reported, never guessed at.
+ */
+async function discoverPackLayouts(
+  familyDir: string,
+  budget: LoadBudget,
+): Promise<{ versions: number[]; unreadable: boolean }> {
+  const versions: number[] = [];
+  let unreadable = false;
+  let directory;
+  try {
+    const info = await lstat(familyDir);
+    if (info.isSymbolicLink() || !info.isDirectory()) return { versions, unreadable: true };
+    directory = await opendir(familyDir);
+  } catch (error) {
+    // An absent family directory is a normal "no packs of this kind" state.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { versions, unreadable: false };
+    return { versions, unreadable: true };
+  }
+  try {
+    for await (const entry of directory) {
+      if (budget.entries >= budget.limits.maxEntries) { unreadable = true; break; }
+      budget.entries += 1;
+      const version = parsePackLayoutVersion(entry.name);
+      if (version === undefined) continue;
+      try {
+        const info = await lstat(join(familyDir, entry.name));
+        if (info.isSymbolicLink() || !info.isDirectory()) { unreadable = true; continue; }
+      } catch { unreadable = true; continue; }
+      versions.push(version);
+    }
+  } catch { unreadable = true; }
+  return { versions: [...new Set(versions)].sort((a, b) => a - b), unreadable };
+}
+
 export function createDatasetService(options: { datasetPath?: string | undefined; providerId: string; logger?: Pick<Console, 'info' | 'warn' | 'error'>; limits?: Partial<DatasetLimits> }) {
   const { datasetPath, providerId, logger } = options;
   const limits = datasetLimits(options.limits);
@@ -259,6 +302,8 @@ export function createDatasetService(options: { datasetPath?: string | undefined
   const reports: Record<PackFamily, PackReport> = {
     sast: emptyPackReport(), secrets: emptyPackReport(), dast: emptyPackReport(), sca: emptyPackReport(),
   };
+  // Explicit integration-contract state (layout + manifest versions only).
+  const contracts: Partial<Record<PackFamilyName, PackContractState>> = {};
 
   function ensureLoaded(): Promise<void> {
     if (loading === undefined) loading = loadOnce();
@@ -320,7 +365,13 @@ export function createDatasetService(options: { datasetPath?: string | undefined
 
       // --- packs: validate, execute declared tests, read manifest identity ---
       for (const family of PACK_FAMILIES) {
-        const path = join(budget.root, 'packs', family, 'v1');
+        // Contract first: which layout versions exist, and which one may load.
+        // Only supported versions are ever read; unsupported ones are counted,
+        // never interpreted (the app never guesses at a future pack format).
+        const familyDir = join(budget.root, 'packs', family);
+        const layout = await discoverPackLayouts(familyDir, budget);
+        const layoutVersion = selectSupportedLayoutVersion(layout.versions);
+        const path = join(familyDir, `v${layoutVersion ?? 1}`);
         const raw = await loadRawPackDir(path, budget);
         const outcome = validatePackRules(raw.rules, family);
         outcome.report.filesSeen += raw.unreadable.length;
@@ -335,6 +386,8 @@ export function createDatasetService(options: { datasetPath?: string | undefined
         else if (family === 'secrets') secretsPackRules = outcome.rules;
         else if (family === 'dast') dastPackRules = outcome.rules;
         else scaPackRules = outcome.rules;
+        let manifestRaw: unknown;
+        let manifestUnreadable = false;
         try {
           await assertSafeDirectory(budget.root, path);
           const manifestPath = join(path, 'pack.json');
@@ -345,11 +398,13 @@ export function createDatasetService(options: { datasetPath?: string | undefined
             if (budget.files >= limits.maxFiles) budget.fileLimitReached = true;
             outcome.report.manifestIssue = 'manifest could not be checked due to a resource limit';
             outcome.report.resourceLimitFailures = (outcome.report.resourceLimitFailures ?? 0) + 1;
+            manifestUnreadable = true;
           } else {
             budget.entries += 1; budget.files += 1;
             // A present manifest must identify this pack family's supported
             // schema; individual rules are still validated independently.
-            const manifest = parsePackManifest(await readDatasetJson(manifestPath, budget), family);
+            manifestRaw = await readDatasetJson(manifestPath, budget);
+            const manifest = parsePackManifest(manifestRaw, family);
             if (manifest !== undefined) packs[family] = manifest;
             else outcome.report.manifestIssue = 'manifest failed validation';
           }
@@ -357,8 +412,27 @@ export function createDatasetService(options: { datasetPath?: string | undefined
           // The manifest remains optional; an absent one is not a failed rule.
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
             outcome.report.manifestIssue = 'manifest could not be safely read or validated';
+            manifestUnreadable = true;
             if (isResourceLimitError(error)) outcome.report.resourceLimitFailures = (outcome.report.resourceLimitFailures ?? 0) + 1;
           }
+        }
+        // Explicit version compatibility (layout + manifest schema). A verdict
+        // of INCOMPATIBLE means zero rules reached this family's scanner, so
+        // every scan of that type must report PARTIAL/NOT_ASSESSED.
+        const contract = evaluatePackContract({
+          family,
+          configured,
+          observedLayoutVersions: layout.versions,
+          directoryUnreadable: layout.unreadable,
+          ...(manifestRaw === undefined ? {} : { manifest: manifestRaw }),
+          ...(manifestUnreadable ? { manifestUnreadable: true } : {}),
+        });
+        contracts[family] = contract;
+        if (contract.verdict === 'INCOMPATIBLE') {
+          // Loud, path-free: operators must know rules were deliberately refused.
+          logger?.warn?.(`[dataset] CONTRACT: ${family} packs declare an unsupported layout/schema version (app contract v${DATASET_CONTRACT_VERSION}); no ${family} rules were loaded. Scans of this type report PARTIAL.`);
+        } else if (contract.issues.includes('pack-layout-version-newer-ignored')) {
+          logger?.warn?.(`[dataset] CONTRACT: ${family} also ships a newer pack layout than this app supports; only the supported version was loaded.`);
         }
         if (outcome.report.accepted < outcome.report.filesSeen || outcome.report.enumerationFailures > 0 || outcome.report.manifestIssue !== undefined) {
           logger?.warn?.(`[dataset] ${family}: accepted ${outcome.report.accepted}/${outcome.report.filesSeen} discovered rules; ${outcome.report.enumerationFailures} enumeration failures; ${outcome.report.failedTests} declared-test failures; manifest issue: ${outcome.report.manifestIssue === undefined ? 'no' : 'yes'}`);
@@ -408,7 +482,11 @@ export function createDatasetService(options: { datasetPath?: string | undefined
     const packStatus = (family: PackFamily, count: number): DatasetCategoryStatus => {
       const category = mk(count, packs[family]);
       const report = reports[family];
-      return configured && (report.accepted < report.filesSeen || report.enumerationFailures > 0 || report.manifestIssue !== undefined)
+      // Contract issues are coverage statements: a newer layout that was not
+      // read, or a pack that could not be validated, is never "complete".
+      const contractIssues = (contracts[family]?.issues.length ?? 0) > 0;
+      return configured && (report.accepted < report.filesSeen || report.enumerationFailures > 0 ||
+        report.manifestIssue !== undefined || contractIssues)
         ? { ...category, incomplete: true }
         : category;
     };
@@ -447,7 +525,24 @@ export function createDatasetService(options: { datasetPath?: string | undefined
       lessons: { ...withLoadIssues(mk(lessonRecords.length), categoryIssues.lessons), ...(byUserType ? { byUserType } : {}) },
       assessmentTemplates: withLoadIssues(mk(assessmentTemplates.length), categoryIssues.assessmentTemplates),
       engagementTemplates: withLoadIssues(mk(engagementTemplates.length), categoryIssues.engagementTemplates),
+      contract: contractState(),
       ...(configured ? { loadedAt } : {}),
+    };
+  }
+
+  /** Aggregate the per-family verdicts into one explicit, path-free state. */
+  function contractState(): DatasetContractState {
+    if (!configured) return emptyContractState(false);
+    const families = Object.fromEntries(PACK_FAMILIES_FOR_CONTRACT.map((family) => [family,
+      contracts[family] ?? { verdict: 'UNKNOWN' as const, observedLayoutVersions: 0,
+        unsupportedLayoutVersions: 0, issues: [] }])) as Record<PackFamilyName, PackContractState>;
+    return {
+      contractVersion: DATASET_CONTRACT_VERSION,
+      supportedLayoutVersions: [...SUPPORTED_PACK_LAYOUT_VERSIONS],
+      supportedSchemaVersions: [...SUPPORTED_PACK_SCHEMA_VERSIONS],
+      verdict: aggregateContractVerdict(Object.values(families)),
+      families,
+      issues: [...new Set(Object.values(families).flatMap((family) => family.issues))].sort(),
     };
   }
 
@@ -474,6 +569,8 @@ export function createDatasetService(options: { datasetPath?: string | undefined
     vulnIntelCount: async (): Promise<number> => { await ensureLoaded(); return vulnIntelCount; },
     vulnIntelCounts: async (): Promise<VulnIntelCounts> => { await ensureLoaded(); return vulnIntelCounts; },
     packMetadata: async (family: PackFamily): Promise<DatasetPackIdentity | undefined> => { await ensureLoaded(); return packs[family]; },
+    /** Explicit Dataset integration-contract state (layout + manifest versions). */
+    contract: async (): Promise<DatasetContractState> => { await ensureLoaded(); return contractState(); },
     conformance: async () => {
       await ensureLoaded();
       return {

@@ -18,6 +18,9 @@ import type { ScanRequestService } from '../scans/request.js';
 import type { UsageService } from '../usage/service.js';
 import { createDatasetService } from '../external/service.js';
 import { buildAgentAssessment } from '../agent/assessment.js';
+import { buildAgentCapabilities } from '../agent/capabilities.js';
+import type { LocalModelProvider } from '../agent/localModel.js';
+import { attestAgentStorage, type StorageBoundaryCode, type StorageBoundaryIssue } from '../lib/storageBoundary.js';
 import { digestDataset, digestSource } from '../agent/snapshot.js';
 
 export interface AgentRouteDeps {
@@ -31,6 +34,10 @@ export interface AgentRouteDeps {
   processor: ScanProcessor;
   requestService: ScanRequestService;
   now?: () => number;
+  /** Optional loopback-only local model; unset means no model at all. */
+  modelProvider?: LocalModelProvider | undefined;
+  /** Durable Agent store paths used for the read-only capability verdict. */
+  agentStoragePaths?: readonly string[] | undefined;
 }
 
 const PACK_KEYS: Record<ScanType, 'sastPacks' | 'secretsPacks' | 'scaPacks' | 'dastPacks'> = {
@@ -62,7 +69,35 @@ export function createAgentRoutes(deps: AgentRouteDeps): Route[] {
       datasetConfigured: config.vulnIntelProvider === 'filesystem' && config.datasetPath !== undefined,
       quotaExhausted: usage.getUsageView(user, deviceHash).quotaStatus === 'EXHAUSTED', now: new Date(now()).toISOString() });
   };
+  const storageVerdict = (): { code: StorageBoundaryCode; issues: StorageBoundaryIssue[] } => {
+    const paths = deps.agentStoragePaths ?? [];
+    if (paths.length === 0) return { code: 'STORAGE_READY', issues: [] };
+    const verdict = attestAgentStorage(paths, { scanForeignWriters: false });
+    return { code: verdict.code, issues: verdict.issues };
+  };
   return [
+    {
+      // Additive, read-only: what the seven roles may do and whether a local
+      // model is actually configured. Never reports an unconfigured model as AI.
+      method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId/agent/capabilities', requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        v.rejectUnexpectedQuery(req);
+        if (ctx.user === undefined) throw unauthorized();
+        const { assessment } = await owned(ctx.params['projectId'], ctx.params['assessmentId'], ctx.user.id);
+        const storage = storageVerdict();
+        const model = deps.modelProvider?.availability() ?? { state: 'NONE' as const, endpoint: null };
+        sendSuccess(res, ctx, {
+          capabilities: buildAgentCapabilities({
+            now: new Date(now()).toISOString(),
+            executionEnabled: config.agentExperimentalEnabled === true && config.env !== 'production',
+            storageCode: storage.code,
+            storageIssues: storage.issues,
+            model,
+          }),
+          assessmentId: assessment.id,
+        });
+      },
+    },
     {
       method: 'GET', path: '/api/v1/projects/:projectId/assessments/:assessmentId/agent', requireAuth: true,
       handler: async (req, res, ctx): Promise<void> => {

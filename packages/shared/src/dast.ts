@@ -29,6 +29,20 @@ export const DAST_MODES = ['PASSIVE', 'ACTIVE_SAFE'] as const;
 export type DastMode = (typeof DAST_MODES)[number];
 export function isDastMode(v: unknown): v is DastMode { return typeof v === 'string' && (DAST_MODES as readonly string[]).includes(v); }
 
+/** OpenAPI/Swagger ingestion outcome for an active scan (P2-12). */
+export const DAST_OPENAPI_STATUSES = ['ANALYZED', 'NOT_FOUND', 'UNSUPPORTED', 'INVALID_INPUT'] as const;
+export type DastOpenApiStatus = (typeof DAST_OPENAPI_STATUSES)[number];
+export function isDastOpenApiStatus(value: unknown): value is DastOpenApiStatus {
+  return typeof value === 'string' && (DAST_OPENAPI_STATUSES as readonly string[]).includes(value);
+}
+
+/** Whether the operator configured a static credential header (P2-12). */
+export const DAST_AUTH_MODES = ['NONE', 'HEADER'] as const;
+export type DastAuthMode = (typeof DAST_AUTH_MODES)[number];
+export function isDastAuthMode(value: unknown): value is DastAuthMode {
+  return typeof value === 'string' && (DAST_AUTH_MODES as readonly string[]).includes(value);
+}
+
 /** Completed one-target DAST foundation result; no crawl or browser data. */
 export interface DastResult {
   targetUrl: string;
@@ -44,6 +58,24 @@ export interface DastResult {
   crawledCount?: number;
   /** Active-only: how many injection probes were sent (bounded). */
   injectedCount?: number;
+  /**
+   * Active-only (P2-12): what happened when the well-known OpenAPI/Swagger
+   * locations were checked. Absent means no specification discovery was
+   * attempted in this scan (never "no specification exists").
+   */
+  openApiStatus?: DastOpenApiStatus;
+  /** Active-only: specification documents actually requested (bounded). */
+  openApiSpecProbes?: number;
+  /** Active-only: spec-derived endpoints that were really probed. */
+  openApiEndpoints?: number;
+  /** Active-only: GET operations the spec stated that could not be safely built. */
+  openApiSkipped?: number;
+  /**
+   * Active-only (P2-12): whether requests carried an operator-configured
+   * credential header. The mode is disclosed; the header name and value never
+   * are. Absent means the scan predates authenticated probing.
+   */
+  authMode?: DastAuthMode;
 }
 
 function isTimestamp(value: unknown): value is string {
@@ -107,7 +139,7 @@ export function isDastObservation(value: unknown): value is DastObservation {
 
 export function isDastResult(value: unknown): value is DastResult {
   if (!isRecord(value)) return false;
-  const allowed = ['targetUrl', 'requestCount', 'redirectsFollowed', 'partial', 'partialReason', 'observations', 'mode', 'crawledCount', 'injectedCount'];
+  const allowed = ['targetUrl', 'requestCount', 'redirectsFollowed', 'partial', 'partialReason', 'observations', 'mode', 'crawledCount', 'injectedCount', 'openApiStatus', 'openApiSpecProbes', 'openApiEndpoints', 'openApiSkipped', 'authMode'];
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
   const isActive = value['mode'] === 'ACTIVE_SAFE';
   const maxReq = isActive ? 20 : 3;
@@ -134,6 +166,28 @@ export function isDastResult(value: unknown): value is DastResult {
   if (value['mode'] !== undefined && !isDastMode(value['mode'])) return false;
   if (value['crawledCount'] !== undefined && (typeof value['crawledCount'] !== 'number' || !Number.isInteger(value['crawledCount']) || value['crawledCount'] < 0 || value['crawledCount'] > 20)) return false;
   if (value['injectedCount'] !== undefined && (typeof value['injectedCount'] !== 'number' || !Number.isInteger(value['injectedCount']) || value['injectedCount'] < 0 || value['injectedCount'] > 20)) return false;
+  const openApiFields = ['openApiStatus', 'openApiSpecProbes', 'openApiEndpoints', 'openApiSkipped'];
+  if (openApiFields.some((key) => value[key] !== undefined)) {
+    // Spec discovery is active-only work; a passive result must not claim it.
+    if (!isActive) return false;
+    if (!isDastOpenApiStatus(value['openApiStatus'])) return false;
+    const probeCount = value['openApiSpecProbes'];
+    if (typeof probeCount !== 'number' || !Number.isInteger(probeCount) || probeCount < 0 || probeCount > 2) return false;
+    for (const key of ['openApiEndpoints', 'openApiSkipped']) {
+      const count = value[key];
+      if (typeof count !== 'number' || !Number.isInteger(count) || count < 0 || count > 50) return false;
+    }
+    // Claimed endpoint probes must be inside the request budget and cannot
+    // exceed what the specification could have supplied.
+    if ((value['openApiEndpoints'] as number) > value['requestCount']) return false;
+    if (value['openApiStatus'] === 'NOT_FOUND' && probeCount < 1) return false;
+    if (value['openApiStatus'] === 'ANALYZED' && probeCount < 1) return false;
+  }
+  if (value['authMode'] !== undefined) {
+    // Authenticated probing is active-only work; a passive result must not
+    // claim it, and the mode is a closed vocabulary.
+    if (!isActive || !isDastAuthMode(value['authMode'])) return false;
+  }
   if (value['partialReason'] !== undefined) {
     if (value['partial'] !== true || !isBoundedText(value['partialReason'], 200)) return false;
   }

@@ -220,6 +220,11 @@ export async function startTestServer(overrides: TestServerOverrides = {}): Prom
     rateLimitMaxRequests: 1000,
     rateLimitWindowMs: 60_000,
     bodyMaxBytes: 1_048_576,
+    // Most suites assert the FIRST deterministic outcome of a scan, so the
+    // default test config disables retry; scanRetry.test.ts opts in explicitly.
+    scanMaxAttempts: 1,
+    scanRetryBaseDelayMs: 5_000,
+    scanConcurrency: 1,
     version: '0.0.0-test',
     authStorePath: ':memory:',
     authScryptCost: 1024,

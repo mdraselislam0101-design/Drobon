@@ -50,8 +50,13 @@ import { createScanRequestService, type ScanRequestService } from '../scans/requ
  * - `GET  /api/v1/projects/:projectId/scans`        list the project's scans
  * - `GET  /api/v1/projects/:projectId/scans/:scanId` read one scan
  *
- * There is deliberately NO scan mutation endpoint: status, timestamps,
- * results and failures are set ONLY by the server-side processor.
+ * - `POST /api/v1/projects/:projectId/scans/:scanId/cancel` stop a scan
+ *
+ * Apart from cancellation there is deliberately NO scan mutation endpoint:
+ * status, timestamps, results and failures are set ONLY by the server-side
+ * processor. Cancellation is an INTENT (a durable flag plus an abort signal);
+ * it never writes a result, never fabricates findings, and the terminal
+ * transition is still made by the processor's own finalizer.
  *
  * Security rules (covered by targeted tests, not an exhaustive proof):
  * - PROJECT access follows the Pump 6 uniform policy: unknown, foreign
@@ -110,6 +115,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
     assessmentId: v.optional(v.string({ maxLength: 64, trim: true })),
     dastMode: v.optional(v.string({ maxLength: 16, trim: true })),
     dastActiveConsent: v.optional(v.boolean()),
+    dastOpenApiDiscovery: v.optional(v.boolean()),
   });
 
   /**
@@ -193,6 +199,7 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
           assessmentId: parsed.value.assessmentId,
           dastMode: parsed.value.dastMode,
           dastActiveConsent: parsed.value.dastActiveConsent,
+          dastOpenApiDiscovery: parsed.value.dastOpenApiDiscovery,
           idempotencyKeyFromRequest: () => idempotencyKeyFrom(req.headers),
         });
         if (outcome.outcome === 'invalid-target') {
@@ -286,6 +293,42 @@ export function createScanRoutes(deps: ScanRouteDeps): Route[] {
         // findings (bounded by MAX_FINDINGS_PER_SCAN by construction;
         // deterministically ordered). List responses stay lean.
         const body: ScanDetailResponse = { scan: toScanDetailResponse(record) };
+        sendSuccess(res, ctx, body);
+      },
+    },
+    {
+      // Owner-requested cancellation (audit finding P1-4). Uniform 404 for
+      // unknown/malformed/foreign scans, so the path is not an existence
+      // oracle. Idempotent: cancelling an already-cancelled scan answers the
+      // same record instead of an error; cancelling a scan that already
+      // finished is a 409 conflict (nothing is rewritten retroactively).
+      method: 'POST',
+      path: '/api/v1/projects/:projectId/scans/:scanId/cancel',
+      requireAuth: true,
+      handler: async (req, res, ctx): Promise<void> => {
+        const actor = ctx.user;
+        if (actor === undefined) {
+          throw unauthorized(); // Defensive: requireAuth rejects first.
+        }
+        v.rejectUnexpectedQuery(req);
+        const project = await access.ownProjectOr403(ctx.params['projectId'], actor.id);
+        const rawScanId = ctx.params['scanId'];
+        if (typeof rawScanId !== 'string' || rawScanId.length === 0 || rawScanId.length > 64) {
+          throw notFound('Scan not found.');
+        }
+        const outcome = await scans.requestScanCancellation({
+          ownerId: actor.id, projectId: project.id, scanId: rawScanId,
+        });
+        if (outcome.outcome === 'not-found') {
+          throw notFound('Scan not found.');
+        }
+        if (outcome.outcome === 'terminal') {
+          throw conflict('This scan has already finished and cannot be cancelled.');
+        }
+        // Only now signal the in-process attempt: the durable intent exists
+        // first, so the finalizer cannot miss it.
+        if (outcome.outcome === 'requested') processor.cancelScan(outcome.scan.id);
+        const body: ScanResponse = { scan: toScanResponse(outcome.scan) };
         sendSuccess(res, ctx, body);
       },
     },

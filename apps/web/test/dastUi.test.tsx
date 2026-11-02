@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
-import type { FindingDetailResponse, FindingsPageResponse, Project, ProjectResponse, Scan, ScanDetailResponse, ScansResponse } from '@drobon/shared';
+import type { FindingDetailResponse, FindingsPageResponse, Project, ProjectResponse, Scan, ScanDetailResponse, ScanResponse, ScansResponse } from '@drobon/shared';
 import type { ApiClient } from '../src/api/client.js';
 import { renderAt, stubClient, TEST_USER } from './appFixtures.js';
 
@@ -52,6 +52,39 @@ describe('passive DAST project UI', () => {
     await waitFor(() => expect(clearDastTarget).toHaveBeenCalledWith(PROJECT_ID));
     expect(screen.queryByTestId('dast-configured-target')).toBeNull();
     expect(typeSelect.querySelector('option[value="DAST"]')).toBeDisabled();
+  });
+
+  test('API-specification discovery is an opt-in checkbox that requires the active consent', async () => {
+    const createScan = vi.fn(async (): Promise<ScanResponse> => ({
+      scan: {
+        id: SCAN_ID,
+        projectId: PROJECT_ID,
+        scanType: 'DAST',
+        status: 'QUEUED',
+        createdAt: '2026-09-28T10:00:00.000Z',
+        updatedAt: '2026-09-28T10:00:00.000Z',
+      },
+    }));
+    const client = signedInClient({
+      getProject: vi.fn(async () => ({ project: project({ dastTargetUrl: TARGET }) })),
+      getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+      createScan,
+    });
+    await renderAt(`/projects/${PROJECT_ID}`, client);
+
+    await userEvent.selectOptions(await screen.findByTestId('scan-type-select'), 'DAST');
+    await userEvent.selectOptions(await screen.findByTestId('dast-mode-select'), 'ACTIVE_SAFE');
+    const specOptIn = await screen.findByTestId('dast-openapi-checkbox');
+    // Discovery cannot be chosen before the consent it depends on.
+    expect(specOptIn).toBeDisabled();
+    await userEvent.click(screen.getByTestId('dast-consent-checkbox'));
+    expect(specOptIn).not.toBeDisabled();
+    await userEvent.click(specOptIn);
+    await userEvent.click(screen.getByTestId('request-scan-button'));
+
+    await waitFor(() => expect(createScan).toHaveBeenCalledTimes(1));
+    const call = createScan.mock.calls[0] as unknown as [string, string, string, unknown, unknown, Record<string, unknown> | undefined];
+    expect(call[5]).toMatchObject({ dastMode: 'ACTIVE_SAFE', dastActiveConsent: true, dastOpenApiDiscovery: true });
   });
 
   test('renders only bounded observed HTTP evidence from a completed DAST detail', async () => {
@@ -133,6 +166,126 @@ describe('passive DAST project UI', () => {
     expect(getFindings).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID, { page: 1, pageSize: 20 });
     expect(getScan).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID);
     expect(getFinding).toHaveBeenCalledWith(PROJECT_ID, SCAN_ID, finding.id);
+  });
+
+  test('active DAST discloses crawl, injection and API-specification coverage', async () => {
+    const active: Scan = {
+      id: SCAN_ID,
+      projectId: PROJECT_ID,
+      scanType: 'DAST',
+      status: 'COMPLETED',
+      targetUrl: TARGET,
+      dastMode: 'ACTIVE_SAFE',
+      createdAt: '2026-09-28T10:00:00.000Z',
+      updatedAt: '2026-09-28T10:00:02.000Z',
+      startedAt: '2026-09-28T10:00:00.100Z',
+      completedAt: '2026-09-28T10:00:02.000Z',
+      resultSummary: { findingsTotal: 0, requestsMade: 4, redirectsFollowed: 0, partial: false },
+    };
+    const detail: ScanDetailResponse = {
+      scan: {
+        ...active,
+        findings: [],
+        dast: {
+          targetUrl: TARGET,
+          mode: 'ACTIVE_SAFE',
+          requestCount: 4,
+          redirectsFollowed: 0,
+          partial: false,
+          crawledCount: 2,
+          injectedCount: 1,
+          openApiStatus: 'ANALYZED',
+          openApiSpecProbes: 1,
+          openApiEndpoints: 2,
+          openApiSkipped: 2,
+          observations: [{
+            endpoint: TARGET,
+            method: 'GET',
+            status: 200,
+            observedAt: '2026-09-28T10:00:01.000Z',
+            responseTimeMs: 42,
+            bodyBytes: 128,
+            bodyTruncated: false,
+            contentType: 'text/html',
+            headers: [],
+          }],
+        },
+      },
+    };
+    const client = signedInClient({
+      getProject: vi.fn(async () => ({ project: project({ dastTargetUrl: TARGET }) })),
+      getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [active] })),
+      getScan: vi.fn(async () => detail),
+      getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [], page: 1, pageSize: 20, total: 0, totalPages: 1 })),
+    });
+    await renderAt(`/projects/${PROJECT_ID}`, client);
+    await userEvent.click(await screen.findByTestId('view-findings'));
+
+    expect(await screen.findByTestId('dast-active-counts')).toHaveTextContent('injection probes sent: 1');
+    const spec = await screen.findByTestId('dast-openapi');
+    expect(spec).toHaveTextContent('2 documented GET endpoint(s)');
+    expect(spec).toHaveTextContent('2 documented operation(s) needed input the spec did not state');
+    // The active notice must not claim a browser or a login session was used.
+    expect(screen.getByText(/no browser was used and no login\/session was established/i)).toBeInTheDocument();
+    // No authMode in this result → Drobon must not imply authentication.
+    expect(screen.queryByTestId('dast-auth-mode')).toBeNull();
+  });
+
+  test('an authenticated active scan discloses the mode, never the credential', async () => {
+    const active: Scan = {
+      id: SCAN_ID,
+      projectId: PROJECT_ID,
+      scanType: 'DAST',
+      status: 'COMPLETED',
+      targetUrl: TARGET,
+      dastMode: 'ACTIVE_SAFE',
+      createdAt: '2026-11-02T10:00:00.000Z',
+      updatedAt: '2026-11-02T10:00:02.000Z',
+      startedAt: '2026-11-02T10:00:00.100Z',
+      completedAt: '2026-11-02T10:00:02.000Z',
+      resultSummary: { findingsTotal: 0, requestsMade: 2, redirectsFollowed: 0, partial: false },
+    };
+    const detail: ScanDetailResponse = {
+      scan: {
+        ...active,
+        findings: [],
+        dast: {
+          targetUrl: TARGET,
+          mode: 'ACTIVE_SAFE',
+          authMode: 'HEADER',
+          requestCount: 2,
+          redirectsFollowed: 0,
+          partial: false,
+          crawledCount: 1,
+          injectedCount: 0,
+          observations: [{
+            endpoint: TARGET,
+            method: 'GET',
+            status: 200,
+            observedAt: '2026-11-02T10:00:01.000Z',
+            responseTimeMs: 12,
+            bodyBytes: 64,
+            bodyTruncated: false,
+            headers: [],
+          }],
+        },
+      },
+    };
+    const client = signedInClient({
+      getProject: vi.fn(async () => ({ project: project({ dastTargetUrl: TARGET }) })),
+      getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [active] })),
+      getScan: vi.fn(async () => detail),
+      getFindings: vi.fn(async (): Promise<FindingsPageResponse> => ({ findings: [], page: 1, pageSize: 20, total: 0, totalPages: 1 })),
+    });
+    await renderAt(`/projects/${PROJECT_ID}`, client);
+    await userEvent.click(await screen.findByTestId('view-findings'));
+
+    const note = await screen.findByTestId('dast-auth-mode');
+    expect(note).toHaveTextContent('operator-configured credential header');
+    expect(note).toHaveTextContent('never stored, logged or reported');
+    // The credential itself — not even its header name — can appear here.
+    expect(note.textContent?.toLowerCase()).not.toContain('authorization');
+    expect(screen.getByText(/no login\/session was established/i)).toBeInTheDocument();
   });
 
   test('archived projects display configured target read-only and hide the DAST target form', async () => {

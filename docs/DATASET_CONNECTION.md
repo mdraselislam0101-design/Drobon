@@ -76,6 +76,65 @@ are withheld. Dataset/advisory loader logs omit paths, filenames and raw
 exception messages. Inspection: `GET /api/v1/dataset/packs/:kind`
 (`sast|secrets|dast|sca`) and `GET /api/v1/dataset/lessons`.
 
+## Integration contract (Main App side only)
+
+Drobon-Dataset is a **separate repository and system**: it is never merged,
+copied, vendored or regenerated here, and it has no storage inside this repo.
+The app consumes it only through `apps/api/src/external/*` at runtime
+(`DATASET_PATH`, read-only) and holds **zero embedded rules** — the engine rule
+registries (`SAST_RULES`, `SECRETS_RULES`, `evaluateDastObservation`) are empty
+by design, so a missing or invalid Dataset can never be masked by built-ins.
+
+`apps/api/src/external/contract.ts` makes the version boundary **explicit**:
+
+| Declared in the app | Value | Meaning |
+|---|---|---|
+| `DATASET_CONTRACT_VERSION` | `1` | revision of the app-side integration contract |
+| `SUPPORTED_PACK_LAYOUT_VERSIONS` | `[1]` | loadable `packs/<family>/vN/` directories |
+| `SUPPORTED_PACK_SCHEMA_VERSIONS` | `[1]` | accepted `drobon.pack.<family>/vN` manifests |
+
+Verdicts (per family, and aggregated in `GET /api/v1/dataset/status` → `contract`):
+
+| Verdict | When | Effect |
+|---|---|---|
+| `COMPATIBLE` | a supported layout loaded and its manifest agrees | rules reach the engine |
+| `INCOMPATIBLE` | only unsupported layout versions exist (`v2`, …), or `pack.json` declares an unsupported schema | **no rules loaded**; scans report `PARTIAL`, never a clean result |
+| `UNKNOWN` | the family directory/manifest could not be read or validated | **no rules loaded**; scans report `PARTIAL` |
+| `NOT_CONFIGURED` | no external dataset configured | honest `NOT_CONFIGURED` statuses |
+
+Additional bounded issue codes (path-free, no dataset text): 
+`pack-layout-version-unsupported`, `pack-layout-version-newer-ignored`
+(a newer layout exists next to the supported one — the supported one loads and
+the category is marked `incomplete`), `manifest-schema-version-unsupported`,
+`manifest-schema-version-unreadable`, `pack-directory-unreadable`,
+`no-supported-pack-layout`.
+
+Fail-closed behaviour that is already exercised by tests
+(`apps/api/test/datasetContract.test.ts`):
+
+1. A v2-only dataset → `INCOMPATIBLE`, `sastPacks.status: UNAVAILABLE`,
+   `sastPacks.count: 0`, `incomplete: true`, and every engine returns
+   `completed` with `partial: true` and **no findings**.
+2. A manifest declaring `drobon.pack.sast/v2` refuses that family even when a
+   `v1` directory exists.
+3. An unreadable family directory is `UNKNOWN`, never `COMPATIBLE`.
+4. An absent family directory is not treated as a contract violation: the
+   format is not contradicted, coverage is reported by `count`/`incomplete`.
+5. `GET /api/v1/dataset/packs/:kind` returns the family's `contract` verdict, so
+   a caller never has to infer compatibility from an empty rule list.
+
+Compatibility is preserved: the existing `packs/<family>/v1/rules/*.json`
+layout, `pack.json` identity, status fields, conformance report and provider
+mapping above are unchanged. Only the additional `contract` object is new.
+
+### What is deliberately NOT done here
+
+- No Dataset content is inspected, copied, regenerated, migrated or tested in
+  this repo; Dataset updates belong to a separate authorized phase.
+- No duplicated rule/signature storage and no hardcoded patterns in engines.
+- No automatic upgrade of `v1` → `v2` packs: supporting a future layout requires
+  a reviewed change to `contract.ts` plus its tests.
+
 ## Loader contract (fail closed)
 
 1. Every pack file is checked against a **closed field set**, its

@@ -15,6 +15,10 @@
 
 AST উপযুক্ত স্থানে scanner-এর অংশ; SOC/SAC **নতুন scan type নয়**। বিদ্যমান চারটি scan type একই থাকে। DAST response-script, Secrets literal-context বা SCA `package.json` AST supplement `PARTIAL` হলে SOC saved-scan alert দিতে পারে এবং SAC-তে সংশ্লিষ্ট scanner coverage `PARTIAL` হয়। যেখানে AST প্রযোজ্য নয় বা পুরোনো record-এ নেই, তা নিরাপদ বা সম্পূর্ণ coverage বোঝায় না। নতুন SOC endpoint: `GET /api/v1/projects/:projectId/soc`। Authentication ও server-side project ownership বাধ্যতামূলক; একই ডাটা project পেজে **Security operations overview** থেকে চাওয়া যায়। সর্বশেষ ১০০টি স্ক্যান দেখা হয়; বাদ পড়লে তা দেখানো হয়। এটি external log গ্রহণ, intrusion detection, incident response, notification বা ২৪/৭ monitoring নয়। Alert মানে আক্রমণ ঘটেছে—এমন প্রমাণও নয়।
 
+## সম্মিলিত ঝুঁকি (correlated risk)
+
+`GET /api/v1/projects/:projectId/risk` চার স্ক্যানারের সর্বশেষ completed ফল একসাথে পড়ে এমন cluster দেয় যেখানে প্রমাণ ওভারল্যাপ করে (একই endpoint, একই response, একই CWE কোডে ও রানটাইমে, একই ফাইলে secret + কোড-দুর্বলতা, একই নিয়ম বারবার)। স্কোর প্রকাশিত মডেল `SEVERITY_SUM_V1` দিয়ে হিসাব হয় এবং প্রতিটি cluster তার finding id-গুলো cite করে। এটি নতুন scan type নয়, কিছু লেখে না, এবং কোনো exploit chain বা CVSS দাবি করে না। বিস্তারিত: `docs/RISK_ASSESSMENT.md`। Project পেজে **Correlated risk assessment** অংশ থেকে চাওয়া যায়।
+
 ## মালিকের রিপোর্ট কী বলবে
 
 নতুন রিপোর্টের JSON, Markdown, SARIF ও UI-তে একটি coverage অংশ থাকে:

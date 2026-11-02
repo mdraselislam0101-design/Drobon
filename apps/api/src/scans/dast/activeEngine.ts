@@ -17,6 +17,13 @@ import { extractCrawlCandidates, injectionPointsFromUrls, buildInjectedUrl } fro
 import { payloadsForBudget, type ActivePayload } from './payloads.js';
 import { isDastRequestAuthorized, type DastRequestAuthorizer } from './authorization.js';
 import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } from './ast.js';
+import { dastAuthMode, type DastAuthHeader } from './auth.js';
+import {
+  OPENAPI_MAX_SPEC_PROBES,
+  OPENAPI_SPEC_CANDIDATES,
+  parseOpenApiSpec,
+  type OpenApiStatus,
+} from './openapi.js';
 
 /**
  * Active DAST engine — bounded, opt-in complement to passive DAST.
@@ -41,7 +48,12 @@ export const ACTIVE_DAST_MAX_INJECTIONS = 10;
 export const ACTIVE_DAST_MAX_REDIRECTS = 2;
 export const ACTIVE_DAST_MAX_RESPONSE_BYTES = 32_768;
 export const ACTIVE_DAST_REQUEST_TIMEOUT_MS = 5_000;
-export const ACTIVE_DAST_SCAN_DEADLINE_MS = 30_000;
+/**
+ * Self-imposed active-scan deadline. It MUST stay below the processor's
+ * SCAN_ENGINE_TIMEOUT_MS (30 s) with room to finalize: an engine that runs to
+ * the same instant as the processor's abort cannot report its own timeout.
+ */
+export const ACTIVE_DAST_SCAN_DEADLINE_MS = 25_000;
 export const ACTIVE_DAST_THROTTLE_MS = 200;
 
 export interface ActiveDastEngineOptions {
@@ -59,6 +71,11 @@ export interface ActiveDastEngineOptions {
   dataset?: DatasetService;
   /** Revalidate assessment-linked authorization before each request. */
   authorize?: DastRequestAuthorizer;
+  /**
+   * Operator-configured authenticated probing (P2-12). Absent = every request
+   * is unauthenticated. The value never leaves this process boundary.
+   */
+  auth?: DastAuthHeader;
 }
 
 function statusCounts(findings: readonly Finding[]): Record<FindingSeverity, number> {
@@ -190,6 +207,13 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
   const requestTimeoutMs = Math.min(ACTIVE_DAST_REQUEST_TIMEOUT_MS, options.requestTimeoutMs ?? ACTIVE_DAST_REQUEST_TIMEOUT_MS);
   const scanDeadlineMs = Math.min(ACTIVE_DAST_SCAN_DEADLINE_MS, options.scanDeadlineMs ?? ACTIVE_DAST_SCAN_DEADLINE_MS);
   const throttleMs = Math.max(0, Math.min(1000, options.throttleMs ?? ACTIVE_DAST_THROTTLE_MS));
+  /**
+   * Optional operator credential. It is held in this closure only: it is not
+   * put on the scan record, in an observation, a finding or a report. Results
+   * disclose `authMode` and nothing else.
+   */
+  const auth = options.auth;
+  const authMode = dastAuthMode(auth);
 
   return {
     scanType: 'DAST' as const, // Active shares DAST scanType; mode is in record.dastMode (passive is default, active requires consent)
@@ -206,6 +230,10 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       // If not active mode, delegate to passive behavior (keep single engine backward compatible).
       // But we are the active engine — if passive requested, we still run passive baseline safely.
       const isActive = activeMode;
+      // Specification discovery is a separate, explicit opt-in: it changes the
+      // request profile against a third-party target, so it never runs just
+      // because active mode was requested.
+      const openApiEnabled = isActive && recAny['dastOpenApiDiscovery'] === true;
       const requestLimit = isActive ? maxRequests : Math.min(maxRequests, 3);
       // Scope/permission is checked before even resolving the target. It is
       // checked again immediately before each transport operation below.
@@ -233,6 +261,12 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       let authorizationRefused = false;
       let astObservation: DastAstObservation | undefined;
       let probingBaseline = true;
+      let crawledCount = 0;
+      let injectedCount = 0;
+      let openApiStatus: OpenApiStatus | undefined;
+      let openApiSpecProbes = 0;
+      let openApiEndpointCount = 0;
+      let openApiSkipped = 0;
       // The same response rules apply to every bounded probe in this scan.
       let allPackRules = options.packRules ?? [];
       if (options.dataset?.configured) {
@@ -300,7 +334,12 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
         // still consume the configured network budget.
         requestsAttempted += 1;
         try {
-          resp = await transport.probe(resolved, { timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)), maxResponseBytes, signal: context.signal });
+          resp = await transport.probe(resolved, {
+            timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)),
+            maxResponseBytes,
+            signal: context.signal,
+            ...(auth === undefined ? {} : { extraHeaders: { [auth.headerName]: auth.headerValue } }),
+          });
         } catch (error) {
           if (error instanceof DastHttpError && error.kind === 'timeout') throw new Error('timeout');
           if (context.signal.aborted || (error instanceof DastHttpError && error.kind === 'aborted')) throw new Error('aborted');
@@ -409,19 +448,97 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
 
       // Phase 2: Active crawl (only if active and we have budget left)
       if (now() >= deadline || context.signal.aborted) return timedOut('DAST_SCAN_TIMEOUT', 'The active DAST scan exceeded its execution deadline.');
-      const crawlLinks = extractCrawlCandidates(baselineBody, configuredUrl, ACTIVE_DAST_MAX_CRAWL_LINKS);
-      // Dedupe against already visited; keep only unvisited
-      const newLinks = crawlLinks.filter((u) => !visited.has(u)).slice(0, ACTIVE_DAST_MAX_CRAWL_LINKS);
 
-      // Phase 2a: Probe crawled URLs (passive checks on each, throttled)
+      // Phase 2a (P2-12): bounded OpenAPI/Swagger discovery. The spec is a
+      // hint list only — every resulting URL still passes the target policy,
+      // authorization and the same request budget as any other probe.
+      const specSeeds: string[] = [];
+      let specNote: string | undefined;
+      // Spec discovery never starves the crawl/injection phases: it may only
+      // use requests that still leave two for evidence-producing probes.
+      const candidateBudget = openApiEnabled
+        ? Math.min(OPENAPI_MAX_SPEC_PROBES, Math.max(0, requestLimit - requestsAttempted - 2))
+        : 0;
+      for (const candidatePath of OPENAPI_SPEC_CANDIDATES.slice(0, candidateBudget)) {
+        if (now() >= deadline || context.signal.aborted) break;
+        if (requestsAttempted >= requestLimit - 1) break;
+        let specUrl: string;
+        try {
+          specUrl = new URL(candidatePath, configuredUrl).toString();
+        } catch {
+          continue;
+        }
+        let probed: Awaited<ReturnType<typeof probeOne>>;
+        const attemptsBefore = requestsAttempted;
+        try {
+          probed = await probeOne(specUrl);
+        } catch (e) {
+          if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
+          if ((e as Error).message === 'aborted') return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it completed.');
+          continue;
+        }
+        // Count only really-issued requests: authorization refusals, the
+        // request limit and target-policy rejections send nothing.
+        if (requestsAttempted > attemptsBefore) openApiSpecProbes += 1;
+        if (probed === undefined || probed.bounded.status !== 200) continue;
+        const contentType = safeContentType(probed.bounded) ?? '';
+        if (!contentType.includes('json')) {
+          openApiStatus = 'UNSUPPORTED';
+          specNote = 'A specification document was found but its media type is not JSON.';
+          break;
+        }
+        const parsedSpec = parseOpenApiSpec(probed.bounded.body);
+        openApiStatus = parsedSpec.status;
+        openApiSkipped = parsedSpec.skipped;
+        if (parsedSpec.note !== undefined) specNote = parsedSpec.note;
+        if (parsedSpec.status !== 'ANALYZED') break;
+        for (const endpoint of parsedSpec.endpoints) {
+          let seed: string;
+          try {
+            seed = new URL(endpoint.path, configuredUrl).toString();
+          } catch {
+            continue;
+          }
+          if (!specSeeds.includes(seed)) specSeeds.push(seed);
+          if (specSeeds.length >= ACTIVE_DAST_MAX_CRAWL_LINKS) break;
+        }
+        break; // One usable specification is enough; do not probe further.
+      }
+      if (openApiStatus === undefined && openApiSpecProbes > 0) openApiStatus = 'NOT_FOUND';
+      if (openApiStatus === 'UNSUPPORTED' || openApiStatus === 'INVALID_INPUT') {
+        partialReason = `${partialReason === undefined ? '' : `${partialReason} `}${
+          specNote ?? 'An OpenAPI document was found but could not be analysed; specification-derived endpoints were not probed.'
+        }`.slice(0, 200);
+      }
+
+      const specSeedSet = new Set(specSeeds);
+      const crawlLinks = extractCrawlCandidates(baselineBody, configuredUrl, ACTIVE_DAST_MAX_CRAWL_LINKS);
+      // Spec-derived seeds first (contract-first evidence), then HTML links.
+      const seedCandidates = [...specSeeds, ...crawlLinks];
+      const newLinks: string[] = [];
+      for (const candidate of seedCandidates) {
+        if (visited.has(candidate) || newLinks.includes(candidate)) continue;
+        newLinks.push(candidate);
+        if (newLinks.length >= ACTIVE_DAST_MAX_CRAWL_LINKS) break;
+      }
+
+      // Phase 2b: Probe crawled URLs (passive checks on each, throttled)
       for (const link of newLinks) {
         if (requestsAttempted >= requestLimit) { partialReason = 'The active DAST request limit was reached; remaining crawl targets were not probed.'; break; }
         if (now() >= deadline || context.signal.aborted) break;
-        try { await probeOne(link); } catch (e) {
+        try {
+          const crawled = await probeOne(link);
+          if (crawled !== undefined) {
+            crawledCount += 1;
+            if (specSeedSet.has(link)) openApiEndpointCount += 1;
+          }
+        } catch (e) {
           if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
           if ((e as Error).message === 'aborted') return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it completed.');
         }
       }
+      // (openApiEndpointCount is incremented only for spec seeds that really
+      // produced an observation above.)
 
       // Phase 3: Active injection (safe payloads on query/path points)
       const allUrls = [configuredUrl, ...newLinks];
@@ -441,7 +558,10 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
           if (!injected) continue;
           // probeOne checks authorization before DNS and enforces the same
           // target policy; query-bearing URLs remain rejected by that policy.
-          try { await probeOne(injected, payload, baseline); } catch (e) {
+          try {
+            const injectedResult = await probeOne(injected, payload, baseline);
+            if (injectedResult !== undefined) injectedCount += 1;
+          } catch (e) {
             if ((e as Error).message === 'timeout') return timedOut('DAST_REQUEST_TIMEOUT', 'The DAST HTTP request timed out.');
             if ((e as Error).message === 'aborted') return timedOut('DAST_SCAN_TIMEOUT', 'The DAST scan was interrupted before it completed.');
           }
@@ -457,7 +577,17 @@ export function createActiveDastEngine(options: ActiveDastEngineOptions = {}): S
       const boundedFindings = findings.slice(0, MAX_FINDINGS_PER_SCAN);
       const partial = partialReason !== undefined;
       const result: ScanResultSummary = { astSupplement, findingsTotal: boundedFindings.length, findingsBySeverity: statusCounts(boundedFindings), requestsMade: requestsAttempted, redirectsFollowed, ...(truncated?{truncated:true}:{}), ...(partial?{partial:true, partialReason: partialReason!.slice(0,200)}:{}) };
-      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: { targetUrl: configuredUrl, mode: 'ACTIVE_SAFE', requestCount: requestsAttempted, redirectsFollowed, partial, ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}), observations } };
+      return { kind: 'completed', resultSummary: result, findings: boundedFindings, dast: {
+        targetUrl: configuredUrl, mode: 'ACTIVE_SAFE', authMode, requestCount: requestsAttempted, redirectsFollowed, partial,
+        ...(partialReason===undefined?{}:{partialReason: partialReason.slice(0,200)}),
+        observations, crawledCount, injectedCount,
+        ...(openApiStatus === undefined ? {} : {
+          openApiStatus,
+          openApiSpecProbes,
+          openApiEndpoints: openApiEndpointCount,
+          openApiSkipped,
+        }),
+      } };
     },
   };
 }

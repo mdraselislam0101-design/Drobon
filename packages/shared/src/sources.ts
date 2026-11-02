@@ -35,6 +35,17 @@ export const SOURCE_MAX_FILE_BYTES = 262_144;
 /** Maximum total UTF-8 bytes of all file contents in one snapshot (768 KiB). */
 export const SOURCE_MAX_TOTAL_BYTES = 786_432;
 
+/**
+ * Upper bound of the JSON request body that can carry a *legal* snapshot.
+ *
+ * The upload body is JSON, so content is re-encoded (quotes, backslashes and
+ * control characters). Worst realistic expansion for source text is 2x; the
+ * extra 64 KiB covers the envelope (paths, metadata, array syntax). A body
+ * limit below this value can reject a snapshot the store itself considers
+ * valid — the inconsistency fixed by `BODY_MAX_BYTES`'s new default.
+ */
+export const SOURCE_SNAPSHOT_BODY_MAX_BYTES = SOURCE_MAX_TOTAL_BYTES * 2 + 65_536;
+
 /** Maximum stored path length in characters. */
 export const SOURCE_PATH_MAX_LENGTH = 160;
 

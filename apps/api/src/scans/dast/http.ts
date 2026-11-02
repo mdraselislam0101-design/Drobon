@@ -17,6 +17,11 @@ export interface DastProbeOptions {
   timeoutMs: number;
   maxResponseBytes: number;
   signal: AbortSignal;
+  /**
+   * Optional operator-configured auth header (P2-12). Attached to THIS request
+   * only; the value is never logged, stored or echoed back into a result.
+   */
+  extraHeaders?: Readonly<Record<string, string>>;
 }
 
 /** The only production network-execution seam used by DAST. */
@@ -117,6 +122,9 @@ export function createNodeDastTransport(): DastTransport {
             origin: 'https://drobon-aegis.invalid',
             'user-agent': 'Drobon-Aegis-DAST/1.0',
             connection: 'close',
+            // Operator-configured credential (never persisted). Reserved
+            // headers cannot be overridden: the auth module refuses them.
+            ...(options.extraHeaders ?? {}),
           },
         };
         const startedAt = Date.now();

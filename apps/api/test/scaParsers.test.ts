@@ -4,6 +4,7 @@ import {
   normalizePypiName,
   parsePackageJson,
   parsePackageLock,
+  parsePoetryLock,
   parsePyprojectToml,
   parseRequirementLine,
   parseRequirementsTxt,
@@ -444,5 +445,161 @@ describe('pyproject.toml parsing (defensive subset)', () => {
     expect(parsed.status).toBe('ANALYZED');
     expect(parsed.dependencies).toHaveLength(1);
     expect(parsed.dependencies[0]).toMatchObject({ name: 'flask', declaredVersion: '>=2.0' });
+  });
+});
+
+describe('poetry.lock parsing (P2-11 — real PyPI lock evidence)', () => {
+  const lock = [
+    '[[package]]',
+    'name = "requests"',
+    'version = "2.31.0"',
+    'optional = false',
+    'python-versions = ">=3.7"',
+    'files = [',
+    '    {file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:aa"},',
+    ']',
+    '',
+    '[package.dependencies]',
+    'certifi = ">=2017.4.17"',
+    'urllib3 = ">=1.21.1,<3"',
+    'charset-normalizer = {version = ">=2,<4", markers = "python_version >= \\"3\\""}',
+    'socks = {version = ">=1.5.6", optional = true, extras = ["socks"]}',
+    '',
+    '[package.extras]',
+    'socks = ["PySocks (>=1.5.6,!=1.5.7)"]',
+    '',
+    '[[package]]',
+    'name = "certifi"',
+    'version = "2023.7.22"',
+    '',
+    '[[package]]',
+    'name = "urllib3"',
+    'version = "2.0.4"',
+    '',
+    '[package.dependencies]',
+    'python = ">=3.7"',
+    '',
+    '[[package]]',
+    'name = "charset-normalizer"',
+    'version = "3.2.0"',
+    '',
+    '[[metadata]]',
+    'lock-version = "2.0"',
+    'python-versions = "^3.9"',
+  ].join('\n');
+
+  test('locked packages become pypi nodes and their tables become edges', () => {
+    const parsed = parsePoetryLock(lock, 'poetry.lock', ['requests']);
+    // `socks` is declared but not locked, so the manifest is honestly PARTIAL.
+    expect(parsed.status).toBe('PARTIAL');
+    expect(parsed.dependencies.map((dep) => dep.name).sort()).toEqual([
+      'certifi', 'charset-normalizer', 'requests', 'urllib3',
+    ]);
+    for (const dependency of parsed.dependencies) {
+      expect(dependency).toMatchObject({
+        ecosystem: 'pypi',
+        versionSource: 'lockfile',
+        packageManager: 'pip',
+        // Directness is the inventory's decision (needs the pyproject).
+        dependencyClass: 'unknown',
+      });
+    }
+    expect(parsed.dependencies.find((dep) => dep.name === 'requests')?.resolvedVersion).toBe('2.31.0');
+    const edges = parsed.edges.map((edge) => `${edge.from}->${edge.to}`).sort();
+    expect(edges).toEqual([
+      '->requests@2.31.0',
+      'requests@2.31.0->certifi@2023.7.22',
+      'requests@2.31.0->charset-normalizer@3.2.0',
+      'requests@2.31.0->urllib3@2.0.4',
+    ]);
+    // `python` is an interpreter constraint, never a package node.
+    expect(parsed.dependencies.some((dep) => dep.name === 'python')).toBe(false);
+    // `optional = true` marks an extra (not installed by default).
+    expect(parsed.dependencies.every((dep) => dep.dependencyType === 'runtime')).toBe(true);
+    // `socks` is declared but never locked: the graph is honestly incomplete.
+    expect(parsed.unresolvedEdges).toBe(1);
+    // The graph was not clipped by a budget — it is the declaration that is
+    // unresolvable, which the manifest status/note states instead.
+    expect(parsed.edgesTruncated).toBeUndefined();
+    expect(parsed.note).toContain('1 locked dependency edge');
+  });
+
+  test('optional locked packages keep their optional classification', () => {
+    const parsed = parsePoetryLock(
+      ['[[package]]', 'name = "PySocks"', 'version = "1.7.1"', 'optional = true'].join('\n'),
+      'poetry.lock',
+    );
+    expect(parsed.dependencies[0]).toMatchObject({ name: 'pysocks', dependencyType: 'optional' });
+  });
+
+  test('a lock without [[package]] tables is INVALID, never an empty success', () => {
+    const parsed = parsePoetryLock('[metadata]\nlock-version = "2.0"', 'poetry.lock');
+    expect(parsed.status).toBe('INVALID_INPUT');
+    expect(parsed.dependencies).toEqual([]);
+    expect(parsed.edges).toEqual([]);
+  });
+
+  test('hostile and malformed entries are dropped, not guessed', () => {
+    const parsed = parsePoetryLock(
+      [
+        '[[package]]',
+        'name = "../../etc/passwd"',
+        'version = "1.0.0"',
+        '[[package]]',
+        'name = "ok"',
+        `version = "1.0${String.fromCharCode(1)}0"`,
+        '[[package]]',
+        'name = "good"',
+        'version = "1.2.3"',
+        '[package.dependencies]',
+        'constructor = "1.0"',
+        '__proto__ = "1.0"',
+      ].join('\n'),
+      'poetry.lock',
+    );
+    expect(parsed.dependencies.map((dep) => dep.name)).toEqual(['good']);
+    expect(parsed.note).toContain('2 [[package]] entries had no usable name/version.');
+  });
+
+  test('duplicate locks for the same name are distinct nodes (multi-platform locks)', () => {
+    const parsed = parsePoetryLock(
+      [
+        '[[package]]',
+        'name = "importlib-metadata"',
+        'version = "6.8.0"',
+        '[package.dependencies]',
+        'zipp = ">=0.5"',
+        '[[package]]',
+        'name = "importlib-metadata"',
+        'version = "6.8.0"',
+        '[[package]]',
+        'name = "zipp"',
+        'version = "3.16.2"',
+      ].join('\n'),
+      'poetry.lock',
+    );
+    // An identical duplicate is merged, not duplicated.
+    expect(parsed.dependencies.map((dep) => dep.name).sort()).toEqual(['importlib-metadata', 'zipp']);
+    expect(parsed.edges.map((edge) => `${edge.from}->${edge.to}`)).toContain(
+      'importlib-metadata@6.8.0->zipp@3.16.2',
+    );
+  });
+
+  test('the parser is bounded and reports the truncation', () => {
+    const packages: string[] = [];
+    for (let index = 0; index < SCA_PARSER_MAX_ENTRIES + 5; index += 1) {
+      packages.push('[[package]]', `name = "pkg-${index}"`, 'version = "1.0.0"');
+    }
+    const parsed = parsePoetryLock(packages.join('\n'), 'poetry.lock');
+    expect(parsed.status).toBe('PARTIAL');
+    expect(parsed.dependencies).toHaveLength(SCA_PARSER_MAX_ENTRIES);
+    expect(parsed.note).toContain('exceeded the parser limit');
+  });
+
+  test('the same lock always yields the same nodes and edges (deterministic)', () => {
+    const first = parsePoetryLock(lock, 'poetry.lock', ['requests']);
+    const second = parsePoetryLock(lock, 'poetry.lock', ['requests']);
+    expect(second.dependencies).toEqual(first.dependencies);
+    expect(second.edges).toEqual(first.edges);
   });
 });

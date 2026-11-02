@@ -21,6 +21,7 @@ import {
   isFindingHistoryResponse,
   isFindingWorkflowResponse,
   isSecurityReportResponse,
+  isRiskAssessmentResponse,
   isSocPostureResponse,
   isScanResponse,
   isScansResponse,
@@ -86,6 +87,7 @@ import {
   type FindingWorkflowResponse,
   type FindingSeverity,
   type SecurityReportResponse,
+  type RiskAssessmentResponse,
   type SocPostureResponse,
   isStudentLessonCatalogResponse,
   isStudentProgressResponse,
@@ -134,6 +136,8 @@ import {
   type AdminPartnersResponse,
   type PartnerDashboardResponse,
   type PaymentQuoteResponse,
+  type AgentCapabilitiesResponse,
+  isAgentCapabilitiesResponse,
 } from '@drobon/shared';
 
 export type ClientErrorKind = 'timeout' | 'aborted' | 'network' | 'http' | 'invalid-response';
@@ -320,6 +324,11 @@ export interface ApiClient {
   /** Read-only project operations snapshot derived from saved scans. */
   getSocPosture(projectId: string, signal?: AbortSignal): Promise<SocPostureResponse>;
   /**
+   * Read-only correlated risk over the latest completed scan of each scanner.
+   * It runs no scan and writes nothing; clusters cite recorded finding ids.
+   */
+  getRiskAssessment(projectId: string, signal?: AbortSignal): Promise<RiskAssessmentResponse>;
+  /**
    * Create a project. The server assigns id, ownership, status (ACTIVE)
    * and timestamps — only name/description travel in the body.
    */
@@ -347,6 +356,8 @@ export interface ApiClient {
   getAgentAssessment(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentAssessmentResponse>;
   executeAgent(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentExecutionResponse>;
   cancelAgentScan(projectId: string, assessmentId: string, scanId: string, signal?: AbortSignal): Promise<AgentCancellationResponse>;
+  /** Read-only: which of the seven logical roles and which model are actually active. */
+  getAgentCapabilities(projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentCapabilitiesResponse>;
   createAssessment(projectId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
   updateAssessment(projectId: string, assessmentId: string, input: { title: string; objectives: string[]; scope: AssessmentScope }, signal?: AbortSignal): Promise<AssessmentResponse>;
   setAssessmentStatus(projectId: string, assessmentId: string, status: AssessmentStatus, signal?: AbortSignal): Promise<AssessmentResponse>;
@@ -373,8 +384,15 @@ export interface ApiClient {
     idempotencyKey: string,
     signal?: AbortSignal,
     assessmentId?: string,
-    dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean },
+    dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean; dastOpenApiDiscovery?: boolean },
   ): Promise<ScanResponse>;
+  /**
+   * Ask the server to stop a QUEUED or RUNNING scan (owner only).
+   * Cancellation is an INTENT: the server persists it, signals the attempt and
+   * reports the terminal FAILED/`SCAN_CANCELLED` state itself. It is idempotent
+   * for an already-cancelled scan and a 409 for a finished one.
+   */
+  cancelScan(projectId: string, scanId: string, signal?: AbortSignal): Promise<ScanResponse>;
   /**
    * One scan's detail (Pump 8): the scan AND its real findings (bounded,
    * server-ordered) — the only read surface for findings.
@@ -934,6 +952,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal === undefined ? {} : { signal },
         isSocPostureResponse,
       ),
+    getRiskAssessment: (projectId: string, signal?: AbortSignal): Promise<RiskAssessmentResponse> =>
+      authRequest<RiskAssessmentResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/risk`,
+        signal === undefined ? {} : { signal },
+        isRiskAssessmentResponse,
+      ),
     getAssessments: (projectId: string, signal?: AbortSignal): Promise<AssessmentsResponse> =>
       authRequest<AssessmentsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments`, signal === undefined ? {} : { signal }, isAssessmentsResponse),
     getAssessment: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetailResponse> =>
@@ -946,6 +970,8 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       authRequest<AgentAssessmentResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent`, signal === undefined ? {} : { signal }, isAgentAssessmentResponse),
     executeAgent: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentExecutionResponse> =>
       authRequest<AgentExecutionResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }), ...(signal === undefined ? {} : { signal }) }, isAgentExecutionResponse),
+    getAgentCapabilities: (projectId: string, assessmentId: string, signal?: AbortSignal): Promise<AgentCapabilitiesResponse> =>
+      authRequest<AgentCapabilitiesResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent/capabilities`, signal === undefined ? {} : { signal }, isAgentCapabilitiesResponse),
     cancelAgentScan: (projectId: string, assessmentId: string, scanId: string, signal?: AbortSignal): Promise<AgentCancellationResponse> =>
       authRequest<AgentCancellationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/assessments/${encodeURIComponent(assessmentId)}/agent/scans/${encodeURIComponent(scanId)}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }), ...(signal === undefined ? {} : { signal }) }, isAgentCancellationResponse),
     compareScans: (projectId: string, currentScanId: string, baselineScanId: string, signal?: AbortSignal): Promise<ScanComparisonResponse> =>
@@ -988,7 +1014,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       idempotencyKey: string,
       signal?: AbortSignal,
       assessmentId?: string,
-      dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean },
+      dastOptions?: { dastMode?: 'PASSIVE' | 'ACTIVE_SAFE'; dastActiveConsent?: boolean; dastOpenApiDiscovery?: boolean },
     ): Promise<ScanResponse> =>
       authRequest<ScanResponse>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/scans`,
@@ -998,9 +1024,19 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
             'content-type': 'application/json',
             'idempotency-key': idempotencyKey,
           },
-          body: JSON.stringify({ scanType, ...(assessmentId === undefined ? {} : { assessmentId }), ...(dastOptions?.dastMode === undefined ? {} : { dastMode: dastOptions.dastMode }), ...(dastOptions?.dastActiveConsent === undefined ? {} : { dastActiveConsent: dastOptions.dastActiveConsent }) }),
+          body: JSON.stringify({ scanType, ...(assessmentId === undefined ? {} : { assessmentId }), ...(dastOptions?.dastMode === undefined ? {} : { dastMode: dastOptions.dastMode }), ...(dastOptions?.dastActiveConsent === undefined ? {} : { dastActiveConsent: dastOptions.dastActiveConsent }), ...(dastOptions?.dastOpenApiDiscovery === true ? { dastOpenApiDiscovery: true } : {}) }),
           ...(signal === undefined ? {} : { signal }),
         },
+        isScanResponse,
+      ),
+    cancelScan: (
+      projectId: string,
+      scanId: string,
+      signal?: AbortSignal,
+    ): Promise<ScanResponse> =>
+      authRequest<ScanResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/scans/${encodeURIComponent(scanId)}/cancel`,
+        { method: 'POST', ...(signal === undefined ? {} : { signal }) },
         isScanResponse,
       ),
     getScan: (

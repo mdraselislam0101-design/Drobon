@@ -7,6 +7,7 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   MAX_FINDINGS_PER_SCAN,
   PROJECT_ID_PATTERN,
+  SCAN_MAX_ATTEMPT_LIMIT,
   SCAN_ID_PATTERN,
   isFinding,
   isScanFailureCode,
@@ -118,6 +119,10 @@ export interface AgentScanContext {
   engagementId: string;
   /** Durable cancellation intent, not a claim that the worker has stopped. */
   cancelRequestedAt?: string;
+  /** 1-based execution attempt (absent until the first claim). */
+  attempt?: number;
+  /** Earliest claim time for a retried QUEUED job. */
+  retryAt?: string;
 }
 
 /** Before the assessment lock selects the specific engagement. */
@@ -151,6 +156,12 @@ export interface ScanRecord {
   dastMode?: DastMode;
   /** Explicit user consent for active probing (timestamp of declaration). */
   dastActiveConsent?: boolean;
+  /**
+   * Explicit opt-in (P2-12) to read ONE JSON OpenAPI/Swagger document from the
+   * target's well-known locations during an ACTIVE_SAFE scan. Off by default so
+   * the default request profile against a third-party target is unchanged.
+   */
+  dastOpenApiDiscovery?: boolean;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -172,6 +183,17 @@ export interface ScanRecord {
   sca?: ScaResult;
   /** Bounded, redacted HTTP observations for completed DAST scans only. */
   dast?: DastResult;
+  /**
+   * Durable user cancellation intent. Persisted while RUNNING so a restart
+   * cannot silently resume work the owner asked to stop; the terminal
+   * transition then becomes FAILED/`SCAN_CANCELLED`. Never set on QUEUED
+   * (those are cancelled immediately) or on terminal records.
+   */
+  cancelRequestedAt?: string;
+  /** 1-based execution attempt (absent until the first claim). */
+  attempt?: number;
+  /** Earliest claim time for a retried QUEUED job. */
+  retryAt?: string;
 }
 
 /**
@@ -223,6 +245,8 @@ export interface CreateScanInput {
   /** DAST mode for this scan (PASSIVE default). */
   dastMode?: DastMode;
   dastActiveConsent?: boolean;
+  /** ACTIVE_SAFE only: opt in to bounded API-specification discovery. */
+  dastOpenApiDiscovery?: boolean;
   /**
    * Optional idempotency key (already format-validated by the route).
    * Scoped to (ownerId, key) inside the store — cross-account key
@@ -296,6 +320,19 @@ export interface ScanStore {
   }>;
   /** Aggregate-only platform summary; never returns source content or all scan rows. */
   adminSummary(now: number): Promise<ScanAdminSummary>;
+  /**
+   * Size/shape of the persisted document (P1-6/P1-10 visibility). Read-only:
+   * it serializes the CURRENT state to measure it and never mutates anything.
+   * Used by the admin metrics endpoint so growth is observable instead of
+   * discovered as a slow write.
+   */
+  documentStats(): Promise<{
+    scans: number;
+    reports: number;
+    findingWorkflows: number;
+    idempotencyEntries: number;
+    documentBytes: number;
+  }>;
   /** Bounded metadata-only platform scan page. */
   adminScanPage(filters: AdminScanFilters, page: number, pageSize: number): Promise<{ scans: AdminScanSummary[]; total: number }>;
   /** Bounded redacted finding index; excludes evidence, file paths, and hashes. */
@@ -351,6 +388,27 @@ export interface ScanStore {
     failureCode: ScanFailureCode,
     failureMessage: string,
   ): Promise<ScanRecord | undefined>;
+  /**
+   * Owner-requested cancellation, ownership already resolved by the caller.
+   * - QUEUED  → FAILED/`SCAN_CANCELLED` immediately (no work was done);
+   * - RUNNING → durable intent persisted; the processor stops the attempt and
+   *             finalizes the same way. Returns the current record.
+   * - terminal → `terminal` (a repeated cancel of a cancelled scan answers
+   *             `cancelled` for idempotency).
+   */
+  requestScanCancellation(input: { ownerId: string; projectId: string; scanId: string }): Promise<
+    | { outcome: 'cancelled'; scan: ScanRecord }
+    | { outcome: 'requested'; scan: ScanRecord }
+    | { outcome: 'terminal'; scan: ScanRecord }
+    | { outcome: 'not-found' }
+  >;
+  /**
+   * RUNNING → QUEUED for a bounded retry (P1-3). The attempt counter is kept,
+   * `startedAt` is cleared (the job has not started again yet) and `retryAt`
+   * holds the backoff instant. Returns `undefined` unless the scan is RUNNING
+   * and still under the attempt limit.
+   */
+  requeueScan(id: string, retryAt: string): Promise<ScanRecord | undefined>;
   /** Retrieve a report snapshot scoped to its project and source scan. */
   findReportByProjectAndScan(projectId: string, scanId: string): Promise<SecurityReport | undefined>;
   /** Persist or refresh the single report snapshot for a completed scan. */
@@ -453,6 +511,9 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   ) return undefined;
   if (record['dastMode'] !== undefined && record['dastMode'] !== 'PASSIVE' && record['dastMode'] !== 'ACTIVE_SAFE') return undefined;
   if (record['dastActiveConsent'] !== undefined && typeof record['dastActiveConsent'] !== 'boolean') return undefined;
+  if (record['dastOpenApiDiscovery'] !== undefined && typeof record['dastOpenApiDiscovery'] !== 'boolean') return undefined;
+  if (record['dastOpenApiDiscovery'] === true &&
+      (record['scanType'] !== 'DAST' || record['dastMode'] !== 'ACTIVE_SAFE' || record['dastActiveConsent'] !== true)) return undefined;
   if (record['dastMode'] === 'ACTIVE_SAFE' && record['dastActiveConsent'] !== true) return undefined;
   if (record['agent'] !== undefined && (!isAgentScanContext(record['agent']) || record['assessmentId'] === undefined ||
       record['dastMode'] === 'ACTIVE_SAFE' || record['dastActiveConsent'] === true ||
@@ -475,6 +536,20 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
   }
   if (record['resultSummary'] !== undefined && !isScanResultSummary(record['resultSummary'])) {
     return undefined;
+  }
+  if (record['cancelRequestedAt'] !== undefined) {
+    if (typeof record['cancelRequestedAt'] !== 'string' || Number.isNaN(Date.parse(record['cancelRequestedAt']))) return undefined;
+    if (status === 'QUEUED' || status === 'COMPLETED' || status === 'TIMED_OUT') return undefined;
+  }
+  // Retry bookkeeping (P1-3): a bounded attempt counter, and a backoff instant
+  // that exists only while the job waits in the queue.
+  if (record['attempt'] !== undefined) {
+    if (typeof record['attempt'] !== 'number' || !Number.isInteger(record['attempt']) ||
+        record['attempt'] < 1 || record['attempt'] > SCAN_MAX_ATTEMPT_LIMIT) return undefined;
+  }
+  if (record['retryAt'] !== undefined) {
+    if (typeof record['retryAt'] !== 'string' || Number.isNaN(Date.parse(record['retryAt']))) return undefined;
+    if (status !== 'QUEUED') return undefined;
   }
   if (isScanResultSummary(record['resultSummary'])) {
     if ((record['resultSummary'].astParser !== undefined || record['resultSummary'].astCoverage !== undefined) && record['scanType'] !== 'SAST') return undefined;
@@ -586,6 +661,7 @@ function parseStoredScan(value: unknown): ScanRecord | undefined {
     ...(typeof record['dastTargetUrl'] === 'string' ? { dastTargetUrl: record['dastTargetUrl'] } : {}),
     ...(record['dastMode'] === 'ACTIVE_SAFE' ? { dastMode: 'ACTIVE_SAFE' as const } : record['dastMode'] === 'PASSIVE' ? { dastMode: 'PASSIVE' as const } : {}),
     ...(record['dastActiveConsent'] === true ? { dastActiveConsent: true as const } : {}),
+    ...(record['dastOpenApiDiscovery'] === true ? { dastOpenApiDiscovery: true as const } : {}),
     updatedAt: record['updatedAt'],
   };
   if (typeof record['startedAt'] === 'string') {
@@ -827,8 +903,9 @@ function loadDocument(path: string): { document: StoreDocument | undefined; snap
     typeof value === 'object' && value !== null && Object.keys(value).some((key) => !allowed.includes(key));
   if (version === 2 && (unknownFields(parsed, ['version', 'scans', 'idempotency', 'reports', 'findingWorkflows']) ||
       rawScans.some((scan) => unknownFields(scan, ['id', 'ownerId', 'projectId', 'scanType', 'assessmentId', 'agent', 'status',
-        'dastTargetUrl', 'dastMode', 'dastActiveConsent', 'createdAt', 'updatedAt', 'startedAt', 'completedAt',
-        'failureCode', 'failureMessage', 'resultSummary', 'findings', 'sca', 'dast'])) ||
+        'dastTargetUrl', 'dastMode', 'dastActiveConsent', 'dastOpenApiDiscovery', 'createdAt', 'updatedAt', 'startedAt', 'completedAt',
+        'failureCode', 'failureMessage', 'resultSummary', 'findings', 'sca', 'dast',
+        'cancelRequestedAt', 'attempt', 'retryAt'])) ||
       (parsed as StoreDocument).idempotency.some((entry) => unknownFields(entry, ['accountId', 'key', 'projectId', 'scanType',
         'assessmentId', 'targetUrl', 'scanId', 'createdAt'])))) {
     throw new Error(`Scan store at ${path} has unsupported version 2 fields — refusing to start.`);
@@ -1016,6 +1093,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (
           (input.scanType === 'DAST' && !isSafeDastUrl(input.targetUrl)) ||
           (input.scanType !== 'DAST' && input.targetUrl !== undefined) ||
+          (input.dastOpenApiDiscovery === true &&
+            (input.scanType !== 'DAST' || input.dastMode !== 'ACTIVE_SAFE' || input.dastActiveConsent !== true)) ||
           (input.agent !== undefined && (!isAgentScanContext(input.agent) || input.agent.cancelRequestedAt !== undefined || input.assessmentId === undefined ||
             input.dastMode === 'ACTIVE_SAFE' || input.dastActiveConsent === true ||
             (input.scanType !== 'DAST' && input.agent.sourceDigest === undefined)))
@@ -1043,7 +1122,8 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
               // store these fields. An absent mode means legacy PASSIVE.
               if (scan.scanType === 'DAST' && (
                 (scan.dastMode ?? 'PASSIVE') !== (input.dastMode ?? 'PASSIVE') ||
-                (scan.dastActiveConsent === true) !== (input.dastActiveConsent === true)
+                (scan.dastActiveConsent === true) !== (input.dastActiveConsent === true) ||
+                (scan.dastOpenApiDiscovery === true) !== (input.dastOpenApiDiscovery === true)
               )) return { outcome: 'conflict' };
               return { outcome: 'replayed', scan: toPublic(scan) };
             }
@@ -1072,6 +1152,7 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           ...(input.targetUrl === undefined ? {} : { dastTargetUrl: input.targetUrl }),
           ...(input.dastMode === undefined ? {} : { dastMode: input.dastMode }),
           ...(input.dastActiveConsent === true ? { dastActiveConsent: true as const } : {}),
+          ...(input.dastOpenApiDiscovery === true ? { dastOpenApiDiscovery: true as const } : {}),
           status: 'QUEUED',
           createdAt: now,
           updatedAt: now,
@@ -1261,6 +1342,24 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
       return Promise.resolve({ scans: scansSummary, findings: findingsSummary, reports: reportsSummary });
     },
 
+    documentStats: async () => {
+      const scans = [...scansById.values()];
+      const document = {
+        version: 2 as const,
+        scans,
+        idempotency: [...idempotencyByKey.values()],
+        reports: [...reportsByScan.values()],
+        findingWorkflows: workflowValues(),
+      };
+      return {
+        scans: scans.length,
+        reports: document.reports.length,
+        findingWorkflows: document.findingWorkflows.length,
+        idempotencyEntries: document.idempotency.length,
+        documentBytes: Buffer.byteLength(canonicalJson(document), 'utf8'),
+      };
+    },
+
     adminSummary: (now) => {
       const byStatus: Record<ScanStatus, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, TIMED_OUT: 0 };
       const byType: Record<ScanType, number> = { SAST: 0, SCA: 0, SECRETS: 0, DAST: 0 };
@@ -1416,8 +1515,11 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
 
     claimNextQueued: () =>
       runExclusive(() => {
+        const nowIso = new Date().toISOString();
         const candidate = [...scansById.values()]
-          .filter((record) => record.status === 'QUEUED')
+          // A retried job is not claimable before its backoff instant.
+          .filter((record) => record.status === 'QUEUED' &&
+            (record.retryAt === undefined || record.retryAt <= nowIso))
           .sort(
             (a, b) =>
               (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1),
@@ -1425,13 +1527,38 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
         if (candidate === undefined) {
           return undefined;
         }
-        const claimed = applyClaimPersist(candidate, (current) => ({
-          ...current,
-          status: 'RUNNING',
-          startedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }));
+        const claimed = applyClaimPersist(candidate, (current) => {
+          // A claim clears the backoff instant; the attempt counter survives.
+          const { retryAt: _retryAt, ...rest } = current;
+          return {
+            ...rest,
+            status: 'RUNNING',
+            startedAt: nowIso,
+            updatedAt: nowIso,
+            attempt: (current.attempt ?? 0) + 1,
+          };
+        });
         return claimed === undefined ? undefined : toPublic(claimed);
+      }),
+
+    requeueScan: (id, retryAt) =>
+      runExclusive(() => {
+        const current = scansById.get(id);
+        if (current === undefined || current.status !== 'RUNNING') return undefined;
+        if ((current.attempt ?? 0) >= SCAN_MAX_ATTEMPT_LIMIT) return undefined;
+        const updated = applyClaimPersist(current, (record) => {
+          // Destructure out the fields a QUEUED record must not carry.
+          const { startedAt: _startedAt, completedAt: _completedAt,
+            failureCode: _failureCode, failureMessage: _failureMessage,
+            resultSummary: _resultSummary, ...rest } = record;
+          return {
+            ...rest,
+            status: 'QUEUED',
+            updatedAt: new Date().toISOString(),
+            retryAt,
+          };
+        });
+        return updated === undefined ? undefined : toPublic(updated);
       }),
 
     completeScan: (id, resultSummary, findings, sca, dast) =>
@@ -1562,15 +1689,63 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
           return undefined;
         }
         const cancelled = current.agent?.cancelRequestedAt !== undefined;
+        // A user-requested cancellation of a normal scan is reported as such,
+        // whichever code the abort surfaced as.
+        const userCancelled = cancelled || current.cancelRequestedAt !== undefined;
         const updated = applyClaimPersist(current, (record) => ({
           ...record,
           status: 'FAILED',
           completedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          failureCode: cancelled ? 'SCAN_ENGINE_ERROR' : failureCode,
-          failureMessage: cancelled ? 'Agent job cancellation was requested.' : failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
+          failureCode: cancelled ? 'SCAN_ENGINE_ERROR' : userCancelled ? 'SCAN_CANCELLED' : failureCode,
+          failureMessage: cancelled ? 'Agent job cancellation was requested.'
+            : userCancelled ? 'The scan was cancelled on request.'
+            : failureMessage.slice(0, SCAN_FAILURE_MESSAGE_MAX_LENGTH),
         }));
         return updated === undefined ? undefined : toPublic(updated);
+      }),
+
+    requestScanCancellation: (input) =>
+      runExclusive(() => {
+        const current = scansById.get(input.scanId);
+        if (current === undefined || current.ownerId !== input.ownerId ||
+            current.projectId !== input.projectId) {
+          return { outcome: 'not-found' as const };
+        }
+        if (current.status === 'QUEUED') {
+          // Nothing ran yet: cancel immediately. The lifecycle invariant
+          // requires startedAt on every non-QUEUED record, so the cancellation
+          // instant is recorded there — the message states no work happened.
+          const at = new Date().toISOString();
+          const updated = applyClaimPersist(current, (record) => ({
+            ...record,
+            status: 'FAILED',
+            startedAt: at,
+            completedAt: at,
+            updatedAt: at,
+            failureCode: 'SCAN_CANCELLED',
+            failureMessage: 'The scan was cancelled before it started.',
+          }));
+          return updated === undefined
+            ? { outcome: 'not-found' as const }
+            : { outcome: 'cancelled' as const, scan: updated };
+        }
+        if (current.status === 'RUNNING') {
+          // Durable intent: a restart must not resume work the owner stopped.
+          if (current.cancelRequestedAt !== undefined) {
+            return { outcome: 'requested' as const, scan: toPublic(current) };
+          }
+          const at = new Date().toISOString();
+          const updated = applyClaimPersist(current, (record) => ({
+            ...record, cancelRequestedAt: at, updatedAt: at,
+          }));
+          return updated === undefined
+            ? { outcome: 'not-found' as const }
+            : { outcome: 'requested' as const, scan: updated };
+        }
+        return current.failureCode === 'SCAN_CANCELLED'
+          ? { outcome: 'cancelled' as const, scan: toPublic(current) }
+          : { outcome: 'terminal' as const, scan: toPublic(current) };
       }),
 
     findReportByProjectAndScan: async (projectId, scanId) => {
@@ -1722,8 +1897,17 @@ function createScanStoreFrom(internals: StoreInternals): ScanStore {
   };
 }
 
+export interface JsonScanStoreOptions {
+  /**
+   * Re-checked before every publication. The Agent-enabled server uses this to
+   * re-attest the storage boundary per write, so a directory widened after
+   * startup fails the write instead of accepting it.
+   */
+  beforePersist?: (() => void) | undefined;
+}
+
 /** Durable scan store: cooperative local guards, not mandatory or distributed fencing. */
-export function createJsonFileScanStore(path: string): ScanStore {
+export function createJsonFileScanStore(path: string, options: JsonScanStoreOptions = {}): ScanStore {
   const { document, snapshot } = loadDocument(path);
   const fence = createJsonFileWriteFence(path, snapshot, 'Scan');
   let version: 1 | 2 | undefined = document?.version;
@@ -1737,6 +1921,7 @@ export function createJsonFileScanStore(path: string): ScanStore {
     // store retains v1 and requires a separately approved offline migration.
     const nextVersion = version ?? (hasAgent ? 2 : 1);
     const payload: StoreDocument = { version: nextVersion, scans, idempotency, reports, findingWorkflows };
+    options.beforePersist?.();
     fence.persist(`${JSON.stringify(payload, null, 2)}\n`);
     version = nextVersion;
   };
@@ -1794,6 +1979,10 @@ export function toScanResponse(record: ScanRecord): Scan {
     ...(record.failureCode === undefined ? {} : { failureCode: record.failureCode }),
     ...(record.failureMessage === undefined ? {} : { failureMessage: record.failureMessage }),
     ...(record.resultSummary === undefined ? {} : { resultSummary: record.resultSummary }),
+    // Visibility for the owner: an in-flight cancellation is not a secret.
+    ...(record.cancelRequestedAt === undefined ? {} : { cancelRequestedAt: record.cancelRequestedAt }),
+    ...(record.attempt === undefined ? {} : { attempt: record.attempt }),
+    ...(record.retryAt === undefined ? {} : { retryAt: record.retryAt }),
   };
   return sharedScan as Scan;
 }

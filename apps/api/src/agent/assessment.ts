@@ -8,6 +8,7 @@ import type { SourceSnapshotRecord } from '../scans/sources.js';
 import type { ScanRecord } from '../scans/store.js';
 import { digestSource } from './snapshot.js';
 import { inventory } from './recon.js';
+import { evidenceGaps } from './orchestration.js';
 
 export const AGENT_SCANNERS: readonly ScanType[] = ['SAST', 'SECRETS', 'SCA', 'DAST'];
 const PRIORITY: Record<FindingSeverity, number> = { CRITICAL: 100, HIGH: 80, MEDIUM: 60, LOW: 40, INFO: 20 };
@@ -87,6 +88,13 @@ function review(scan: ScanRecord, finding: Finding, sourceDigest: string | undef
     scanner: findingScanner(finding) ?? scan.scanType, severity: finding.severity, priority: PRIORITY[finding.severity] };
   if (scan.resultSummary?.partial === true || scan.resultSummary?.truncated === true || scan.dast?.partial === true) {
     return { ...common, verdict: 'INCONCLUSIVE', basis: 'The originating scan is partial or truncated; severity is rule-assigned, not proven exploitability.' };
+  }
+  // The owning role declares the evidence its result must carry. A finding
+  // that cannot be tied to that evidence is not reported as suspected.
+  const gaps = evidenceGaps(scan.scanType, finding);
+  if (gaps.length > 0) {
+    return { ...common, verdict: 'INCONCLUSIVE',
+      basis: `The stored finding does not carry the ${scan.scanType} role's required evidence (${gaps.join(', ')}); no verdict is assigned.` };
   }
   if (finding.scanner === 'DAST') {
     const linked = scan.dast?.observations.some((observation) => observation.endpoint === finding.endpoint &&

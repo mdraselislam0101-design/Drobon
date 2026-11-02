@@ -898,6 +898,47 @@ describe('idempotency keys', () => {
     }
   });
 
+  test('API specification discovery is an explicit, gated opt-in (P2-12)', async () => {
+    const users = createMemoryUserRepository();
+    await seedUser(users, 'owner@example.test');
+    const server = await startTestServer({ users });
+    try {
+      const owner = await login(server, 'owner@example.test');
+      const projectId = await createProject(server, owner);
+      // Requires active-safe mode with explicit consent.
+      expect((await requestScan(server, owner, projectId, {
+        scanType: 'DAST', dastOpenApiDiscovery: true,
+      }, 'spec-key-1')).res.status).toBe(422);
+      expect((await requestScan(server, owner, projectId, {
+        scanType: 'DAST', dastMode: 'PASSIVE', dastActiveConsent: true, dastOpenApiDiscovery: true,
+      }, 'spec-key-2')).res.status).toBe(422);
+      // Never on another scan type.
+      expect((await requestScan(server, owner, projectId, {
+        scanType: 'SAST', dastOpenApiDiscovery: true,
+      }, 'spec-key-3')).res.status).toBe(422);
+      // A false value is not "off": it is a malformed opt-in.
+      expect((await requestScan(server, owner, projectId, {
+        scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true, dastOpenApiDiscovery: false,
+      }, 'spec-key-4')).res.status).toBe(422);
+      // Nothing was created by the refused requests.
+      expect(await listScans(server, owner, projectId)).toHaveLength(0);
+      expect(await getUsage(server, owner)).toEqual({ used: 0 });
+
+      const accepted = await requestScan(server, owner, projectId, {
+        scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true, dastOpenApiDiscovery: true,
+      }, 'spec-key-5');
+      expect(accepted.res.status).toBe(201);
+      // Opt-in is part of the idempotency identity.
+      expect((await requestScan(server, owner, projectId, {
+        scanType: 'DAST', dastMode: 'ACTIVE_SAFE', dastActiveConsent: true,
+      }, 'spec-key-5')).res.status).toBe(409);
+      expect(await listScans(server, owner, projectId)).toHaveLength(1);
+      expect(await getUsage(server, owner)).toEqual({ used: 1 });
+    } finally {
+      await server.stop();
+    }
+  });
+
   test('keys are scoped to the account — another account using the same key is independent', async () => {
     const users = createMemoryUserRepository();
     await seedUser(users, 'a@example.test');

@@ -94,9 +94,12 @@ SCA মানে **Software Composition Analysis**। এটি আপনার 
 অ্যাপ কোন package কোথায় ঘোষণা হয়েছে, version declaration কী, এবং যথেষ্ট lockfile তথ্য থাকলে কোথায় resolved version বা transitive dependency আছে—তার একটি সীমিত তালিকা তৈরি করে। প্রধান inventory parser-গুলোর ফাইল:
 
 - `package.json` ও `package-lock.json` — npm;
-- `requirements.txt` ও `pyproject.toml` — Python/PyPI।
+- `requirements.txt` ও `pyproject.toml` — Python/PyPI (declaration);
+- `poetry.lock` ও `uv.lock` — Python/PyPI (resolved installation + real parent → child edges);
+- pip-compile করা `requirements.txt` (`# via` provenance থাকলে) — Python/PyPI graph;
+- `Pipfile` / `Pipfile.lock` — Python/PyPI (resolved version, কিন্তু Pipenv কোনো edge সংরক্ষণ করে না, তাই graph হয় না)।
 
-সব manifest, lockfile, ecosystem বা version syntax একই গভীরতায় বোঝে না। বিশেষত lockfile evidence ছাড়া পুরো transitive dependency graph আছে বলে দাবি করা যায় না। একটি স্ক্যানে সর্বোচ্চ ৫০টি manifest ও সর্বোচ্চ ২০০টি persisted dependency-এর মতো সীমা আছে; truncation/status দেখুন।
+সব manifest, lockfile, ecosystem বা version syntax একই গভীরতায় বোঝে না। বিশেষত lockfile evidence ছাড়া পুরো transitive dependency graph আছে বলে দাবি করা যায় না — শুধু `requirements.txt`/`pyproject.toml` থাকলে কোনো edge তৈরি হয় না এবং `transitiveGraph` `UNAVAILABLE` থাকে। একটি স্ক্যানে সর্বোচ্চ ৫০টি manifest ও সর্বোচ্চ ২০০টি persisted dependency-এর মতো সীমা আছে; truncation/status দেখুন।
 
 ### ৪.২ SBOM কী?
 

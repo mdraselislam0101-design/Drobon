@@ -4,6 +4,7 @@
  */
 
 import type { PackReport } from './conformance.js';
+import type { DatasetContractState } from './contract.js';
 
 export type DatasetAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_CONFIGURED';
 
@@ -80,5 +81,11 @@ export interface DatasetOverallStatus {
   lessons: DatasetCategoryStatus & { byUserType?: Record<string, number> };
   assessmentTemplates: DatasetCategoryStatus;
   engagementTemplates: DatasetCategoryStatus;
+  /**
+   * Explicit integration-contract verdict for the separately-maintained
+   * Dataset. Additive: it never replaces `configured`/category statuses, and
+   * an INCOMPATIBLE verdict always means zero rules reached the scanners.
+   */
+  contract: DatasetContractState;
   loadedAt?: string;
 }

@@ -1,7 +1,9 @@
 import { createServer, type Server } from 'node:http';
+import { SOURCE_SNAPSHOT_BODY_MAX_BYTES } from '@drobon/shared';
 import { createApp, type App, type AppDeps } from './app.js';
 import { acquireJsonStoreLeases } from './lib/jsonStoreLease.js';
 import { knownJsonFileStorePath } from './lib/jsonFileWriteFence.js';
+import { attestAgentStorage, STORAGE_BLOCKED, StorageBlockedError, type StorageBoundaryIssue } from './lib/storageBoundary.js';
 
 export type ServerDeps = AppDeps;
 
@@ -35,6 +37,54 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     ...(deps.partnerStore === undefined ? [config.partnerStorePath] : []),
     ...(deps.paymentConfigStore === undefined ? [config.paymentConfigStorePath] : []),
   ];
+  // Agent writes must land only behind an attested boundary: owner-only files,
+  // an owner-only directory, ancestors that no other identity can replace, and
+  // no other local process currently write-holding scan/assessment/quota
+  // storage. Enforcement is limited to the durable store paths this server
+  // actually writes; an injected opaque store is a test seam and cannot be
+  // attested. A blocked verdict refuses startup instead of degrading silently.
+  const durableAgentPaths: string[] = [];
+  const addDurable = (path: string | undefined): void => {
+    if (path !== undefined && path !== ':memory:') durableAgentPaths.push(path);
+  };
+  addDurable(deps.scanStore === undefined ? config.scanStorePath : injectedScanPath);
+  addDurable(deps.assessmentStore === undefined ? config.assessmentStorePath : injectedAssessmentPath);
+  addDurable(deps.usageStore === undefined ? config.usageStorePath : undefined);
+  // An injected store whose real path is unknown cannot be attested: a wrapper
+  // can point anywhere and silently bypass the lease. Such an adapter is refused
+  // when a durable path is configured, and is never treated as protected.
+  const opaqueInjected: StorageBoundaryIssue[] = [];
+  if (deps.scanStore !== undefined && injectedScanPath === undefined && config.scanStorePath !== ':memory:') {
+    opaqueInjected.push('opaque-injected-adapter');
+  }
+  if (deps.assessmentStore !== undefined && injectedAssessmentPath === undefined && config.assessmentStorePath !== ':memory:') {
+    opaqueInjected.push('opaque-injected-adapter');
+  }
+  if (config.agentExperimentalEnabled === true && durableAgentPaths.length > 0) {
+    const verdict = attestAgentStorage(durableAgentPaths);
+    if (!verdict.ok) {
+      logger.error('STORAGE BLOCKED', {
+        code: verdict.code, issues: verdict.issues, foreignWriterCount: verdict.foreignWriterCount,
+      });
+      throw new StorageBlockedError(verdict.issues);
+    }
+    logger.info('Agent storage boundary attested', { code: verdict.code, stores: durableAgentPaths.length });
+  }
+  if (config.agentExperimentalEnabled === true && opaqueInjected.length > 0) {
+    const issues = [...new Set(opaqueInjected)];
+    logger.error('STORAGE BLOCKED', { code: STORAGE_BLOCKED, issues, foreignWriterCount: 0 });
+    throw new StorageBlockedError(issues);
+  }
+
+  // Security-default attestation: both of these are safe by default, so a
+  // weakened value is an explicit operator decision that must be visible.
+  if (config.dastRequireEngagement === false) {
+    logger.warn('DAST engagement authorization is DISABLED: unlinked DAST scans are accepted without an attested engagement. Set DAST_REQUIRE_ENGAGEMENT=true unless this is a deliberate legacy deployment.');
+  }
+  if (config.bodyMaxBytes < SOURCE_SNAPSHOT_BODY_MAX_BYTES) {
+    logger.warn('BODY_MAX_BYTES is below the maximum JSON body of a legal source snapshot; a valid snapshot may be rejected at upload.', { bodyMaxBytes: config.bodyMaxBytes, snapshotBodyBound: SOURCE_SNAPSHOT_BODY_MAX_BYTES });
+  }
+
   const leases = await acquireJsonStoreLeases(paths);
   if (!leases.guarded) logger.warn('Local JSON writer guard is unavailable on this platform; enforce one writer externally.');
   let app: App | undefined;

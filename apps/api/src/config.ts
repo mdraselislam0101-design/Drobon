@@ -1,7 +1,15 @@
 import { createRequire } from 'node:module';
+import { isLoopbackEndpoint } from './agent/localModel.js';
+import {
+  isDastAuthHeaderValue,
+  normalizeDastAuthHeaderName,
+  resolveDastAuth,
+  type DastAuthHeader,
+} from './scans/dast/auth.js';
 import {
   ENVIRONMENTS,
   LOG_LEVELS,
+  SOURCE_SNAPSHOT_BODY_MAX_BYTES,
   type EnvironmentName,
   type LogLevel,
 } from '@drobon/shared';
@@ -78,10 +86,30 @@ export interface ApiConfig {
    * survive restarts).
    */
   scanStorePath: string;
+  /**
+   * Total execution attempts per scan (1 = no retry). Retries apply ONLY to
+   * transient engine crashes (`SCAN_ENGINE_ERROR`); deterministic outcomes
+   * (invalid input, limits, timeouts, blocked targets) are never retried.
+   */
+  scanMaxAttempts: number;
+  /** Base backoff in ms; attempt N waits base * 2^(N-1). */
+  scanRetryBaseDelayMs: number;
+  /**
+   * Parallel scan lanes inside one drain (1 = fully serialized, the default).
+   * Raising it increases throughput for independent scans; every state
+   * transition is still serialized by the durable store.
+   */
+  scanConcurrency: number;
   /** Durable project-scoped Security Professional assessment records. */
   assessmentStorePath: string;
   /** Opt in to requiring an active, scoped owner-attested engagement for DAST. */
   dastRequireEngagement?: boolean;
+  /**
+   * Operator-configured authenticated DAST probing (P2-12). Present only when
+   * BOTH `DAST_AUTH_HEADER_NAME` and `DAST_AUTH_HEADER_VALUE` are valid. Held
+   * in memory only: never logged, persisted, reported or echoed by the API.
+   */
+  dastAuth?: DastAuthHeader;
   /** Experimental agent execution: explicit opt-in, forbidden in production. */
   agentExperimentalEnabled?: boolean;
   studentStorePath: string;
@@ -102,6 +130,14 @@ export interface ApiConfig {
   vulnIntelProvider: 'none' | 'filesystem';
   /** Filesystem path to the external Drobon-Dataset repo (when provider is filesystem). */
   datasetPath?: string | undefined;
+  /**
+   * Optional loopback-only local model endpoint for the Agent roles. Unset by
+   * default; a non-loopback value is a configuration error so source, secrets
+   * or assessment data can never be sent to a remote provider implicitly.
+   */
+  localModelEndpoint?: string | undefined;
+  /** Model identifier sent to that endpoint; required when the endpoint is set. */
+  localModelName?: string | undefined;
   /**
    * Optional path to an operator-supplied GENERIC advisory pack (Pump 15).
    * This is runtime configuration, not a bundled dataset: the file lives
@@ -260,7 +296,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
   }
 
-  const bodyMaxBytes = parseInteger(env['BODY_MAX_BYTES'], 'BODY_MAX_BYTES', issues) ?? 1_048_576;
+  // The default is derived from the snapshot limits, not chosen by taste: a
+  // body limit below SOURCE_SNAPSHOT_BODY_MAX_BYTES would reject a snapshot the
+  // store accepts (previously 1 MiB vs a 768 KiB snapshot = inconsistent).
+  const bodyMaxBytes = parseInteger(env['BODY_MAX_BYTES'], 'BODY_MAX_BYTES', issues) ?? SOURCE_SNAPSHOT_BODY_MAX_BYTES;
   if (bodyMaxBytes < 1024 || bodyMaxBytes > 10_485_760) {
     issues.push('BODY_MAX_BYTES must be an integer between 1024 and 10485760');
   }
@@ -322,6 +361,21 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push(
       'SCAN_STORE_PATH=":memory:" is not allowed in production (scan jobs would not persist)',
     );
+  }
+
+  // Bounded retry (P1-3): only transient engine crashes are retried, with
+  // exponential backoff; the durable attempt counter makes it observable.
+  const scanMaxAttempts = parseInteger(env['SCAN_MAX_ATTEMPTS'], 'SCAN_MAX_ATTEMPTS', issues) ?? 2;
+  if (scanMaxAttempts < 1 || scanMaxAttempts > 5) {
+    issues.push('SCAN_MAX_ATTEMPTS must be an integer between 1 and 5');
+  }
+  const scanRetryBaseDelayMs = parseInteger(env['SCAN_RETRY_BASE_DELAY_MS'], 'SCAN_RETRY_BASE_DELAY_MS', issues) ?? 5_000;
+  if (scanRetryBaseDelayMs < 100 || scanRetryBaseDelayMs > 600_000) {
+    issues.push('SCAN_RETRY_BASE_DELAY_MS must be an integer between 100 and 600000');
+  }
+  const scanConcurrency = parseInteger(env['SCAN_CONCURRENCY'], 'SCAN_CONCURRENCY', issues) ?? 1;
+  if (scanConcurrency < 1 || scanConcurrency > 8) {
+    issues.push('SCAN_CONCURRENCY must be an integer between 1 and 8');
   }
 
   // --- Structured assessments (Pump 22) ------------------------------------
@@ -486,13 +540,33 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push('ADMIN_RATE_LIMIT_WINDOW_MS must be an integer between 1000 and 3600000');
   }
 
-  // Compatibility default retains legacy UNVERIFIED scans. Operators can
-  // opt in to a stricter gate; an invalid value must never silently turn it off.
-  const rawDastEngagement = env['DAST_REQUIRE_ENGAGEMENT'] ?? 'false';
+  // Fail-closed default: an active DAST scan needs an owner-attested
+  // engagement authorizing the host, path and scan type. A deployment that
+  // must keep the legacy unlinked flow sets DAST_REQUIRE_ENGAGEMENT=false
+  // explicitly (warned at startup); an invalid value never weakens the gate.
+  const rawDastEngagement = env['DAST_REQUIRE_ENGAGEMENT'] ?? 'true';
   if (rawDastEngagement !== 'true' && rawDastEngagement !== 'false') {
     issues.push('DAST_REQUIRE_ENGAGEMENT must be true or false');
   }
   const dastRequireEngagement = rawDastEngagement === 'true';
+
+  // Optional authenticated DAST probing. Both halves or neither; a bad value
+  // is a startup error, never a silently unauthenticated (or half-applied)
+  // credential. The value is never echoed in the message or in any log.
+  const rawAuthHeaderName = env['DAST_AUTH_HEADER_NAME'];
+  const rawAuthHeaderValue = env['DAST_AUTH_HEADER_VALUE'];
+  let dastAuth: DastAuthHeader | undefined;
+  if (rawAuthHeaderName !== undefined || rawAuthHeaderValue !== undefined) {
+    if (rawAuthHeaderName === undefined || rawAuthHeaderValue === undefined) {
+      issues.push('DAST_AUTH_HEADER_NAME and DAST_AUTH_HEADER_VALUE must be set together');
+    } else if (normalizeDastAuthHeaderName(rawAuthHeaderName) === undefined) {
+      issues.push('DAST_AUTH_HEADER_NAME must be a plain HTTP header name that Drobon controls');
+    } else if (!isDastAuthHeaderValue(rawAuthHeaderValue)) {
+      issues.push('DAST_AUTH_HEADER_VALUE must be a single non-empty line of at most 4096 characters');
+    } else {
+      dastAuth = resolveDastAuth(rawAuthHeaderName, rawAuthHeaderValue);
+    }
+  }
 
   // Agent-created records are not safe to hand to older binaries. Until an
   // approved migration/rollback is implemented, permit only explicit local
@@ -505,6 +579,30 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const agentExperimentalEnabled = rawAgentEnabled === 'true';
   if (agentExperimentalEnabled && environment === 'production') {
     issues.push('AGENT_EXPERIMENTAL_ENABLED is not allowed in production until an approved migration and rollback are implemented');
+  }
+
+  // LOCAL_MODEL_ENDPOINT must be loopback: there is no paid/remote fallback and
+  // evidence must not leave the host. Kept independent of AGENT_EXPERIMENTAL_ENABLED
+  // so the capability report can state honestly whether a model is configured.
+  const localModelEndpointRaw = (env['LOCAL_MODEL_ENDPOINT'] ?? '').trim();
+  const localModelNameRaw = (env['LOCAL_MODEL_NAME'] ?? '').trim();
+  let localModelEndpoint: string | undefined;
+  let localModelName: string | undefined;
+  if (localModelEndpointRaw.length > 0) {
+    if (localModelEndpointRaw.length > 300 || hasControlCharacter(localModelEndpointRaw)) {
+      issues.push('LOCAL_MODEL_ENDPOINT must be 1-300 printable characters');
+    } else if (!isLoopbackEndpoint(localModelEndpointRaw)) {
+      issues.push('LOCAL_MODEL_ENDPOINT must be a loopback http(s) URL; remote AI providers are not permitted');
+    } else if (localModelNameRaw.length === 0 || localModelNameRaw.length > 200 || hasControlCharacter(localModelNameRaw)) {
+      issues.push('LOCAL_MODEL_NAME must be 1-200 printable characters when LOCAL_MODEL_ENDPOINT is set');
+    } else if (environment === 'production') {
+      issues.push('LOCAL_MODEL_ENDPOINT is not allowed in production until the Agent security gates pass');
+    } else {
+      localModelEndpoint = localModelEndpointRaw;
+      localModelName = localModelNameRaw;
+    }
+  } else if (localModelNameRaw.length > 0) {
+    issues.push('LOCAL_MODEL_NAME is only allowed when LOCAL_MODEL_ENDPOINT is set');
   }
 
   if (issues.length > 0) {
@@ -532,9 +630,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     usageConsumeRoutes: environment !== 'production',
     projectStorePath,
     scanStorePath,
+    scanMaxAttempts,
+    scanRetryBaseDelayMs,
+    scanConcurrency,
     assessmentStorePath,
     dastRequireEngagement,
+    ...(dastAuth === undefined ? {} : { dastAuth }),
     agentExperimentalEnabled,
+    ...(localModelEndpoint === undefined ? {} : { localModelEndpoint }),
+    ...(localModelName === undefined ? {} : { localModelName }),
     studentStorePath,
     sourceStorePath,
     vulnIntelProvider,

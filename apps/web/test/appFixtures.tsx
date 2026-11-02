@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
-import type {
+import type { AgentCapabilitiesResponse,
   AdminPaymentConfigResponse,
   AssessmentResponse,
   AssessmentDetailResponse,
@@ -230,6 +230,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // override these to model owned/foreign/lifecycle states.
     getProjects: vi.fn(async (): Promise<ProjectsResponse> => ({ projects: [] })),
     getSocPosture: vi.fn(async () => { throw new Error('not stubbed'); }),
+    getRiskAssessment: vi.fn(async () => { throw new Error('not stubbed'); }),
     getProject: vi.fn(async (): Promise<ProjectResponse> => {
       throw forbiddenError();
     }),
@@ -252,6 +253,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getAgentAssessment: vi.fn(async (): Promise<AgentAssessmentResponse> => { throw new Error('not stubbed'); }),
     executeAgent: vi.fn(async (): Promise<AgentExecutionResponse> => { throw new Error('not stubbed'); }),
     cancelAgentScan: vi.fn(async (): Promise<AgentCancellationResponse> => { throw new Error('not stubbed'); }),
+    getAgentCapabilities: vi.fn(async (): Promise<AgentCapabilitiesResponse> => { throw new Error('not stubbed'); }),
     createAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
     updateAssessment: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
     setAssessmentStatus: vi.fn(async (): Promise<AssessmentResponse> => { throw new Error('not stubbed'); }),
@@ -265,6 +267,7 @@ export function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
     // Pump 7 defaults: no scans yet (the honest empty world); scan
     // requests are not stubbed (suites that exercise them override).
     getScans: vi.fn(async (): Promise<ScansResponse> => ({ scans: [] })),
+    cancelScan: vi.fn(async (): Promise<ScanResponse> => { throw new Error('not stubbed'); }),
     compareScans: vi.fn(async (): Promise<ScanComparisonResponse> => { throw new Error('not stubbed'); }),
     getAssessmentSummary: vi.fn(async (): Promise<AssessmentSummaryResponse> => { throw new Error('not stubbed'); }),
     createScan: vi.fn(async (): Promise<ScanResponse> => {

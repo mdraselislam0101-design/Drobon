@@ -51,6 +51,10 @@ function releaseWorker(): void {
   if (next !== undefined) next.grant();
 }
 
+/** Transport bounds for the project pass (kept in lock-step with the worker). */
+export const PROJECT_MAX_FILES = 200;
+export const PROJECT_MAX_ROUNDS = 12;
+
 export function supportsStructuredAst(family: string): boolean {
   return STRUCTURED_AST_FAMILIES.includes(family);
 }
@@ -71,6 +75,12 @@ export interface ProjectAstResult {
   status: StructuredAstStatus;
   examinedFiles: number;
   unresolvedImports: number;
+  /** Local/inter-module call edges the bounded resolver actually matched. */
+  callEdges: number;
+  /** Propagation rounds executed (fixed-point iterations). */
+  rounds: number;
+  /** True when the summaries reached a fixed point within the round budget. */
+  converged: boolean;
   candidates: ProjectAstCandidate[];
 }
 export interface ProjectAstFile {
@@ -125,11 +135,18 @@ export class StructuredAstSession {
       status: result.status,
       examinedFiles: result.examinedFiles ?? 0,
       unresolvedImports: result.unresolvedImports ?? 0,
+      callEdges: result.callEdges ?? 0,
+      rounds: result.rounds ?? 0,
+      converged: result.converged === true,
       candidates: result.candidates as ProjectAstCandidate[],
     };
   }
 
-  private async request(input: unknown, signal: AbortSignal, remainingMs: number): Promise<StructuredAstResult & { examinedFiles?: number; unresolvedImports?: number }> {
+  private async request(
+    input: unknown,
+    signal: AbortSignal,
+    remainingMs: number,
+  ): Promise<StructuredAstResult & { examinedFiles?: number; unresolvedImports?: number; callEdges?: number; rounds?: number; converged?: boolean }> {
     const empty = (status: StructuredAstStatus): StructuredAstResult => ({ status, candidates: [] });
     if (signal.aborted) return empty('ABORTED');
     if (this.unavailable || this.busy) return empty('UNAVAILABLE');
@@ -178,7 +195,10 @@ export class StructuredAstSession {
         worker.off('exit', onExit);
         signal.removeEventListener('abort', onAbort);
       };
-      const finish = (result: StructuredAstResult & { examinedFiles?: number; unresolvedImports?: number }, terminate = false): void => {
+      const finish = (
+        result: StructuredAstResult & { examinedFiles?: number; unresolvedImports?: number; callEdges?: number; rounds?: number; converged?: boolean },
+        terminate = false,
+      ): void => {
         if (finished) return;
         finished = true;
         cleanup();
@@ -191,16 +211,26 @@ export class StructuredAstSession {
       const onMessage = (value: unknown): void => {
         // The worker is application-owned; still reject unexpected responses.
         if (typeof value !== 'object' || value === null) { finish(empty('ERROR'), true); return; }
-        const result = value as Partial<StructuredAstResult & { examinedFiles: number; unresolvedImports: number }>;
+        const result = value as Partial<StructuredAstResult & {
+          examinedFiles: number; unresolvedImports: number; callEdges: number; rounds: number; converged: boolean;
+        }>;
+        const inRange = (value: unknown, max: number): boolean =>
+          value === undefined || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= max);
         if (!['OK', 'SYNTAX_ERROR', 'LIMIT', 'ERROR'].includes(result.status ?? '') || !Array.isArray(result.candidates) || result.candidates.length > 1_001 ||
-            (result.examinedFiles !== undefined && (!Number.isInteger(result.examinedFiles) || result.examinedFiles < 0 || result.examinedFiles > 64)) ||
-            (result.unresolvedImports !== undefined && (!Number.isInteger(result.unresolvedImports) || result.unresolvedImports < 0 || result.unresolvedImports > 30_000))) {
+            !inRange(result.examinedFiles, PROJECT_MAX_FILES) ||
+            !inRange(result.unresolvedImports, 30_000) ||
+            !inRange(result.callEdges, 1_000_000) ||
+            !inRange(result.rounds, PROJECT_MAX_ROUNDS) ||
+            (result.converged !== undefined && typeof result.converged !== 'boolean')) {
           finish(empty('ERROR'), true);
           return;
         }
         finish({ status: result.status as StructuredAstStatus, candidates: result.candidates,
           ...(result.examinedFiles === undefined ? {} : { examinedFiles: result.examinedFiles }),
-          ...(result.unresolvedImports === undefined ? {} : { unresolvedImports: result.unresolvedImports }) });
+          ...(result.unresolvedImports === undefined ? {} : { unresolvedImports: result.unresolvedImports }),
+          ...(result.callEdges === undefined ? {} : { callEdges: result.callEdges }),
+          ...(result.rounds === undefined ? {} : { rounds: result.rounds }),
+          ...(result.converged === undefined ? {} : { converged: result.converged }) });
       };
       const onError = (): void => { finish(empty('ERROR'), true); };
       const onExit = (): void => { finish(empty('UNAVAILABLE')); };

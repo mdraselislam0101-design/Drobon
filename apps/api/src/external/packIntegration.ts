@@ -9,6 +9,7 @@ import { SECRETS_RULES, type SecretsRule } from '../scans/secrets/rules.js';
 import type { DastRule } from '../scans/dast/packTypes.js';
 import { convertSastPackToRule, convertSecretsPackToRule, convertDastPackToRule } from './packProvider.js';
 import type { DatasetService } from './service.js';
+import { contractProblemMessage, type PackFamilyName } from './contract.js';
 
 function appendMapped<T extends { id: string }>(base: readonly T[], raw: readonly unknown[], convert: (entry: unknown) => T | undefined): T[] {
   const result = [...base];
@@ -36,11 +37,36 @@ export async function getMergedDastRules(dataset: DatasetService): Promise<reado
   return appendMapped([], await dataset.dastPacks(), convertDastPackToRule);
 }
 
+/**
+ * Explicit integration-contract check for one pack family.
+ *
+ * Returns a bounded, path-free sentence when this app cannot load the family's
+ * declared pack layout/schema (INCOMPATIBLE) or could not validate it
+ * (UNKNOWN). Returns undefined when the family is compatible, when no dataset
+ * is configured, or when a minimal test double does not expose `contract()` —
+ * a missing method must never be turned into a fabricated incompatibility.
+ */
+export async function datasetContractProblem(
+  dataset: DatasetService | undefined,
+  family: PackFamilyName,
+): Promise<string | undefined> {
+  if (dataset === undefined || dataset.configured !== true) return undefined;
+  if (typeof dataset.contract !== 'function') return undefined;
+  try {
+    const state = await dataset.contract();
+    return contractProblemMessage(state.families[family]);
+  } catch {
+    // A contract surface that cannot be read is itself a validation failure.
+    return 'The configured Dataset could not be validated for this application; its rules were NOT loaded.';
+  }
+}
+
 /** Rejected files make a configured scan partial even when other rules loaded. */
 export async function hasRejectedPackRules(dataset: DatasetService, family: 'sast' | 'secrets' | 'dast' | 'sca'): Promise<boolean> {
   // Some callers inject a minimal dataset double; production services always
   // expose conformance(). A missing double method must not fabricate a report.
   if (typeof dataset.conformance !== 'function') return false;
   const report = (await dataset.conformance())[family];
-  return report.accepted < report.filesSeen || report.enumerationFailures > 0 || report.manifestIssue !== undefined;
+  return report.accepted < report.filesSeen || report.enumerationFailures > 0 || report.manifestIssue !== undefined ||
+    (await datasetContractProblem(dataset, family)) !== undefined;
 }

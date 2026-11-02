@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { AgentAssessment, AgentExecutionResponse } from '@drobon/shared';
+import type { AgentAssessment, AgentCapabilities, AgentExecutionResponse } from '@drobon/shared';
 import { ApiClientError } from '../api/client.js';
 import { useApiClient } from '../api/context.js';
 
@@ -11,6 +11,8 @@ export function AssessmentAgent({ projectId, assessmentId, onQueued }: { project
   const client = useApiClient();
   const [agent, setAgent] = useState<AgentAssessment | null>(null);
   const [actions, setActions] = useState<AgentExecutionResponse['actions']>([]);
+  const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
+  const [capabilityError, setCapabilityError] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -20,6 +22,12 @@ export function AssessmentAgent({ projectId, assessmentId, onQueued }: { project
     try {
       const result = await client.getAgentAssessment(projectId, assessmentId, signal);
       if (!signal?.aborted) { setAgent(result.agent); setError(null); }
+      // The capability report is advisory and read-only: a failure here must
+      // never hide the plan the operator actually asked for.
+      try {
+        const report = await client.getAgentCapabilities(projectId, assessmentId, signal);
+        if (!signal?.aborted) { setCapabilities(report.capabilities); setCapabilityError(false); }
+      } catch { if (!signal?.aborted) setCapabilityError(true); }
     } catch (caught: unknown) {
       if (!signal?.aborted) setError(caught instanceof ApiClientError ? caught.message : 'Could not load the agent assessment.');
     }
@@ -124,6 +132,18 @@ export function AssessmentAgent({ projectId, assessmentId, onQueued }: { project
       </li>)}</ul>}
       <button type="button" className="button button-secondary" onClick={exportSummary} data-testid="agent-export">Download agent summary (JSON)</button>
       <p className="muted">This bounded summary omits raw source and evidence. Use the existing scan reports for evidence, remediation and export formats.</p>
+      <h5>Declared agent capabilities (server-reported)</h5>
+      {capabilityError && <p className="muted" data-testid="agent-capability-error">The capability report could not be loaded, so role, model and storage readiness are unknown here. Treat the Agent as unavailable.</p>}
+      {capabilities !== null && <div data-testid="agent-capabilities">
+        <p>Model provider: <strong>{capabilities.model.provider}</strong> · model state: <strong>{capabilities.model.state}</strong> · execution gate: <strong>{capabilities.execution.enabled ? 'ENABLED' : 'DISABLED'}</strong> · storage: <strong>{capabilities.storage.code}</strong></p>
+        <p className="muted">{capabilities.model.note} {capabilities.execution.note} {capabilities.storage.note}</p>
+        {capabilities.storage.issues.length > 0 && <ul data-testid="agent-capability-storage-issues">{capabilities.storage.issues.map((issue) => <li key={issue}><code>{issue}</code></li>)}</ul>}
+        <ul data-testid="agent-capability-roles">{capabilities.roles.map((role) => <li key={role.id}>
+          <strong>{role.id}</strong> — integration: {role.integrated ? 'YES' : 'NO'} · steps ≤ {role.maxSteps} · network tool: {capabilities.networkRoles.includes(role.id) ? 'yes' : 'no'} · {role.note}
+        </li>)}</ul>
+        <ul data-testid="agent-capability-limits">{capabilities.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+        <p className="muted">Generated {capabilities.generatedAt}. This report describes wiring only; it is not evidence that any model ran, and it never changes a scanner verdict.</p>
+      </div>}
       <details><summary>Limits and provenance</summary>
         <ul>{agent.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
         {agent.tasks.some((task) => task.datasetDigest !== undefined) && <ul>{agent.tasks.filter((task) => task.datasetDigest !== undefined).map((task) => <li key={task.scanner}>{task.scanner} · Dataset SHA-256 <code>{task.datasetDigest}</code>. A digest is not a signature.</li>)}</ul>}

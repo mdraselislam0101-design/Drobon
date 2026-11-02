@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { isDastObservation, isDastResult, type DastResult } from '../src/dast.js';
+import { isDastAuthMode, isDastObservation, isDastResult, type DastResult } from '../src/dast.js';
 import { isFinding, isScanDetailResponse, type Finding } from '../src/scans.js';
 
 const TARGET = 'https://app.example.org/';
@@ -113,5 +113,30 @@ describe('shared passive DAST contracts', () => {
     expect(isScanDetailResponse({ scan: { ...scan, resultSummary: { findingsTotal: 1, requestsMade: 2, redirectsFollowed: 0 } } })).toBe(false);
     expect(isScanDetailResponse({ scan: { ...scan, findings: [{ ...sampleDastFinding, projectId: 'prj_00000000-0000-4000-8000-000000000099' }] } })).toBe(false);
     expect(isScanDetailResponse({ scan: { ...scan, findings: [{ ...sampleDastFinding, endpoint: 'https://app.example.org/unobserved' }] } })).toBe(false);
+  });
+});
+
+describe('shared DAST auth disclosure (P2-12)', () => {
+  const activeResult = (overrides: Partial<DastResult> = {}): DastResult => ({
+    ...sampleResult(),
+    mode: 'ACTIVE_SAFE',
+    crawledCount: 0,
+    injectedCount: 0,
+    ...overrides,
+  });
+
+  test('authMode is a closed, active-only vocabulary', () => {
+    expect(isDastAuthMode('NONE')).toBe(true);
+    expect(isDastAuthMode('HEADER')).toBe(true);
+    expect(isDastAuthMode('BASIC')).toBe(false);
+    expect(isDastAuthMode('header')).toBe(false);
+
+    expect(isDastResult(activeResult({ authMode: 'HEADER' }))).toBe(true);
+    expect(isDastResult(activeResult({ authMode: 'NONE' }))).toBe(true);
+    expect(isDastResult(activeResult({ authMode: 'BASIC' as never }))).toBe(false);
+    // A passive result must not claim authenticated probing.
+    expect(isDastResult(sampleResult({ authMode: 'HEADER' }))).toBe(false);
+    // No credential material is part of the contract at all.
+    expect(isDastResult(activeResult({ authMode: 'HEADER', headers: { authorization: 'x' } } as never))).toBe(false);
   });
 });

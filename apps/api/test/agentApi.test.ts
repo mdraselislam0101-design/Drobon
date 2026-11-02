@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { isAgentAssessmentResponse, isAgentExecutionResponse, type AgentAssessment, type AgentExecutionResponse } from '@drobon/shared';
+import { isAgentAssessmentResponse, isAgentExecutionResponse, type AgentAssessment, type AgentExecutionResponse, isAgentCapabilitiesResponse } from '@drobon/shared';
 import { createAgentExecutor, finalizeAuthorizedAgentScan } from '../src/agent/execution.js';
 import { createJsonFileAssessmentStore } from '../src/assessments/store.js';
 import { createMemoryUserRepository } from '../src/auth/memoryUserRepository.js';
@@ -232,6 +232,10 @@ describe('bounded assessment agent with synthetic catalog and local transport', 
       expect(agent.reviews.some((review) => review.ruleId === id)).toBe(true);
     }
     expect(agent.reviews.every((review) => ['SUSPECTED', 'INCONCLUSIVE', 'NOT_VERIFIED'].includes(review.verdict))).toBe(true);
+    // Real engine output must satisfy the owning role's evidence contract;
+    // otherwise every review would silently degrade to INCONCLUSIVE.
+    expect(agent.reviews.filter((review) => review.verdict === 'SUSPECTED').length,
+      JSON.stringify(agent.reviews.map((review) => [review.ruleId, review.verdict, review.basis]))).toBeGreaterThan(0);
     expect(agent.paths.length).toBeGreaterThan(0);
     expect(agent.paths.every((path) => path.status === 'THEORETICAL' && path.confidence === 'LOW' && path.entryPoint === 'NOT_ESTABLISHED')).toBe(true);
     expect(JSON.stringify(agent)).not.toContain(marker);
@@ -451,6 +455,62 @@ describe('bounded assessment agent with synthetic catalog and local transport', 
     const publicScans = await data<{ scans: Array<Record<string, unknown>> }>(await request(reopened, cookie, `${ctx.base}/scans`));
     expect(publicScans.scans.every((scan) => !('agent' in scan) && !('ownerId' in scan))).toBe(true);
     expect(JSON.stringify(publicScans)).not.toContain(marker);
+  }, 60_000);
+
+  test('the capabilities endpoint reports the seven roles and no model unless one is configured', async () => {
+    const root = syntheticCatalog();
+    const storeDir = mkdtempSync(join(tmpdir(), 'drobon-agent-capabilities-'));
+    dirs.push(storeDir);
+    chmodSync(storeDir, 0o700);
+    const ctx = await setup(root, { storeDir });
+    const response = await request(ctx.server, ctx.cookie, `${ctx.agentPath}/capabilities`);
+    expect(response.status).toBe(200);
+    const body = await data<{ capabilities: Record<string, unknown>; assessmentId: string }>(response);
+    const roles = body.capabilities['roles'] as Array<{ id: string; integrated: boolean; tools: string[] }>;
+    expect(roles.map((role) => role.id)).toEqual(['MASTER', 'RECON', 'SAST', 'DAST', 'SCA', 'SECRETS', 'VALIDATION']);
+    expect(roles.every((role) => role.integrated)).toBe(true);
+    expect(body.capabilities['networkRoles']).toEqual(['DAST']);
+    expect(body.capabilities['model']).toMatchObject({ state: 'NONE', provider: 'NONE' });
+    expect(body.capabilities['storage']).toMatchObject({ code: 'STORAGE_READY' });
+    expect(body.capabilities['execution']).toMatchObject({ enabled: true });
+    expect(body.assessmentId).toBeTruthy();
+    // The server payload must satisfy the strict shared contract the UI parses.
+    expect(isAgentCapabilitiesResponse(body)).toBe(true);
+    // It is read-only: nothing was queued and no scan record appeared.
+    expect(await ctx.server.scans.listByProject(ctx.projectId)).toHaveLength(0);
+    // Authentication is required, exactly like the rest of the agent surface.
+    const anonymous = await fetch(`${ctx.server.baseUrl}${ctx.agentPath}/capabilities`);
+    expect(anonymous.status).toBe(401);
+    // An unknown assessment id is not revealed.
+    const missing = await request(ctx.server, ctx.cookie,
+      `${ctx.base}/assessments/asm_00000000-0000-4000-8000-0000000000dd/agent/capabilities`);
+    expect(missing.status).toBe(404);
+  }, 60_000);
+
+  test('a boundary lost after startup fails the queued agent job instead of writing', async () => {
+    const root = syntheticCatalog();
+    const storeDir = mkdtempSync(join(tmpdir(), 'drobon-agent-storage-gate-'));
+    dirs.push(storeDir);
+    chmodSync(storeDir, 0o700);
+    const ctx = await setup(root, { storeDir });
+    await engage(ctx);
+    await request(ctx.server, ctx.cookie, `${ctx.agentPath}/execute`, 'POST', { confirm: true });
+    const queued = await ctx.server.scans.listByProject(ctx.projectId);
+    expect(queued).toHaveLength(4);
+    expect(queued.every((scan) => scan.status === 'QUEUED')).toBe(true);
+    // Simulate the boundary becoming unsafe after the attested startup: another
+    // identity could now replace the whole store directory.
+    chmodSync(storeDir, 0o777);
+    try {
+      await ctx.server.scanProcessor.start();
+      const after = await ctx.server.scans.listByProject(ctx.projectId);
+      expect(after.every((scan) => scan.status !== 'COMPLETED')).toBe(true);
+      expect(after.every((scan) => scan.status === 'FAILED')).toBe(true);
+      expect(after.every((scan) => (scan.failureMessage ?? '').includes('STORAGE BLOCKED'))).toBe(true);
+      expect(after.every((scan) => (scan.findings?.length ?? 0) === 0)).toBe(true);
+    } finally {
+      chmodSync(storeDir, 0o700);
+    }
   }, 60_000);
 
   test.each(['QUEUED', 'RUNNING'] as const)('durable %s cancellation recovers after restart without a probe', async (state) => {

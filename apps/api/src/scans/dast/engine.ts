@@ -18,6 +18,7 @@ import { isDastRequestAuthorized, type DastRequestAuthorizer } from './authoriza
 import type { AdvisoryMatch, AdvisoryService } from '../../external/advisory.js';
 import { advisoryDastFinding } from '../advisoryFindings.js';
 import { analyzeDastResponseAst, type DastAstObservation, type DastAstRule } from './ast.js';
+import type { DastAuthHeader } from './auth.js';
 
 export const DAST_MAX_REQUESTS = 3;
 export const DAST_MAX_REDIRECTS = 2;
@@ -40,6 +41,12 @@ export interface DastEngineOptions {
   dataset?: DatasetService;
   /** Revalidate assessment-linked authorization before each request. */
   authorize?: DastRequestAuthorizer;
+  /**
+   * Operator-configured authenticated probing (P2-12). Only the ACTIVE_SAFE
+   * mode consumes it; a passive scan never attaches the header because it
+   * never discloses an authMode. Passed through to the active delegate.
+   */
+  auth?: DastAuthHeader;
   /**
    * Optional generic advisory service (Pump 15). When configured, version
    * signals from the passive response are matched against the operator's
@@ -264,10 +271,14 @@ export function createDastEngine(options: DastEngineOptions = {}): ScanEngine {
       let allPackRules = options.packRules ?? [];
       if (options.dataset?.configured) {
         try {
-          const { getMergedDastRules, hasRejectedPackRules } = await import('../../external/packIntegration.js');
+          const { getMergedDastRules, hasRejectedPackRules, datasetContractProblem } = await import('../../external/packIntegration.js');
           const loaded = await getMergedDastRules(options.dataset);
           if (loaded.length > 0) allPackRules = loaded;
           if (await hasRejectedPackRules(options.dataset, 'dast')) partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
+          // Explicit version compatibility: no rules were accepted, so this
+          // scan can only be a partial observation, never a clean result.
+          const contractReason = await datasetContractProblem(options.dataset, 'dast');
+          if (contractReason !== undefined) partialReason = partialReason === undefined ? contractReason : `${partialReason} ${contractReason}`.slice(0, 200);
         } catch {
           partialReason = 'Some configured DAST rules were rejected or could not be loaded.';
         }

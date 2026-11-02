@@ -237,6 +237,45 @@ describe('SECRETS UI: findings over the shared findings surface', () => {
     expect(second.querySelector('[data-testid="finding-confidence"]')?.textContent).toContain('MEDIUM detection confidence');
   });
 
+  test('the baseline disclosure is shown and never presented as a clean scan', async () => {
+    const scan = secretsScan({
+      findingsTotal: 1,
+      findingsBySeverity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
+      filesScanned: 2,
+      filesSkipped: 0,
+      secretsBaseline: { status: 'ANALYZED', entries: 2, applied: 1, invalid: 1 },
+    });
+    await renderAt(
+      '/projects/prj_00000000-0000-4000-8000-000000000010',
+      completedSecretsClient(scan),
+    );
+    const line = await screen.find('secrets-baseline');
+    expect(line.textContent).toContain('2 entries loaded');
+    expect(line.textContent).toContain('1 finding suppressed');
+    expect(line.textContent).toContain('1 invalid entry not applied');
+    // Suppression is a recorded decision, never asserted as absence.
+    expect(line.textContent).not.toContain('no secrets');
+  });
+
+  test('a rejected baseline is surfaced as rejected, not silently ignored', async () => {
+    const scan = secretsScan({
+      findingsTotal: 2,
+      findingsBySeverity: { CRITICAL: 0, HIGH: 2, MEDIUM: 0, LOW: 0, INFO: 0 },
+      filesScanned: 2,
+      filesSkipped: 0,
+      partial: true,
+      partialReason: 'the secrets baseline was rejected and suppressed nothing',
+      secretsBaseline: { status: 'INVALID', entries: 0, applied: 0, invalid: 0 },
+    });
+    await renderAt(
+      '/projects/prj_00000000-0000-4000-8000-000000000010',
+      completedSecretsClient(scan),
+    );
+    const line = await screen.find('secrets-baseline');
+    expect(line.textContent).toContain('rejected');
+    expect(line.textContent).toContain('nothing was suppressed');
+  });
+
   test('raw secret values never appear anywhere in the DOM — text, attributes or markup', async () => {
     const scan = secretsScan({
       findingsTotal: 2,
